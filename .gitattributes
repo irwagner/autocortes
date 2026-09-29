@@ -1,0 +1,6 @@
+# Finais de linha: LF no repositório; o .bat sai sempre com CRLF, que o cmd.exe espera
+* text=auto
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.ttf binary

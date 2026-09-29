@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.pyc
+
+# segredos e estado local
+config.toml
+dados/
+
+# arquivos grandes baixados/gerados
+modelos/
+ferramentas/
+filmes/
+
+# testes temporários (_teste_*.py, _teste_*.js e as pastas deles)
+_teste*
+
+# cópia solta da moldura CineLink (a usada fica em molduras/)
+/template.png
+
+# molduras: a pasta fica no repositório, as imagens não (podem ser de terceiros)
+molduras/*.png
+molduras/*.jpg
+molduras/*.jpeg
+molduras/*.webp

@@ -1,0 +1,374 @@
+# =====================================================================
+#  AutoCortes - configuração
+#
+#  1) Copie este arquivo para config.toml (ou rode: python -m autocortes init)
+#  2) Coloque os filmes na pasta "filmes"
+#  3) python -m autocortes verificar
+#  4) python -m autocortes rodar        (loop infinito: analisa, edita e posta)
+#
+#  Enquanto [geral].simulacao = true NADA é enviado para as redes: os vídeos
+#  editados ficam em dados/cortes e o log mostra o que teria sido postado.
+#
+#  Direitos autorais: use filmes que você tem direito de publicar (domínio
+#  público, Creative Commons, conteúdo próprio ou licenciado). Cortes de
+#  filmes protegidos geram Content ID, strikes e podem derrubar a conta.
+# =====================================================================
+
+[geral]
+simulacao = true
+pasta_filmes = "filmes"
+pasta_dados = "dados"
+# Quantos cortes prontos manter à frente das postagens
+buffer_cortes = 3
+# Analisar filmes novos no tempo livre, mesmo sobrando cortes
+analisar_antecipado = true
+# Cada corte editado espera sua aprovação no painel antes de entrar na fila
+exigir_aprovacao = false
+# FFmpeg/Whisper com prioridade baixa para não travar o PC
+prioridade_baixa = true
+# Impede o Windows de suspender enquanto o loop roda
+impedir_suspensao = true
+# Apaga o .mp4 depois de publicado em todas as redes ativas
+apagar_apos_postar = false
+# Intervalo para procurar filmes novos na pasta (minutos)
+varrer_a_cada_min = 5
+
+[painel]
+# Endereço do painel: http://127.0.0.1:8777 (só este computador acessa)
+porta = 8777
+abrir_navegador = true
+
+[ferramentas]
+ffmpeg = "ffmpeg"
+ffprobe = "ffprobe"
+# Vazio = baixa o whisper.cpp oficial automaticamente em ferramentas/whisper
+whisper_cli = ""
+whisper_vad = ""
+whisper_versao = "b5130"
+# Threads do Whisper (0 = automático)
+threads = 0
+# Decodificação por hardware na detecção de cenas: "auto" ou "none"
+hwaccel = "auto"
+
+[analise]
+# Pula abertura e créditos finais (limitado a 5% e 10% da duração)
+ignorar_inicio_seg = 90
+ignorar_fim_seg = 420
+# Sensibilidade da troca de cena (menor = detecta mais trocas)
+limiar_cena = 10
+# Faixa de áudio preferida, pelo idioma marcado no arquivo
+idiomas_audio = ["por", "pt"]
+
+[transcricao]
+# De onde vêm as legendas:
+#   "auto"    = .srt ao lado do filme > legenda embutida > Whisper
+#               (com áudio dublado, a legenda embutida costuma ser a do original: aí transcreve a dublagem)
+#   "whisper" = sempre transcrever o áudio
+#   "arquivo" = só .srt/legenda embutida
+#   "nenhuma" = vídeos sem legenda
+fonte = "auto"
+idiomas_legenda = ["pt-BR", "pt", "por", "pob"]
+# Modelo: tiny, base, small, medium, large-v3-turbo, large-v3-turbo-q5_0 ...
+# "small" é um bom equilíbrio para português; "base" é ~3x mais rápido.
+modelo = "small"
+# Idioma falado: "auto", "pt", "en", "es"...
+idioma = "auto"
+
+[cortes]
+duracao_min = 30
+duracao_max = 60
+duracao_alvo = 45
+max_por_filme = 40
+espaco_minimo_seg = 5
+# Palavras que valorizam um trecho (acentos são ignorados na comparação)
+palavras_chave = []
+# "intercalar" alterna entre filmes; "sequencial" termina um filme antes do próximo
+ordem_filmes = "intercalar"
+# "melhores" posta primeiro os trechos de maior nota; "cronologica" segue o filme
+ordem_cortes = "melhores"
+
+[cortes.pesos]
+volume = 1.0     # trechos mais altos
+picos = 1.5      # momentos intensos (explosões, gritos, música alta)
+fala = 1.2       # quantidade de diálogo
+cenas = 0.8      # ritmo de edição (trocas de cena por minuto)
+gancho = 1.0     # começo forte nos 3 primeiros segundos
+texto = 0.6      # falas com ! ? e palavras-chave
+duracao = 0.5    # proximidade da duracao_alvo
+abertura = 0.6   # começo claro (perde nota se abre com "então", "mas" ou no meio de uma frase)
+silencio = 2.0   # penalidade por silêncio
+
+[edicao]
+# Modelo visual em uso. O visual de cada modelo se ajusta na aba Estúdio do painel
+# e fica salvo em dados/modelos_visuais.json; as opções abaixo são as do modelo em uso.
+# Para trocar de modelo, use o Estúdio. Se trocar este nome à mão pelo de outro modelo,
+# o painel aplica o visual dele ao abrir; um nome novo só renomeia o modelo em uso.
+modelo = "Padrão"
+largura = 1080
+altura = 1920
+# Moldura: imagem PNG por cima do vídeo, com a área do vídeo transparente.
+# O vídeo, o título e a legenda ficam dentro dessa área. "" = sem moldura.
+moldura = ""
+# "desfocado" = filme no centro com fundo borrado
+# "preto" = filme no centro com fundo preto
+# "preencher" = corta as laterais e ocupa a tela (ou a área da moldura) inteira
+layout = "desfocado"
+# Tamanho do filme: 1.0 = largura inteira (da tela ou da moldura), acima corta
+# as laterais, abaixo deixa o filme menor
+zoom = 1.25
+# Centro do filme na altura, em pixels (0 = automático)
+posicao_video = 0
+desfoque_fundo = 20
+escurecer_fundo = 0.12
+legendas = true
+palavras_por_bloco = 3
+max_caracteres_bloco = 18
+maiusculas = true
+fonte_arquivo = "C:/Windows/Fonts/ariblk.ttf"
+fonte_nome = "Arial Black"
+tamanho_legenda = 76
+cor_legenda = "FFFFFF"
+cor_destaque = "FFD400"
+contorno_legenda = 6
+# Onde fica a legenda: "automatico" (abaixo do filme se couber na área que os apps
+# não cobrem, senão sobre a parte de baixo dele), "abaixo" (sempre abaixo do filme)
+# ou "sobre" (sempre sobre a parte de baixo do filme)
+legenda_lugar = "automatico"
+# Centro vertical da legenda em pixels (0 = segue o legenda_lugar)
+posicao_legenda = 0
+# Texto fixo no topo. Variáveis: {filme} {ano} {parte}. \n quebra a linha. "" desativa.
+texto_topo = "{filme}\nParte {parte}"
+tamanho_topo = 60
+cor_topo = "FFFFFF"
+# Fonte do título ("" = a mesma da legenda)
+fonte_topo_arquivo = ""
+fonte_topo_nome = ""
+# Base do título em pixels (0 = automático, acima do filme)
+posicao_topo = 0
+barra_progresso = true
+cor_barra = "FFD400"
+fade = true
+normalizar_audio = true
+# libx264 (CPU, melhor qualidade) ou h264_amf / h264_nvenc / h264_qsv (placa de vídeo)
+codec = "libx264"
+preset = "medium"
+crf = 20
+
+[textos]
+# Variáveis: {filme} {ano} {ano_parenteses} {parte} {frase} {hashtags}
+# Texto escrito à mão no painel vale mais; depois o da IA (se ligada); depois estes.
+titulo = "{filme} - Parte {parte}"
+descricao = """{frase}
+
+{filme}{ano_parenteses} - Parte {parte}
+
+{hashtags}"""
+# Usados quando a IA escreveu os textos do corte ({titulo_ia} e {descricao_ia} vêm dela)
+titulo_ia = "{titulo_ia} | {filme} - Parte {parte}"
+descricao_ia = """{descricao_ia}
+
+{filme}{ano_parenteses} - Parte {parte}
+
+{hashtags}"""
+# Ordem nas postagens: hashtag do filme, as do <filme>.json, as da IA e depois estas.
+# O YouTube mostra só as 3 primeiras acima do título e o Instagram recebe no máximo 5.
+hashtags = ["#filmes", "#cinema", "#cenasdefilmes", "#filme"]
+hashtag_do_filme = true
+max_hashtags = 8
+
+# ---------------------------------------------------------------------
+# IA para títulos, descrições e hashtags (opcional)
+#  Qualquer API compatível com a da OpenAI. O padrão é o Ollama local
+#  (https://ollama.com): nada sai do seu PC. Depois de instalar, rode:
+#    ollama pull qwen3:4b-instruct-2507-q4_K_M
+#  Com um serviço na internet (OpenRouter, OpenAI...), a fala de cada corte
+#  é enviada para ele. Se a IA falhar, valem os modelos de [textos].
+# ---------------------------------------------------------------------
+[ia]
+ativo = false
+url = "http://127.0.0.1:11434/v1"
+modelo = "qwen3:4b-instruct-2507-q4_K_M"
+api_key = ""
+temperatura = 0.7
+tempo_limite_seg = 180
+
+# ---------------------------------------------------------------------
+# Upload-Post (opcional): serviço pago já auditado pelas redes, que posta
+# em PÚBLICO inclusive no TikTok. Seus vídeos e o acesso às contas passam
+# por ele (https://www.upload-post.com/privacy-policy).
+#  1. Crie a conta em upload-post.com e gere a chave da API
+#  2. Em app.upload-post.com/manage-users, crie um perfil e conecte as redes
+#  3. Preencha abaixo e, em cada rede que quiser, use envio = "upload_post"
+#  O TikTok não está no plano grátis.
+# ---------------------------------------------------------------------
+[upload_post]
+api_key = ""
+perfil = ""
+
+# ---------------------------------------------------------------------
+# Postagem à mão: Kwai, Bilibili (sem API aberta) e qualquer rede com
+# envio = "manual". No horário da agenda, o AutoCortes cria uma tarefa no
+# Início do painel com o vídeo e os textos no formato da rede; você posta
+# pelo app ou pelo site e marca como feito. Nada é enviado sozinho.
+# ---------------------------------------------------------------------
+[manual]
+# Pasta sincronizada (OneDrive, Google Drive...) que recebe uma cópia do
+# vídeo e um .txt com os textos de cada tarefa, numa subpasta por rede,
+# para pegar no celular. As cópias somem quando a tarefa é feita ou pulada.
+# "" = não copia.
+pasta = ""
+
+[metricas]
+# Lê visualizações, curtidas e comentários dos posts (YouTube e Instagram pela API oficial)
+ativo = true
+intervalo_horas = 6
+janela_dias = 14
+
+[agenda]
+# Horários (hora local do PC) das redes que ficarem sem horários próprios.
+# Cada rede tem os seus em [youtube], [tiktok], [instagram], [kwai] e [bilibili].
+horarios = ["12:00", "18:00", "21:00"]
+# Dias da semana em que posta: seg, ter, qua, qui, sex, sab, dom
+dias = ["seg", "ter", "qua", "qui", "sex", "sab", "dom"]
+# Atraso aleatório de 0 a N minutos em cada horário (sorteado uma vez por dia)
+variacao_minutos = 10
+# Se o PC estava desligado no horário, ainda posta até N minutos depois
+tolerancia_minutos = 90
+# Intervalo mínimo entre dois posts na mesma rede (conta os de fora da agenda e as tarefas à mão)
+intervalo_minimo_min = 60
+# Limite de segurança por rede em 24 horas
+maximo_por_dia = 6
+# Tentativas por horário quando a rede dá erro, e espera entre elas
+max_tentativas = 3
+espera_erro_min = 10
+# true segura as postagens sem parar a edição
+pausado = false
+
+# ---------------------------------------------------------------------
+# YouTube Shorts
+#  1. console.cloud.google.com > crie um projeto > ative "YouTube Data API v3"
+#  2. Tela de consentimento OAuth: público Externo, adicione seu e-mail como
+#     usuário de teste e depois PUBLIQUE o app (em modo "Teste" o login
+#     expira a cada 7 dias)
+#  3. Credenciais > Criar ID do cliente OAuth > "App para computador"
+#  4. Cole client_id e client_secret abaixo e rode:
+#       python -m autocortes auth youtube
+#  Projetos não auditados pelo YouTube enviam os vídeos como PRIVADOS.
+#  Para publicar como público é preciso pedir a auditoria da API.
+# ---------------------------------------------------------------------
+[youtube]
+ativo = true
+# "oficial" (API do YouTube), "upload_post" (veja [upload_post]) ou "manual" (veja [manual])
+envio = "oficial"
+# Porta do retorno do login (0 = escolhe uma livre)
+porta_redirect = 0
+client_id = ""
+client_secret = ""
+# public, unlisted ou private
+privacidade = "public"
+# 1 = Filmes e animação, 24 = Entretenimento
+categoria = "1"
+tags = ["filmes", "cinema", "shorts"]
+adicionar_shorts = true
+# O YouTube só recebe Shorts: vídeo vertical ou quadrado de até max_segundos
+# (de 15 a 180; o Short vai até 3 min). Cortes mais longos ficam para as outras redes.
+max_segundos = 180
+# Agenda desta rede. Lista vazia usa os horários e dias de [agenda].
+horarios = ["12:30", "15:00", "20:00"]
+dias = []
+
+# ---------------------------------------------------------------------
+# TikTok
+#  1. developers.tiktok.com > Manage apps > crie um app
+#  2. Adicione "Login Kit" e "Content Posting API" (ligue "Direct Post")
+#  3. Em Login Kit, plataforma Desktop, redirect URI:
+#       http://127.0.0.1:8765/callback/
+#  4. Cole client_key e client_secret e rode: python -m autocortes auth tiktok
+#  Apps NÃO auditados só publicam como SELF_ONLY (só você vê) e a conta
+#  precisa estar privada. As regras do TikTok não aprovam auditoria de
+#  ferramentas para postar nas próprias contas.
+#  modo = "rascunho" envia para a caixa de entrada do app e você finaliza
+#  a postagem no celular (limite de 5 pendentes por dia).
+# ---------------------------------------------------------------------
+[tiktok]
+ativo = true
+# "oficial" (só posts privados sem auditoria), "upload_post" (público; use
+# privacidade = "PUBLIC_TO_EVERYONE") ou "manual" (você posta pelo app)
+envio = "oficial"
+client_key = ""
+client_secret = ""
+porta_redirect = 8765
+# "direto" ou "rascunho"
+modo = "direto"
+# SELF_ONLY, MUTUAL_FOLLOW_FRIENDS, FOLLOWER_OF_CREATOR ou PUBLIC_TO_EVERYONE
+privacidade = "SELF_ONLY"
+permitir_comentarios = true
+permitir_duet = false
+permitir_stitch = false
+capa_ms = 1000
+horarios = ["12:00", "18:30", "21:00"]
+dias = []
+
+# ---------------------------------------------------------------------
+# Instagram Reels (API do Instagram com Login do Facebook)
+#  1. Conta do Instagram profissional (Criador ou Empresa) vinculada a
+#     uma Página do Facebook
+#  2. developers.facebook.com > Criar app (Empresa) > adicione o produto
+#     Instagram (API com login do Facebook)
+#  3. Cole app_id e app_secret e rode: python -m autocortes auth instagram
+#     (o comando explica como gerar o token no Graph API Explorer)
+#  Com o app em modo de desenvolvimento funciona para contas que têm
+#  função no app (a sua), sem App Review.
+# ---------------------------------------------------------------------
+[instagram]
+ativo = true
+# "oficial" (API do Instagram), "upload_post" ou "manual" (você posta pelo app)
+envio = "oficial"
+app_id = ""
+app_secret = ""
+versao_api = "v26.0"
+compartilhar_no_feed = true
+capa_ms = 1000
+# Reel de teste: aparece primeiro só para quem não segue a conta.
+# trial_graduacao = "SS_PERFORMANCE" libera para os seguidores se for bem; "MANUAL" você libera no app.
+trial_reels = false
+trial_graduacao = "SS_PERFORMANCE"
+# Posta o mesmo Reel na Página do Facebook ligada à conta. Pela API oficial:
+# conecte de novo com a permissão pages_manage_posts, adicione ao app da Meta
+# o caso de uso de gerenciar a Página e deixe o app no modo publicado (em
+# desenvolvimento, o post na Página só aparece para quem tem função no app).
+# Se a Central de Contas já compartilha seus Reels no Facebook, desligue lá
+# para não sair repetido. Com envio = "manual", ligue "Compartilhar no
+# Facebook" no app ao postar.
+pagina_facebook = false
+# Só no Upload-Post com mais de uma Página conectada: o ID da Página
+facebook_pagina_id = ""
+horarios = ["12:15", "19:00"]
+dias = []
+
+# ---------------------------------------------------------------------
+# Kwai: não tem API de postagem para criadores nem envio pelo site.
+# No horário, o AutoCortes cria uma tarefa com o vídeo e a legenda, e você
+# posta pelo app do Kwai no celular (veja [manual]).
+# ---------------------------------------------------------------------
+[kwai]
+ativo = false
+envio = "manual"
+horarios = ["12:00", "19:30"]
+dias = []
+
+# ---------------------------------------------------------------------
+# Bilibili: a API de envio (Open Platform) é só para empresas chinesas
+# cadastradas. No horário, o AutoCortes cria uma tarefa com o vídeo, o
+# título, a descrição e as tags, e você envia em
+#   https://member.bilibili.com/platform/upload/video/frame
+# Marque o tipo 转载 (repost) e informe a fonte: o filme não é obra sua.
+# ---------------------------------------------------------------------
+[bilibili]
+ativo = false
+envio = "manual"
+# 08:00 em Brasília = 19:00 em Pequim
+horarios = ["08:00"]
+dias = []
+# Tags fixas (sem #), somadas às hashtags do post
+tags = ["电影", "影视剪辑", "电影片段"]
