@@ -125,12 +125,15 @@ def cobertura(cfg: Config, conn: sqlite3.Connection) -> dict:
     """Por quantos dias o conteúdo atual sustenta a agenda."""
     ativas = cfg.plataformas_ativas()
     uma = lambda sql, *p: conn.execute(sql, p).fetchone()[0] or 0  # noqa: E731
+    # as contas de "quantos cortes um filme rende" são só dos filmes: uma pauta rende um vídeo
     candidatos = uma("SELECT COUNT(*) FROM cortes c JOIN filmes f ON f.id=c.filme_id "
-                     "WHERE c.status='candidato' AND f.status='analisado'")
+                     "WHERE c.status='candidato' AND f.status='analisado' AND f.tipo='filme'")
     revisao = uma("SELECT COUNT(*) FROM cortes WHERE status='revisao'")
-    filmes_novos = uma("SELECT COUNT(*) FROM filmes WHERE status IN ('novo', 'analisando')")
-    analisados = uma("SELECT COUNT(*) FROM filmes WHERE status='analisado'")
-    total_cortes = uma("SELECT COUNT(*) FROM cortes c JOIN filmes f ON f.id=c.filme_id WHERE f.status='analisado'")
+    filmes_novos = uma("SELECT COUNT(*) FROM filmes WHERE tipo='filme' AND status IN ('novo', 'analisando')")
+    analisados = uma("SELECT COUNT(*) FROM filmes WHERE tipo='filme' AND status='analisado'")
+    total_cortes = uma("SELECT COUNT(*) FROM cortes c JOIN filmes f ON f.id=c.filme_id "
+                       "WHERE f.status='analisado' AND f.tipo='filme'")
+    pautas_novas = uma("SELECT COUNT(*) FROM filmes WHERE tipo='pauta' AND status='novo'")
     media = total_cortes / analisados if analisados else min(20, int(cfg["cortes"]["max_por_filme"]))
     estimados = int(round(filmes_novos * media))
 
@@ -141,7 +144,7 @@ def cobertura(cfg: Config, conn: sqlite3.Connection) -> dict:
         if sem_cortes_possiveis(cfg, rede):  # já avisado no painel; não puxa a conta das outras redes
             por_rede[rede] = {"na_fila": 0, "por_dia": round(taxa, 2), "dias": None}
             continue
-        disponiveis = na_fila + revisao + candidatos + estimados
+        disponiveis = na_fila + revisao + candidatos + estimados + pautas_novas
         d = disponiveis / taxa if taxa else None
         por_rede[rede] = {"na_fila": na_fila, "por_dia": round(taxa, 2), "dias": None if d is None else round(d, 1)}
         if d is not None:
@@ -152,6 +155,7 @@ def cobertura(cfg: Config, conn: sqlite3.Connection) -> dict:
         "revisao": revisao,
         "filmes_novos": filmes_novos,
         "estimados": estimados,
+        "pautas": pautas_novas,
         "consumo_diario": round(agenda.consumo_diario(cfg), 2),
         "por_rede": por_rede,
     }

@@ -132,7 +132,7 @@ def _apagar_arquivos(arquivo: str | None) -> None:
 
 def _corte(conn: sqlite3.Connection, corte_id) -> sqlite3.Row:
     linha = conn.execute(
-        "SELECT c.*, f.titulo AS filme_titulo, f.ano AS filme_ano, f.caminho AS filme_caminho "
+        "SELECT c.*, f.titulo AS filme_titulo, f.ano AS filme_ano, f.caminho AS filme_caminho, f.tipo AS filme_tipo "
         "FROM cortes c JOIN filmes f ON f.id = c.filme_id WHERE c.id=?",
         (int(corte_id),),
     ).fetchone()
@@ -504,7 +504,8 @@ def salvar_config(ctx: Contexto):
 def _filme_de_exemplo(conn: sqlite3.Connection) -> sqlite3.Row | None:
     """O filme analisado mais recente (usado na prévia e no Estúdio)."""
     return conn.execute(
-        "SELECT id, caminho, titulo, ano, duracao FROM filmes WHERE status='analisado' ORDER BY id DESC LIMIT 1"
+        "SELECT id, caminho, titulo, ano, duracao FROM filmes WHERE tipo='filme' AND status='analisado' "
+        "ORDER BY id DESC LIMIT 1"
     ).fetchone()
 
 
@@ -878,8 +879,11 @@ def _corte_json(c: sqlite3.Row, ultima: dict) -> dict:
         detalhes = json.loads(c["detalhes"] or "{}")
     except ValueError:
         detalhes = {}
+    chaves = set(c.keys())
     return {
         "id": c["id"], "filme_id": c["filme_id"], "filme": c["filme_titulo"], "parte": c["parte"],
+        # vídeo criado do zero: o card não mostra trecho nem nota, que só fazem sentido para corte de filme
+        "criado": bool(detalhes.get("criado")) or (c["filme_tipo"] == "pauta" if "filme_tipo" in chaves else False),
         "inicio": c["inicio"], "fim": c["fim"], "duracao": round(c["fim"] - c["inicio"], 1),
         "pontuacao": round(c["pontuacao"], 2), "detalhes": detalhes, "frase": c["frase"], "status": c["status"],
         "prioridade": c["prioridade"], "erro": c["erro"], "renderizado_em": c["renderizado_em"],
@@ -907,7 +911,8 @@ def listar_cortes(ctx: Contexto):
     # a tarefa à mão ainda não foi postada: o corte continua em "Na fila" até você marcar
     ultima, feitas = _postagens_por_corte(conn, set(planejador.status_concluidos(cfg)) - {"aguardando"})
 
-    sql = ("SELECT c.*, f.titulo AS filme_titulo, f.ano AS filme_ano FROM cortes c JOIN filmes f ON f.id = c.filme_id"
+    sql = ("SELECT c.*, f.titulo AS filme_titulo, f.ano AS filme_ano, f.tipo AS filme_tipo "
+           "FROM cortes c JOIN filmes f ON f.id = c.filme_id"
            + (" WHERE c.filme_id = ?" if filme else ""))
     contagem = {a: 0 for a in ABAS}
     itens = []
@@ -946,6 +951,7 @@ def _corte_detalhe(ctx: Contexto, corte_id) -> dict:
     c = _corte(conn, corte_id)
     ultima, _ = _postagens_por_corte(conn, set(planejador.status_concluidos(cfg)))
     dados = _corte_json(c, ultima.get(c["id"], {}))
+    dados["criado"] = c["filme_tipo"] == "pauta"
     filme = {"caminho": c["filme_caminho"], "titulo": c["filme_titulo"], "ano": c["filme_ano"]}
     base = dict(c)
     if not base.get("parte"):  # candidato: mostra o número que a parte deve receber
@@ -1022,6 +1028,20 @@ def acao_corte(ctx: Contexto, corte_id):
     conn = ctx.conn
     c = _corte(conn, corte_id)
     status, acao = c["status"], ctx.corpo.get("acao")
+    criado = c["filme_tipo"] == "pauta"  # vídeo criado do zero: quem regera é a pauta, não o editor de cortes
+    if criado and acao in ("reeditar", "editar_agora", "restaurar"):
+        raise ErroHttp(400, "Este vídeo foi criado de uma pauta: use \"Criar de novo\" para gerar outro")
+    if acao == "recriar":
+        _exigir(criado, "Só vídeo criado de uma pauta pode ser gerado de novo")
+        _apagar_arquivos(c["arquivo"])
+        _resolver_tarefas_do_corte(ctx, c["id"], pular="vídeo vai ser criado de novo")
+        conn.execute("UPDATE cortes SET status='descartado', arquivo=NULL WHERE id=?", (c["id"],))
+        conn.execute(
+            "UPDATE filmes SET status='novo', esgotado=0, erro=NULL, tentativas=0, atualizado_em=? WHERE id=?",
+            (time.time(), c["filme_id"]),
+        )
+        log.info("Pauta '%s' vai gerar outro vídeo (o corte %s foi descartado)", c["filme_titulo"], c["id"])
+        return _corte_detalhe(ctx, c["id"])
     if acao == "aprovar":
         _exigir(status == "revisao", "Só cortes aguardando aprovação podem ser aprovados")
         conn.execute("UPDATE cortes SET status='pronto' WHERE id=?", (c["id"],))
@@ -1250,7 +1270,8 @@ def listar_filmes(ctx: Contexto):
     }
     itens = []
     for f in conn.execute(
-        "SELECT * FROM filmes ORDER BY CASE status WHEN 'analisando' THEN 0 WHEN 'novo' THEN 1 WHEN 'erro' THEN 2 "
+        "SELECT * FROM filmes WHERE tipo='filme' "
+        "ORDER BY CASE status WHEN 'analisando' THEN 0 WHEN 'novo' THEN 1 WHEN 'erro' THEN 2 "
         "ELSE 3 END, id DESC"
     ):
         caminho = Path(f["caminho"])

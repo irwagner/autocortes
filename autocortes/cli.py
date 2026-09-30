@@ -18,7 +18,8 @@ Comandos principais:
   auth <rede>           conecta youtube, tiktok ou instagram pelo terminal (Kwai e Bilibili são à mão)
   rodar                 loop contínuo sem painel (modo terminal)
   status                resumo de filmes, cortes e próximas postagens
-  criar [pauta]         gera um vídeo do zero (narração + imagens) a partir de uma pauta
+  criar [pauta]         gera um vídeo do zero (narração + imagens) e põe na fila
+  criar --tema "..."    a IA escreve a pauta do assunto e gera o vídeo
 
 Comandos manuais:
   baixar                baixa whisper.cpp e modelos agora
@@ -192,51 +193,81 @@ def cmd_painel(args) -> int:
     )
 
 
+EXEMPLO_PAUTA = """titulo: Comece pequeno
+termos: mar ao amanhecer, montanha com neblina, cidade de noite
+topo: COMECE HOJE
+voz: pt-BR-AntonioNeural
+---
+Ninguém constrói nada grande em um dia.
+Você constrói em mil dias pequenos, quase iguais, quase chatos.
+[pausa: 1s] O segredo é não deixar de aparecer.
+"""
+
+
 def cmd_criar(args) -> int:
     from . import criacao
 
     cfg = _carregar(args)
+    conn = _conn(cfg)
     pasta = criacao.pasta_pautas(cfg)
+    pasta.mkdir(parents=True, exist_ok=True)
+    criacao.sincronizar(cfg, conn)
+
+    if args.tema:
+        try:
+            arquivo = criacao.pauta_do_tema(cfg, conn, args.tema)
+        except criacao.ErroCriacao as e:
+            print(f"Erro: {e}", file=sys.stderr)
+            return 1
+        print(f"A IA escreveu a pauta: {arquivo}")
+
+    alvos = []
     if args.pauta:
         alvo = Path(args.pauta)
-        if not alvo.is_absolute():
-            alvo = alvo if alvo.is_file() else pasta / alvo
+        if not alvo.is_absolute() and not alvo.is_file():
+            alvo = pasta / alvo
         if not alvo.is_file() and alvo.suffix != ".txt":
             alvo = alvo.with_suffix(".txt")
-        arquivos = [alvo]
-    else:
-        arquivos = criacao.pautas(cfg)
-    if not arquivos or not arquivos[0].is_file():
-        pasta.mkdir(parents=True, exist_ok=True)
-        exemplo = pasta / "exemplo.txt"
-        if not exemplo.exists():
-            exemplo.write_text(
-                "titulo: Comece pequeno\n"
-                "termos: mar ao amanhecer, montanha com neblina, cidade de noite\n"
-                "voz: pt-BR-AntonioNeural\n"
-                "---\n"
-                "Ninguém constrói nada grande em um dia.\n"
-                "Você constrói em mil dias pequenos, quase iguais, quase chatos.\n"
-                "[pausa: 1s] O segredo é não deixar de aparecer.\n",
-                encoding="utf-8",
-            )
-            print(f"Criei uma pauta de exemplo em {exemplo}")
-        print(f"Escreva suas pautas em {pasta} e rode de novo.")
-        return 1
-
-    for arquivo in arquivos:
-        try:
-            pauta = criacao.ler_pauta(arquivo)
-            print(f"'{pauta.titulo}' ({arquivo.name}): narrando e montando...")
-            r = criacao.criar(cfg, pauta)
-        except criacao.ErroCriacao as e:
-            print(f"Erro em {arquivo.name}: {e}", file=sys.stderr)
+        if not alvo.is_file():
+            print(f"Não achei a pauta {alvo}", file=sys.stderr)
             return 1
-        print(f"  vídeo: {r.video}")
-        print(f"  {r.duracao:.1f} s, {r.palavras} palavras, {len(r.clipes)} clipe(s)")
-        if r.creditos:
-            print(f"  crédito para a descrição: {r.creditos}")
-    return 0
+        linha = conn.execute("SELECT * FROM filmes WHERE tipo='pauta' AND caminho=?",
+                             (str(alvo.resolve()),)).fetchone()
+        if linha is None:
+            print(f"A pauta {alvo.name} não entrou no banco (confira o formato)", file=sys.stderr)
+            return 1
+        if linha["status"] != "novo":  # pauta já usada: gera outra parte a pedido
+            conn.execute("UPDATE filmes SET status='novo', esgotado=0, erro=NULL, tentativas=0 WHERE id=?",
+                         (linha["id"],))
+        alvos = [conn.execute("SELECT * FROM filmes WHERE id=?", (linha["id"],)).fetchone()]
+    else:
+        alvos = conn.execute("SELECT * FROM filmes WHERE tipo='pauta' AND status='novo' ORDER BY id").fetchall()
+
+    if not alvos:
+        exemplo = pasta / "exemplo.txt"
+        if not criacao.pautas(cfg) and not exemplo.exists():
+            exemplo.write_text(EXEMPLO_PAUTA, encoding="utf-8")
+            print(f"Criei uma pauta de exemplo em {exemplo}")
+            print("Edite e rode de novo, ou use: criar --tema \"seu assunto\"")
+            return 1
+        print("Nenhuma pauta esperando. Escreva uma em "
+              f"{pasta}, ou use: criar --tema \"seu assunto\"")
+        return 0
+
+    falhas = 0
+    for linha in alvos:
+        print(f"'{linha['titulo']}': narrando e montando...")
+        corte_id = criacao.criar_do_banco(cfg, conn, linha)
+        if corte_id is None:
+            atual = conn.execute("SELECT erro FROM filmes WHERE id=?", (linha["id"],)).fetchone()
+            print(f"  não deu: {(atual['erro'] if atual else '') or 'veja o registro'}", file=sys.stderr)
+            falhas += 1
+            continue
+        corte = conn.execute("SELECT * FROM cortes WHERE id=?", (corte_id,)).fetchone()
+        print(f"  vídeo: {corte['arquivo']}")
+        print(f"  {corte['fim']:.1f} s, na fila como corte {corte_id}"
+              + (" (aguardando aprovação)" if corte["status"] == "revisao" else ""))
+    return 1 if falhas else 0
 
 
 def cmd_status(args) -> int:
@@ -438,7 +469,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("rodar", help="loop contínuo").set_defaults(func=cmd_rodar)
     sub.add_parser("status", help="resumo geral").set_defaults(func=cmd_status)
     p = sub.add_parser("criar", help="gera um vídeo do zero a partir de uma pauta")
-    p.add_argument("pauta", nargs="?", help="arquivo da pauta (padrão: todas as de pautas/)")
+    p.add_argument("pauta", nargs="?", help="arquivo da pauta (padrão: todas as que estão esperando)")
+    p.add_argument("--tema", help="a IA escreve a pauta deste assunto antes de criar")
     p.set_defaults(func=cmd_criar)
     p = sub.add_parser("analisar", help="analisa filmes novos agora")
     p.add_argument("--filme", type=int, help="id do filme (veja em status)")

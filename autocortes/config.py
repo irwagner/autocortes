@@ -192,6 +192,10 @@ PADRAO: dict = {
     "criacao": {
         # vídeos gerados do zero (motivacional, frases, curiosidades), sem partir de um filme
         "ativo": False,
+        # quem sai primeiro quando falta estoque: "filmes" (os cortes) ou "criacao" (as pautas)
+        "prioridade": "filmes",
+        # duração que a IA tenta atingir no roteiro que ela escreve
+        "duracao_alvo_seg": 40,
         "fps": 30,
         # segundos de imagem depois da última palavra (dá um respiro antes de cortar)
         "cauda_seg": 0.6,
@@ -593,6 +597,8 @@ def validar(cfg: Config) -> None:
         erros.append("[manual].pasta tem caracteres que não valem num caminho do Windows")
     numero("ia", "temperatura", 0, 2)
     numero("ia", "tempo_limite_seg", 10, 1800)
+    opcao("criacao", "prioridade", ("filmes", "criacao"))
+    numero("criacao", "duracao_alvo_seg", 10, 180)
     numero("criacao", "fps", 24, 60)
     numero("criacao", "cauda_seg", 0, 5)
     numero("criacao", "volume_musica", 0, 1)

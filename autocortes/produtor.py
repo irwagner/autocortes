@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import analise, edicao, ferramentas, ia, modelos_visuais, selecao
+from . import analise, criacao, edicao, ferramentas, ia, modelos_visuais, selecao
 from .config import Config
 from .db import agora, transacao
 from .midia import Interrompido
@@ -37,7 +37,8 @@ def varrer_biblioteca(cfg: Config, conn: sqlite3.Connection) -> int:
             continue  # arquivo pequeno demais ou ainda sendo copiado
         encontrados[str(p.resolve())] = p
 
-    existentes = {r["caminho"]: r for r in conn.execute("SELECT id, caminho, status, titulo FROM filmes")}
+    existentes = {r["caminho"]: r for r in conn.execute(
+        "SELECT id, caminho, status, titulo FROM filmes WHERE tipo='filme'")}
     novos = 0
     t = agora()
     for caminho, p in encontrados.items():
@@ -123,6 +124,7 @@ class Produtor:
         self._aviso_sem_conteudo = 0.0
         self._ia_pausa_ate = 0.0  # depois de uma falha da IA, espera antes de pedir de novo
         self._ia_falhou: dict[int, float] = {}
+        self._criacao_pausa_ate = 0.0  # falha na criação de vídeo: espera antes de tentar outra pauta
 
     def pedir_varredura(self) -> None:
         self._ultima_varredura = 0.0
@@ -156,7 +158,7 @@ class Produtor:
             prioridade = "f.id ASC"
         return conn.execute(
             "SELECT c.* FROM cortes c JOIN filmes f ON f.id = c.filme_id "
-            f"WHERE c.status = 'candidato' AND f.status = 'analisado' "
+            f"WHERE c.status = 'candidato' AND f.status = 'analisado' AND f.tipo = 'filme' "
             f"ORDER BY c.prioridade DESC, {prioridade}, {ordem} LIMIT 1"
         ).fetchone()
 
@@ -166,20 +168,28 @@ class Produtor:
         if time.time() - self._ultima_varredura > float(self.cfg["geral"]["varrer_a_cada_min"]) * 60:
             ATIVIDADES.definir("Procurando filmes novos na pasta")
             varrer_biblioteca(self.cfg, conn)
+            if self.cfg["criacao"]["ativo"]:
+                criacao.sincronizar(self.cfg, conn)
             self._ultima_varredura = time.time()
 
         buffer = int(self.cfg["geral"]["buffer_cortes"])
         estoque = self.prontos_pendentes(conn)
         falta_estoque = estoque < buffer
+        criar_primeiro = self.cfg["criacao"]["ativo"] and self.cfg["criacao"]["prioridade"] == "criacao"
+        if falta_estoque and criar_primeiro and self.criar_video(conn):
+            return True
         if falta_estoque:
             corte = self.proximo_candidato(conn)
             if corte is not None:
                 self.renderizar(conn, corte)
                 return True
+        if falta_estoque and not criar_primeiro and self.criar_video(conn):
+            return True
 
         # filmes novos (com espera crescente depois de falhas de download)
         filme = conn.execute(
-            "SELECT * FROM filmes WHERE status='novo' AND atualizado_em + tentativas * 600 <= ? ORDER BY id LIMIT 1",
+            "SELECT * FROM filmes WHERE tipo='filme' AND status='novo' "
+            "AND atualizado_em + tentativas * 600 <= ? ORDER BY id LIMIT 1",
             (agora(),),
         ).fetchone()
         if filme is not None:
@@ -198,12 +208,15 @@ class Produtor:
             return True
 
         if falta_estoque:
-            ATIVIDADES.definir("Sem trechos novos: adicione filmes na pasta")
+            criando = self.cfg["criacao"]["ativo"]
+            ATIVIDADES.definir("Sem trechos novos: adicione filmes na pasta"
+                               + (" ou temas em pautas/temas.txt" if criando else ""))
             if time.time() - self._aviso_sem_conteudo > 6 * 3600:
                 self._aviso_sem_conteudo = time.time()
+                extra = f" (nem pautas em {criacao.pasta_pautas(self.cfg)})" if criando else ""
                 log.warning(
-                    "Todos os filmes já foram aproveitados. Coloque filmes novos em %s para o loop continuar postando.",
-                    self.cfg.pasta_filmes,
+                    "Todos os filmes já foram aproveitados%s. Coloque filmes novos em %s para o loop continuar "
+                    "postando.", extra, self.cfg.pasta_filmes,
                 )
         else:
             ATIVIDADES.definir(f"Estoque completo: {estoque} corte(s) editado(s) aguardando postagem")
@@ -224,7 +237,8 @@ class Produtor:
         feitos = status_ocupam_horario(self.cfg) + ("enviando",)  # a tarefa à mão já mostra o texto
         linhas = conn.execute(
             "SELECT c.id, c.parte, f.titulo AS filme_titulo FROM cortes c JOIN filmes f ON f.id = c.filme_id "
-            "WHERE c.status IN ('revisao', 'pronto') AND c.ia_textos IS NULL "
+            # vídeo criado já sai com os textos da pauta: a IA de cortes não sabe falar dele
+            "WHERE f.tipo = 'filme' AND c.status IN ('revisao', 'pronto') AND c.ia_textos IS NULL "
             "AND COALESCE(c.titulo_custom, '') = '' AND COALESCE(c.descricao_custom, '') = '' "
             # um corte que já saiu numa rede fica com o mesmo texto nas outras
             f"AND NOT EXISTS (SELECT 1 FROM postagens p WHERE p.corte_id = c.id AND p.status IN ({','.join('?' * len(feitos))})) "
@@ -241,10 +255,44 @@ class Produtor:
             self._falha_ia(corte["id"], e)
         return True
 
+    # ------------------------------------------------------------ vídeos criados do zero
+    def criar_video(self, conn: sqlite3.Connection) -> bool:
+        """Transforma a próxima pauta (ou o próximo tema da fila) num vídeo. False = não havia o que criar."""
+        if not self.cfg["criacao"]["ativo"] or time.time() < self._criacao_pausa_ate:
+            return False
+        pauta = criacao.proxima_pauta(self.cfg, conn)
+        if pauta is None:
+            tema = criacao.tema_pendente(self.cfg, conn)
+            if tema is None:
+                return False
+            try:
+                criacao.pauta_do_tema(self.cfg, conn, tema)
+            except criacao.ErroCriacao as e:
+                self._criacao_pausa_ate = time.time() + (600 if e.tipo != "config" else 3600)
+                log.warning("Não consegui preparar a pauta do tema '%s': %s", tema, e)
+                return False
+            pauta = criacao.proxima_pauta(self.cfg, conn)
+            if pauta is None:
+                return False
+        with TRAVA_EDICAO:  # uma produção de vídeo por vez, como a edição dos cortes
+            ATIVIDADES.definir(f"Criando o vídeo '{pauta['titulo']}'")
+            try:
+                if criacao.criar_do_banco(self.cfg, conn, pauta, self.parar) is None:
+                    self._criacao_pausa_ate = time.time() + 300
+            except Interrompido:
+                conn.execute("UPDATE filmes SET status='novo', atualizado_em=? WHERE id=?",
+                             (agora(), pauta["id"]))
+                raise
+            except Exception as e:  # noqa: BLE001 (uma pauta ruim não pode derrubar o motor)
+                log.error("Falha ao criar o vídeo de '%s': %s", pauta["titulo"], e, exc_info=True)
+                conn.execute("UPDATE filmes SET status='erro', erro=?, atualizado_em=? WHERE id=?",
+                             (str(e)[:500], agora(), pauta["id"]))
+        return True
+
     def minerar_mais(self, conn: sqlite3.Connection):
         """Acabaram os candidatos: procura mais trechos nos filmes já analisados (usa o cache da análise)."""
         filme = conn.execute(
-            "SELECT * FROM filmes WHERE status='analisado' AND esgotado=0 "
+            "SELECT * FROM filmes WHERE tipo='filme' AND status='analisado' AND esgotado=0 "
             "ORDER BY (SELECT COUNT(*) FROM cortes c WHERE c.filme_id = filmes.id) ASC, id LIMIT 1"
         ).fetchone()
         if filme is None:

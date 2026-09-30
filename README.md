@@ -149,9 +149,10 @@ Atualizado em setembro de 2026.
 | Agenda por rede, fila e planejador | ✅ Pronto e testado de ponta a ponta em simulação |
 | Painel no navegador (9 telas, API local com 59 rotas) | ✅ Pronto e testado no Edge |
 | Perfis de nicho: vários nichos na mesma instalação, cada um com suas contas | ✅ Pronto e testado (dois perfis abertos ao mesmo tempo, de verdade) |
-| Vídeos criados do zero: narração, imagens de fundo e legenda no tempo da voz | ✅ Pronto e testado de ponta a ponta pelo comando `criar` (narração no serviço real) |
+| Vídeos criados do zero: narração, imagens de fundo e legenda no tempo da voz | ✅ Pronto e testado de ponta a ponta (narração no serviço real) |
 | Pauta escrita à mão (`pautas/*.txt`) | ✅ Pronta e testada |
-| IA escrevendo a pauta sozinha, com agenda e painel | 🚧 A fazer (hoje o vídeo criado sai pelo terminal, fora da fila) |
+| IA escrevendo a pauta, fila de temas e vídeo criado entrando na agenda | ✅ Pronto e testado com o Ollama de verdade (tema → roteiro → vídeo → fila → post) |
+| Tela do painel para as pautas e os temas | 🚧 A fazer (hoje as pautas são arquivos, e o vídeo criado já aparece em Cortes) |
 | Moldura, modelos visuais e aba Estúdio | ✅ Prontos; testados com o episódio de The Great e conferidos quadro a quadro |
 | IA opcional para título, descrição e hashtags | 🧪 Pronta; testada com um servidor que imita o Ollama, ainda não com um modelo real |
 | Métricas dos posts (YouTube e Instagram) | 🧪 Prontas; testadas contra um servidor simulado |
@@ -291,15 +292,40 @@ termos: mar ao amanhecer, montanha com neblina, cidade de noite
 voz: pt-BR-AntonioNeural
 musica: calma.mp3
 topo: COMECE HOJE
+hashtags: motivacao, disciplina
 ---
 Ninguém constrói nada grande em um dia.
 Você constrói em mil dias pequenos, quase iguais, quase chatos.
 [pausa: 1s] O segredo é não deixar de aparecer.
 ```
 
-Só o roteiro (depois do `---`) é obrigatório. Cada quebra de linha vira um respiro na narração, e `[pausa: 2s]` cria um silêncio maior num ponto exato. `termos` é o que buscar como imagem de fundo (sem isso, o título é usado), e `topo` é o texto queimado no alto do vídeo.
+Nada no cabeçalho é obrigatório. Cada quebra de linha vira um respiro na narração, e `[pausa: 2s]` cria um silêncio maior num ponto exato. `termos` é o que buscar como imagem de fundo (sem isso, o título é usado), e `topo` é o texto queimado no alto do vídeo.
 
-Para gerar: `python -m autocortes criar` (todas as pautas) ou `python -m autocortes criar comece-pequeno`. Sem nenhuma pauta, ele cria um exemplo para você editar.
+**O roteiro também é opcional:** uma pauta com só um tema (ou um arquivo de uma linha) é completada pela IA, que escreve o roteiro, os termos de busca, o texto do topo e os textos do post. O resultado é gravado no próprio arquivo, então você lê, ajusta e manda gerar de novo se quiser.
+
+### Do tema ao post, sozinho
+
+Com `[criacao].ativo = true`, o motor trata as pautas como mais uma fonte de conteúdo: quando o estoque está baixo, ele pega a próxima pauta, cria o vídeo e põe na fila da agenda, junto com os cortes de filme. `[criacao].prioridade` decide quem sai primeiro quando há os dois.
+
+Para ele nunca ficar sem assunto, escreva uma lista em `pautas/temas.txt`, um tema por linha:
+
+```
+o poder do primeiro passo
+rotina de quem acorda cedo
+por que disciplina vence motivação
+```
+
+O motor consome um tema por vez, pede o roteiro à IA, grava a pauta e gera o vídeo. O tema usado é comentado no arquivo (`# feito: ...`), então você vê o que já saiu e pode acrescentar mais quando quiser.
+
+No terminal, os mesmos caminhos:
+
+| Comando | O que faz |
+|---|---|
+| `criar` | gera as pautas que estão esperando e põe na fila |
+| `criar comece-pequeno` | gera essa pauta (de novo, se já tiver saído) |
+| `criar --tema "disciplina vence talento"` | a IA escreve a pauta do assunto e já gera o vídeo |
+
+O vídeo criado aparece em Cortes como qualquer outro, com o selo "Criado do zero", e vai para as redes pela mesma agenda. O que muda: ele não tem trecho de origem nem nota de seleção, o título e a descrição do post vêm da pauta (não dos modelos, que falam de filme), e em vez de "Editar de novo" o botão é **Criar de novo**, que descarta o vídeo e manda a pauta gerar outro.
 
 ### Narração
 

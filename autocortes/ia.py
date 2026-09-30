@@ -203,6 +203,110 @@ def gerar_textos(cfg: Config, filme: dict, corte: dict, frases: list[Frase]) -> 
     return textos
 
 
+# ---------------------------------------------------------------- pauta de vídeo criado
+
+ESQUEMA_PAUTA = {
+    "type": "object",
+    "properties": {
+        "titulo": {"type": "string"},
+        "roteiro": {"type": "string"},
+        "termos": {"type": "array", "items": {"type": "string"}},
+        "topo": {"type": "string"},
+        "descricao": {"type": "string"},
+        "hashtags": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["titulo", "roteiro", "termos", "topo", "descricao", "hashtags"],
+    "additionalProperties": False,
+}
+
+SISTEMA_PAUTA = (
+    "Você escreve roteiros curtos para vídeos verticais de redes sociais (Shorts, Reels, TikTok), "
+    "em português do Brasil, para serem lidos em voz alta. Escreva de forma direta e natural, sem "
+    "exageros e sem clichê de coach. Responda somente com um JSON válido no formato pedido."
+)
+# fim de frase seguido de espaço: usado para quebrar o roteiro por frase quando vem tudo junto
+_FIM_DE_FRASE = re.compile(r"([.!?…])\s+")
+
+
+def _regras_pauta(segundos: int, palavras: int) -> str:
+    return f"""Regras:
+- roteiro: o texto que a voz vai ler, de {int(palavras * 0.8)} a {int(palavras * 1.2)} palavras
+  (perto de {segundos} segundos de fala). Escreva o texto completo, não um resumo.
+  Uma frase por linha, na ordem da narração. Sem emojis, sem hashtags, sem títulos, sem marcação.
+  A primeira linha tem que prender em até 3 segundos. A última fecha a ideia (sem "se inscreva").
+  Para um silêncio de efeito, escreva [pausa: 1s] no meio do texto.
+- titulo: até 60 caracteres, sem emojis e sem hashtags.
+- topo: até 22 caracteres, em letras maiúsculas, o texto que fica escrito no alto do vídeo.
+- termos: de 3 a 6 buscas de imagem de fundo, em INGLÊS, concretas e visuais (ex.: "sunrise over the sea",
+  "man running at night"). Nada abstrato, nada de texto na imagem, nada de pessoa famosa.
+- descricao: 1 ou 2 frases para a descrição do post, mais uma pergunta curta para o público comentar.
+- hashtags: de 3 a 5, específicas do tema, sem espaços."""
+
+
+def _validar_pauta(bruto: str, tema: str) -> dict:
+    achado = _BLOCO_JSON.search(bruto)
+    if not achado:
+        raise ErroIA("a IA não devolveu JSON", do_corte=True)
+    try:
+        dados = json.loads(achado.group(0))
+    except json.JSONDecodeError as e:
+        raise ErroIA("a IA devolveu um JSON inválido", do_corte=True) from e
+    if not isinstance(dados, dict):
+        raise ErroIA("a IA devolveu um JSON fora do formato", do_corte=True)
+
+    roteiro = str(dados.get("roteiro") or "").replace("\r", "")
+    # modelo pequeno às vezes escreve a barra e o n como texto: a voz leria "barra n" em voz alta
+    roteiro = re.sub(r"\\+[nr]", "\n", roteiro)
+    roteiro = re.sub(r"^\s*[-*•]\s*", "", roteiro, flags=re.M)      # marcador de lista
+    roteiro = re.sub(r"(?<![\w#])#\w+", "", roteiro)                # hashtag na narração não se fala
+    roteiro = re.sub(r"[ \t]{2,}", " ", roteiro)
+    roteiro = "\n".join(linha.strip() for linha in roteiro.split("\n") if linha.strip())
+    if roteiro.count("\n") == 0 and len(_FIM_DE_FRASE.findall(roteiro)) >= 2:
+        # veio tudo numa linha: quebrar por frase dá o respiro entre elas na narração
+        roteiro = _FIM_DE_FRASE.sub(lambda m: m.group(1) + "\n", roteiro).strip()
+    if len(roteiro.split()) < 15:
+        raise ErroIA("a IA devolveu um roteiro curto demais", do_corte=True)
+    if re.search(r"https?://|www\.", roteiro, re.I):
+        raise ErroIA("a IA colocou links no roteiro", do_corte=True)
+
+    limpar_pontas = " \"'“”«»-–—\n\t{}[]`"
+    titulo = re.sub(r"#\w+", "", str(dados.get("titulo") or "")).strip(limpar_pontas) or tema
+    topo = re.sub(r"[^\w\s\-!?]", "", str(dados.get("topo") or "")).strip().upper()
+    termos = [re.sub(r"\s+", " ", str(t)).strip(limpar_pontas) for t in (dados.get("termos") or []) if str(t).strip()]
+    termos = [t for t in termos if t]
+    descricao = re.sub(r"(?<![\w#])#\w+", "", str(dados.get("descricao") or "")).strip(limpar_pontas).strip()
+    return {
+        "titulo": limitar(titulo, 70),
+        "roteiro": roteiro,
+        "termos": termos[:6],
+        "topo": limitar(topo, 22) if topo else "",
+        "descricao": limitar(descricao, 400),
+        "hashtags": _limpar_hashtags(dados.get("hashtags"), {"shorts", "reels", "fyp", "viral"}),
+    }
+
+
+def gerar_pauta(cfg: Config, tema: str, segundos: float = 40.0) -> dict:
+    """Roteiro, termos de busca e textos do post para um tema; lança ErroIA se não der."""
+    tema = str(tema or "").strip()
+    if not tema:
+        raise ErroIA("não há tema para a IA escrever", do_corte=True)
+    segundos = int(max(10, min(180, segundos)))
+    palavras = int(segundos * 2.4)  # a voz lê perto de 145 palavras por minuto
+    pedido = (
+        f"Tema do vídeo: {tema}\n\n"
+        f"{_regras_pauta(segundos, palavras)}\n\n"
+        'Formato: {"titulo": "...", "roteiro": "...", "termos": ["..."], "topo": "...", '
+        '"descricao": "...", "hashtags": ["#..."]}'
+    )
+    inicio = time.monotonic()
+    resposta = conversar(
+        cfg, [{"role": "system", "content": SISTEMA_PAUTA}, {"role": "user", "content": pedido}], ESQUEMA_PAUTA)
+    dados = _validar_pauta(resposta, tema)
+    log.info("IA escreveu a pauta de '%s' em %.0f s: %s (%d palavras)", tema, time.monotonic() - inicio,
+             dados["titulo"], len(dados["roteiro"].split()))
+    return dados
+
+
 def testar(cfg: Config) -> str:
     inicio = time.monotonic()
     resposta = conversar(cfg, [{"role": "user", "content": "Responda só com a palavra: funcionando"}])

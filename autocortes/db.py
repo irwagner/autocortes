@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS filmes (
     ano           INTEGER,
     tamanho       INTEGER,
     duracao       REAL,
+    -- 'filme' (recortado) ou 'pauta' (vídeo criado do zero a partir de um roteiro)
+    tipo          TEXT NOT NULL DEFAULT 'filme',
     -- novo | analisando | analisado | erro | ausente | ignorado
     status        TEXT NOT NULL DEFAULT 'novo',
     erro          TEXT,
@@ -103,6 +105,8 @@ _COLUNAS_NOVAS = {
     "filmes": {
         "tentativas": "INTEGER NOT NULL DEFAULT 0",
         "esgotado": "INTEGER NOT NULL DEFAULT 0",
+        # 'filme' ou 'pauta': separa o que é recortado do que é criado do zero
+        "tipo": "TEXT NOT NULL DEFAULT 'filme'",
     },
     "cortes": {
         "tentativas": "INTEGER NOT NULL DEFAULT 0",
@@ -139,6 +143,8 @@ def _migrar(conn: sqlite3.Connection) -> None:
                 if (tabela, nome) == ("cortes", "fila_em"):
                     # os cortes que já estavam editados mantêm o lugar que tinham na fila
                     conn.execute("UPDATE cortes SET fila_em = renderizado_em WHERE renderizado_em IS NOT NULL")
+    # índices sobre colunas que vieram depois: só dá para criar com as colunas já no lugar
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_filmes_tipo ON filmes(tipo, status)")
 
 
 @contextmanager

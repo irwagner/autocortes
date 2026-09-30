@@ -45,8 +45,11 @@ function cardCorteHtml(c, ativas, facebook) {
       ? acaoRapida(c, "normal", "estrela", "Tirar a prioridade", "ativo")
       : acaoRapida(c, "priorizar", "estrela", "Postar antes dos outros"));
   }
-  if (["descartado", "erro"].includes(c.status)) acoes.push(acaoRapida(c, "restaurar", "refazer", "Restaurar"));
-  const meta = [`${fmtTempo(c.inicio)}–${fmtTempo(c.fim)}`, `nota ${fmtNum(c.pontuacao, 2)}`];
+  if (["descartado", "erro"].includes(c.status) && !c.criado) acoes.push(acaoRapida(c, "restaurar", "refazer", "Restaurar"));
+  // vídeo criado de uma pauta não tem trecho de origem nem nota de seleção
+  const meta = c.criado
+    ? ["criado do zero", ...(c.detalhes && c.detalhes.clipes ? [`${c.detalhes.clipes} clipes`] : [])]
+    : [`${fmtTempo(c.inicio)}–${fmtTempo(c.fim)}`, `nota ${fmtNum(c.pontuacao, 2)}`];
   if (c.visualizacoes) meta.push(`${fmtNum(c.visualizacoes)} views`);
   return h`<article class="corte">
     <div class="capa" data-acao="abrir-corte" data-corte="${c.id}" role="button" tabindex="0" aria-label="Abrir ${c.filme}${c.parte ? `, parte ${c.parte}` : ""}">
@@ -201,8 +204,11 @@ function acoesDetalheHtml(d) {
   if (["candidato", "revisao", "pronto"].includes(s)) {
     b.push(d.prioridade > 0 ? botaoAcao("normal", "Tirar a prioridade", "estrela") : botaoAcao("priorizar", "Postar antes dos outros", "estrela"));
   }
-  if (["revisao", "pronto", "erro", "descartado"].includes(s)) b.push(botaoAcao("reeditar", "Editar de novo", "refazer"));
-  if (["descartado", "erro"].includes(s)) b.push(botaoAcao("restaurar", "Restaurar", "refazer"));
+  if (["revisao", "pronto", "erro", "descartado"].includes(s)) {
+    // vídeo criado não é reeditado: quem gera outro é a pauta
+    b.push(d.criado ? botaoAcao("recriar", "Criar de novo", "refazer") : botaoAcao("reeditar", "Editar de novo", "refazer"));
+  }
+  if (["descartado", "erro"].includes(s) && !d.criado) b.push(botaoAcao("restaurar", "Restaurar", "refazer"));
   if (["candidato", "revisao", "pronto", "erro"].includes(s)) b.push(botaoAcao("descartar", "Descartar", "lixo", "perigo"));
   return h`<div class="linha-botoes">${b}</div>`;
 }
@@ -211,8 +217,13 @@ function cabecaDetalheHtml(d) {
   const parte = d.parte || d.textos.parte_prevista;
   const badges = [badge(ESTADO_CORTE[d.status] || [d.status, "neutro"])];
   if (d.prioridade > 0) badges.push(badge(["Com prioridade", "acento"]));
-  return h`<div class="detalhe-cabeca"><h3>${d.filme} · Parte ${parte}${d.parte ? "" : " (prevista)"}</h3>${badges}</div>
-    <div class="detalhe-meta">Trecho de ${fmtTempo(d.inicio)} a ${fmtTempo(d.fim)} do filme · ${fmtDuracao(d.duracao)} · nota ${fmtNum(d.pontuacao, 2)}${d.video ? ` · visual: ${d.modelo || "anterior aos modelos"}` : ""}</div>
+  if (d.criado) badges.push(badge(["Criado do zero", "info"]));
+  const visual = d.video ? ` · visual: ${d.modelo || "anterior aos modelos"}` : "";
+  const origem = d.criado
+    ? h`Vídeo criado da pauta “${d.filme}” · ${fmtDuracao(d.duracao)}${d.detalhes && d.detalhes.clipes ? ` · ${d.detalhes.clipes} clipes de fundo` : ""}${d.detalhes && d.detalhes.voz ? ` · voz ${d.detalhes.voz}` : ""}${visual}`
+    : h`Trecho de ${fmtTempo(d.inicio)} a ${fmtTempo(d.fim)} do filme · ${fmtDuracao(d.duracao)} · nota ${fmtNum(d.pontuacao, 2)}${visual}`;
+  return h`<div class="detalhe-cabeca"><h3>${d.criado ? d.filme : h`${d.filme} · Parte ${parte}${d.parte ? "" : " (prevista)"}`}</h3>${badges}</div>
+    <div class="detalhe-meta">${origem}</div>
     ${d.erro && ["erro", "candidato"].includes(d.status) ? h`<p class="erro-texto">${d.erro}</p>` : ""}`;
 }
 

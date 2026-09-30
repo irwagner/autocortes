@@ -89,8 +89,21 @@ App local para Windows que corta filmes em vídeos verticais 1080x1920 e posta s
 - YouTube: `planejador.fila` tira os cortes acima de `max_segundos`, e `Publicador._postar` confere o arquivo com o ffprobe (`youtube.motivo_nao_short`) antes de qualquer envio, inclusive a tarefa à mão. `sem_cortes_possiveis` evita que o produtor edite sem parar quando nada cabe no limite.
 - O render limita a taxa de quadros entre 24 e 60 (Reels da Página): o episódio do usuário, em 23,976, sai em 24.
 
-## Vídeos criados do zero (fase 1 pronta)
-- Camadas: `voz.py` (narração), `estoque.py` (clipes), `montagem.py` (render) e `criacao.py` (pauta → vídeo, com `ler_pauta`/`criar`). O comando é `python -m autocortes criar [pauta]`. Ainda **fora** do banco/agenda/painel: isso é a fase 2 (IA escrevendo a pauta, corte sem filme de origem).
+## Vídeos criados do zero
+- Camadas: `voz.py` (narração), `estoque.py` (clipes), `montagem.py` (render) e `criacao.py` (pauta → vídeo → banco). Comandos: `criar [pauta]` e `criar --tema "..."`. O motor cria sozinho quando `[criacao].ativo` e falta estoque (`Produtor.criar_video`), com `[criacao].prioridade` decidindo entre filmes e pautas.
+- **Pauta é uma linha em `filmes` com `tipo='pauta'`**, e o vídeo criado é um `cortes` normal: assim fila, agenda, publicador, histórico e métricas funcionam sem duplicação. A alternativa (tabela própria) exigiria refazer tudo isso. `filmes.tipo` entrou em `_COLUNAS_NOVAS`, e o índice `idx_filmes_tipo` é criado **no `_migrar`** (no `ESQUEMA` falharia em banco antigo, onde a coluna ainda não existe).
+- O que fez isso funcionar sem quebrar nada (cada item é um atrito real que foi medido):
+  - toda consulta de análise/mineração/varredura do produtor filtra `tipo='filme'`, senão o motor tenta rodar ffprobe num `.txt` e a pauta vira "filme com erro";
+  - `_completar_textos_ia` também filtra, senão `analise.carregar_para_render` levanta `ErroMidia` **fora** do `except ia.ErroIA` e o laço do motor entra em erro a cada ciclo, para sempre;
+  - o corte grava `inicio=0` e `fim` = duração real do arquivo, então os limites do YouTube e do Reel (que usam `fim - inicio`) valem de verdade;
+  - `fila_em` é preenchido na hora: NULL vai para a frente de tudo no `ORDER BY` do SQLite;
+  - `parte` é preenchida (senão o calendário mostra "Parte null") e o nome do arquivo leva a parte, para recriar não sobrescrever o vídeo que está na fila;
+  - `titulo_custom`/`descricao_custom` recebem os textos da pauta, porque os modelos de `[textos]` dizem "Trecho de {filme} - Parte N" e as hashtags fixas são de cinema;
+  - `ia_textos` também é preenchido, para o motor não tentar reescrever;
+  - `exigir_aprovacao` é respeitado (o corte nasce em `revisao`);
+  - `planejador.cobertura` filtra `tipo='filme'` nas médias por filme e soma as pautas pendentes à parte;
+  - no painel, `/filmes` e `_filme_de_exemplo` filtram `tipo='filme'` (senão a pauta virava o exemplo do Estúdio e ganhava botões de reanalisar), e `acao_corte` recusa reeditar/restaurar num vídeo criado, oferecendo `recriar` (descarta o corte e devolve a pauta para `novo`).
+- Prompt da pauta (`ia.gerar_pauta`): modelo pequeno erra de dois jeitos que o `_validar_pauta` conserta — escreve `\n` como texto literal (a voz leria "barra n") e deixa lixo de JSON (`'}`) no fim do título. Também quebro o roteiro por frase quando vem tudo numa linha, para a narração ganhar o respiro. Medido com o qwen3 4B: pauta em 5 a 15 s, roteiro em pt-BR, termos de busca em inglês.
 - `websocket.py` é o cliente RFC 6455 que saiu do `navegador.py` no segundo uso: `ws://` e `wss://`, texto e binário, `receber_quadro()` devolve (opcode, dados), e o frame de close traz código e razão (foi assim que achei o "SSML is invalid"). O `navegador._Websocket` é uma subclasse fina que converte `ErroWebsocket` em `ErroNavegador`.
 - **O endpoint do Edge recusa `<break>`**: qualquer SSML com ele volta com close 1007 "SSML is invalid" (medido em set/2026; o `xml:lang` pode ser pt-BR sem problema). Pausa só como silêncio de verdade: `voz.blocos` parte o texto em trechos, cada um é uma conexão, e o `_juntar` emenda com `anullsrc` pelo FFmpeg. Os tempos das palavras são deslocados pela duração real (ffprobe) de cada trecho.
 - Token: `Sec-MS-GEC` = SHA-256 de `<ticks><TrustedClientToken>`, onde ticks é a hora Unix + 11644473600, arredondada para baixo de 5 em 5 min e convertida para intervalos de 100 ns. 403 = relógio fora de hora: acertar pelo cabeçalho `Date` e repetir (`_acertar_relogio`).

@@ -262,6 +262,10 @@ ensaio = false
 # ---------------------------------------------------------------------
 [criacao]
 ativo = false
+# Quem sai primeiro quando falta estoque: "filmes" (os cortes) ou "criacao" (as pautas)
+prioridade = "filmes"
+# Duração que a IA tenta atingir no roteiro que ela escreve
+duracao_alvo_seg = 40
 fps = 30
 # Segundos de imagem depois da última palavra
 cauda_seg = 0.6
