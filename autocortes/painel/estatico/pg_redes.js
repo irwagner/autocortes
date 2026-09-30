@@ -10,10 +10,11 @@ const permissoesIg = () => (valor("instagram.pagina_facebook") ? `${PERMISSOES_I
 const NOME_ENVIO = {
   oficial: (info) => `API oficial do ${info.rotulo}`,
   upload_post: () => "Upload-Post (pago, publica em público)",
+  navegador: () => "Pelo seu navegador (arriscado)",
   manual: () => "À mão (você posta pelo app ou pelo site)",
 };
 // redes que só aceitam a postagem à mão
-const ENVIO_FIXO = { kwai: "À mão, pelo app do Kwai", bilibili: "À mão, pelo site do Bilibili" };
+const ENVIO_FIXO = { kwai: "À mão, pelo app do Kwai" };
 
 const PRIVACIDADE_TIKTOK = [
   ["PUBLIC_TO_EVERYONE", "Todos"], ["FOLLOWER_OF_CREATOR", "Seguidores"],
@@ -59,8 +60,22 @@ function guiaManual(rede) {
   return h`<details class="guia"><summary>${ic("info")}Como funciona a postagem à mão</summary><ol>${passos}</ol></details>`;
 }
 
+function guiaNavegador(rede) {
+  const onde = { youtube: "YouTube Studio", tiktok: "TikTok Studio", instagram: "Instagram", bilibili: "Bilibili" }[rede];
+  return h`<details class="guia"><summary>${ic("info")}Como funciona o envio pelo navegador</summary><ol>
+    <li>Clique em <b>Conectar</b>: abre uma janela do Chrome com um perfil só do AutoCortes (em <code>dados/chrome</code>), separado do seu navegador do dia a dia.</li>
+    <li>Entre na conta do ${REDES[rede].rotulo} nessa janela, resolvendo o 2FA se ele pedir. A sessão fica salva ali e sobrevive a reiniciar o PC.</li>
+    <li>Clique em <b>Testar</b>: eu abro a página do ${onde} e confirmo que a sessão está de pé.</li>
+    <li>No horário, o AutoCortes preenche a página de envio e publica, com pausas entre os passos.</li>
+    <li>Antes de valer, ligue o <b>ensaio</b> no cartão "Postagem pelo navegador": ele preenche tudo, não publica e guarda uma imagem da tela.</li>
+  </ol></details>`;
+}
+
 function avisoRede(rede, envio) {
   const privacidadeTiktok = valor("tiktok.privacidade");
+  if (envio === "navegador") {
+    return `Isto contraria os termos do ${REDES[rede].rotulo}, que só autorizam a API oficial, e pode custar a conta. Quando a rede muda o layout da página, o envio falha até eu ajustar. Use numa conta que você pode perder.`;
+  }
   if (rede === "kwai") {
     return "O Kwai não tem API de postagem para criadores nem envio pelo site: você posta pelo app, com o vídeo e a legenda que o AutoCortes separa.";
   }
@@ -104,6 +119,11 @@ function statusContaHtml(r, envio) {
   } else if (r.via === "manual") {
     classe = "ok"; icone = "ok"; titulo = "Postagem à mão";
     sub = r.tarefas ? `${plural(r.tarefas, "tarefa esperando", "tarefas esperando")} você no Início` : "Os horários viram tarefas no Início";
+  } else if (r.via === "navegador") {
+    classe = r.pronta ? "ok" : "pendente";
+    icone = r.pronta ? "ok" : "alerta";
+    titulo = r.pronta ? r.conta || "Sessão salva no navegador" : "Sem sessão no navegador";
+    sub = r.pronta ? "pelo navegador, com a sua sessão" : r.motivo;
   } else if (r.pronta) {
     classe = "ok"; icone = "ok"; titulo = r.conta || "Pronta para postar"; sub = ROTULO_ENVIO[r.via] || r.via;
     if (r.facebook && r.facebook.ativo) sub += ` · também na Página${r.facebook.pagina ? ` ${r.facebook.pagina}` : " do Facebook"}`;
@@ -179,6 +199,10 @@ function botoesRede(rede, r, envio) {
   const b = [];
   if (envio === "manual") {
     if (r.tarefas) b.push(h`<a class="btn" href="#/inicio">${ic("lista")}Ver as tarefas</a>`);
+  } else if (envio === "navegador") {
+    b.push(h`<button class="btn ${r.pronta ? "" : "primario"}" data-acao="rede-conectar" data-rede="${rede}">${ic("externo")}${r.pronta ? "Abrir o navegador" : "Conectar"}</button>`);
+    b.push(h`<button class="btn" data-acao="rede-testar" data-rede="${rede}">${ic("ok")}Testar a sessão</button>`);
+    if (r.conta) b.push(h`<button class="btn fantasma" data-acao="rede-desconectar" data-rede="${rede}">Esquecer a conta</button>`);
   } else if (envio === "upload_post") {
     b.push(h`<button class="btn" data-acao="rede-testar" data-rede="${rede}">${ic("ok")}Testar conexão</button>`);
   } else {
@@ -200,6 +224,7 @@ function envioHtml(rede, info, envio) {
 function notaEnvio(rede, info, envio) {
   if (envio === "oficial") return guiaOficial(rede);
   if (envio === "manual") return guiaManual(rede);
+  if (envio === "navegador") return guiaNavegador(rede);
   return h`<p class="nota">A conta do ${info.rotulo} é conectada no site do Upload-Post, dentro do perfil informado abaixo.</p>`;
 }
 
@@ -257,6 +282,25 @@ function manualHtml(d) {
   </div>`;
 }
 
+function navegadorHtml() {
+  const usando = ORDEM_REDES.filter((r) => valor(`${r}.envio`) === "navegador" && valor(`${r}.ativo`));
+  const ensaio = valor("navegador.ensaio");
+  return h`<div class="card card-navegador"><div class="card-topo"><h3>${ic("externo")}Postagem pelo navegador</h3>${usando.length ? badge([`Usada por ${usando.map((r) => REDES[r].rotulo).join(", ")}`, "aviso"], true) : badge(["Não usada", "neutro"], true)}</div>
+    <div class="aviso-rede">${ic("alerta")}<span>Contraria os termos das redes, que só autorizam as APIs oficiais, e pode custar a conta. O AutoCortes não disfarça nada: sem forjar fingerprint, sem resolver captcha e sem proxy. Se a rede pedir verificação, o envio para e avisa você.</span></div>
+    <p class="nota">O AutoCortes abre o Chrome com um perfil separado, em <code>dados/chrome</code>, onde você entra na conta uma vez. Depois ele preenche a página de envio da rede como se fosse você. Funciona no YouTube, TikTok, Instagram e Bilibili; o Kwai não tem envio pelo site.</p>
+    ${ensaio ? h`<div class="aviso-rede">${ic("info")}<span>Ensaio ligado: os envios preenchem tudo e <b>não publicam</b>, guardando uma imagem da tela em <code>dados/navegador</code>. A postagem fica registrada como recusada, com o motivo.</span></div>` : ""}
+    ${formulario([
+      campo({ chave: "navegador.ensaio", tipo: "switch", rotulo: "Ensaio (não publica)", ajuda: "Preenche a página e para antes de publicar. Deixe ligado no primeiro teste de cada rede." }),
+      campo({ chave: "navegador.visivel", tipo: "switch", rotulo: "Mostrar a janela", ajuda: "Precisa estar ligado para você entrar na conta. Desligado, o navegador roda escondido." }),
+      campo({ chave: "navegador.programa", tipo: "texto", rotulo: "Caminho do navegador", ajuda: "Em branco, acha o Chrome e, se não houver, o Edge.", placeholder: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", larga: true }),
+      campo({ chave: "navegador.porta", tipo: "numero", min: 1024, max: 65535, rotulo: "Porta do DevTools", ajuda: "Só em 127.0.0.1. Troque se essa porta já estiver em uso." }),
+      campo({ chave: "navegador.pausa_min_seg", tipo: "numero", min: 0, max: 30, passo: 0.1, sufixo: "s", rotulo: "Pausa mínima entre passos" }),
+      campo({ chave: "navegador.pausa_max_seg", tipo: "numero", min: 0, max: 60, passo: 0.1, sufixo: "s", rotulo: "Pausa máxima entre passos" }),
+      campo({ chave: "navegador.tempo_limite_seg", tipo: "numero", min: 30, max: 1800, sufixo: "s", rotulo: "Tempo limite de cada passo" }),
+    ])}
+  </div>`;
+}
+
 async function carregarRedes(token = App.navegacao) {
   const d = await api("/redes");
   if (!App.ativa(token)) return null;
@@ -273,7 +317,8 @@ function desenharRedes() {
   montar(el, h`${publicacaoHtml(d)}
     <div class="cards-redes">${ORDEM_REDES.map((r) => cardRedeHtml(r, d.redes[r]))}</div>
     <div class="grade-2">${uploadPostHtml()}${manualHtml(d)}</div>
-    <p class="nota rodape-card">Os posts automáticos usam só as APIs oficiais das redes ou do Upload-Post. Onde não há API aberta (Kwai e Bilibili), o AutoCortes prepara o post e você publica. Postar pelo navegador com cookies viola os termos das redes e leva a banimentos, por isso o AutoCortes não faz isso. Cortes de filmes são conteúdo de terceiros: poste só o que você tem direito de usar, e saiba que as redes tratam trechos com pouca edição como conteúdo não original na monetização e nas recomendações.</p>`);
+    ${navegadorHtml()}
+    <p class="nota rodape-card">O caminho seguro é a API oficial de cada rede, ou o Upload-Post. O envio pelo navegador contraria os termos e pode custar a conta: você escolhe rede por rede. Cortes de filmes são conteúdo de terceiros: poste só o que você tem direito de usar, e saiba que as redes tratam trechos com pouca edição como conteúdo não original na monetização e nas recomendações.</p>`);
 }
 
 /* ------------------------------------------------------------ login */
@@ -371,11 +416,27 @@ App.acoes["ig-escolher"] = async (el) => {
   atualizarEstado();
 };
 
+function avisoNavegadorHtml(rede, s) {
+  return h`<div class="login-espera"><p>${ic("externo")}Abri a janela do Chrome do AutoCortes no login do ${REDES[rede].rotulo}.</p>
+    <ol class="passos">
+      <li>Entre na conta nessa janela (e resolva o 2FA, se pedir).</li>
+      <li>A sessão fica salva no perfil do AutoCortes, não no seu Chrome normal.</li>
+      <li>Volte aqui e clique em <b>Testar a sessão</b>.</li>
+    </ol>
+    <p class="nota">A janela não abriu? Confira o caminho do Chrome no cartão "Postagem pelo navegador".${s && s.url ? h` Endereço: <code>${s.url}</code>` : ""}</p>
+    <div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Fechar</button><button class="btn primario" data-acao="rede-testar" data-rede="${rede}">${ic("ok")}Testar a sessão</button></div></div>`;
+}
+
 App.acoes["rede-conectar"] = async (el) => {
   const rede = el.dataset.rede;
   if (!vazio(App.pendente)) {
     const salvo = await ocupado(el, salvarConfig);
     if (!salvo) return;
+  }
+  if (valor(`${rede}.envio`) === "navegador") {
+    const s = await ocupado(el, () => post(`/redes/${rede}/login`));
+    abrirModal({ titulo: `Entrar no ${REDES[rede].rotulo} pelo navegador`, largura: 560, corpo: avisoNavegadorHtml(rede, s) });
+    return;
   }
   if (rede === "instagram") { conectarInstagram(); return; }
   await ocupado(el, () => conectarOAuth(rede));
@@ -387,7 +448,9 @@ App.acoes["rede-testar"] = async (el) => {
     const salvo = await ocupado(el, salvarConfig);
     if (!salvo) return;
   }
+  if (valor(`${rede}.envio`) === "navegador") toast("Abrindo a página da rede no navegador...", "info");
   const r = await ocupado(el, () => post(`/redes/${rede}/testar`));
+  if (modal.aberto) fecharModal();
   toast(`${REDES[rede].rotulo}: ${r.conta}`, "ok", 7000);
   await App.paginas.redes.recarregar();
 };
@@ -439,7 +502,7 @@ App.paginas.redes = {
     desenharRedes();
   },
   aoMudar(caminho) {
-    if (/\.(envio|ativo|privacidade|pagina_facebook)$/.test(caminho)) desenharRedes();
+    if (/\.(envio|ativo|privacidade|pagina_facebook)$/.test(caminho) || caminho === "navegador.ensaio") desenharRedes();
   },
   async aoSalvar() {
     await this.recarregar();

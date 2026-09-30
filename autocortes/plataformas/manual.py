@@ -91,23 +91,52 @@ def _tags_bilibili(cfg: Config, conteudo: Conteudo) -> list[str]:
     return tags
 
 
+def textos(cfg: Config, rede: str, conteudo: Conteudo) -> dict:
+    """Os textos do post já no formato e nos limites da rede.
+
+    Fonte única: usada pela tarefa à mão e pelo roteiro do envio pelo navegador.
+    """
+    legenda = (conteudo.descricao or conteudo.titulo).strip()
+    if rede == "youtube":
+        from .youtube import metadados
+
+        meta = metadados(cfg["youtube"], conteudo)["snippet"]
+        return {"titulo": meta["title"], "descricao": meta["description"], "tags": list(meta["tags"])}
+    if rede == "tiktok":
+        texto = legenda
+        while tamanho_utf16(texto) > 2200:
+            texto = limitar(texto, len(texto) - 20)
+        return {"legenda": texto}
+    if rede == "instagram":
+        from .instagram import MAX_HASHTAGS
+
+        return {"legenda": limitar(limitar_hashtags(legenda, MAX_HASHTAGS), 2200)}
+    if rede == "kwai":
+        return {"legenda": _com_texto(conteudo, legenda)}
+    if rede == "bilibili":
+        return {
+            "titulo": limitar(conteudo.titulo, BILIBILI_TITULO),
+            "descricao": limitar(sem_hashtags(legenda) or conteudo.titulo, BILIBILI_DESCRICAO),
+            "tags": _tags_bilibili(cfg, conteudo),
+            "fonte": fonte(conteudo),
+        }
+    raise ValueError(f"rede desconhecida: {rede}")
+
+
 def pacote(cfg: Config, rede: str, conteudo: Conteudo) -> dict:
     """Textos da tarefa no formato da rede, os passos para postar e o site de envio."""
     campos: list[dict] = []
+    t = textos(cfg, rede, conteudo)
 
     def campo(rotulo: str, texto: str, limite: int | None = None, utf16: bool = False, nota: str = "",
               lista: list[str] | None = None) -> None:
         campos.append({"rotulo": rotulo, "texto": texto, "limite": limite, "nota": nota, "lista": lista,
                        "tamanho": tamanho_utf16(texto) if utf16 else len(texto)})
 
-    legenda = (conteudo.descricao or conteudo.titulo).strip()
     if rede == "youtube":
-        from .youtube import metadados
-
-        meta = metadados(cfg["youtube"], conteudo)["snippet"]
-        campo("Título", meta["title"], 100)
-        campo("Descrição", meta["description"])
-        campo("Tags", ", ".join(meta["tags"]), nota="Ficam em Mostrar mais > Tags.")
+        campo("Título", t["titulo"], 100)
+        campo("Descrição", t["descricao"])
+        campo("Tags", ", ".join(t["tags"]), nota="Ficam em Mostrar mais > Tags.")
         passos = [
             "No YouTube Studio, clique em Criar > Enviar vídeos e escolha o vídeo.",
             "Cole o título, a descrição e as tags.",
@@ -115,10 +144,7 @@ def pacote(cfg: Config, rede: str, conteudo: Conteudo) -> dict:
             "Publique agora ou use Programar para escolher o dia e a hora.",
         ]
     elif rede == "tiktok":
-        texto = legenda
-        while tamanho_utf16(texto) > 2200:
-            texto = limitar(texto, len(texto) - 20)
-        campo("Legenda", texto, 2200, utf16=True)
+        campo("Legenda", t["legenda"], 2200, utf16=True)
         passos = [
             "No celular, toque em + no app do TikTok e escolha o vídeo. No computador, use o TikTok Studio.",
             "Cole a legenda.",
@@ -127,26 +153,24 @@ def pacote(cfg: Config, rede: str, conteudo: Conteudo) -> dict:
     elif rede == "instagram":
         from .instagram import MAX_HASHTAGS
 
-        campo("Legenda", limitar(limitar_hashtags(legenda, MAX_HASHTAGS), 2200), 2200,
-              nota=f"No máximo {MAX_HASHTAGS} hashtags.")
+        campo("Legenda", t["legenda"], 2200, nota=f"No máximo {MAX_HASHTAGS} hashtags.")
         passos = ["No app do Instagram, toque em + > Reel e escolha o vídeo.", "Cole a legenda."]
         if cfg["instagram"]["pagina_facebook"]:
             passos.append("Para sair também na Página do Facebook, ligue \"Compartilhar no Facebook\" antes de publicar.")
         passos.append("Publique agora ou agende pelo próprio app.")
     elif rede == "kwai":
-        campo("Legenda", _com_texto(conteudo, legenda))
+        campo("Legenda", t["legenda"])
         passos = [
             "Passe o vídeo para o celular: baixe aqui ou pegue na pasta sincronizada.",
             "No app do Kwai, toque na câmera, depois em Álbum, e escolha o vídeo.",
             "Cole a legenda e publique.",
         ]
     elif rede == "bilibili":
-        campo("标题 (título)", limitar(conteudo.titulo, BILIBILI_TITULO), BILIBILI_TITULO)
-        campo("简介 (descrição)", limitar(sem_hashtags(legenda) or conteudo.titulo, BILIBILI_DESCRICAO),
-              BILIBILI_DESCRICAO)
-        tags = _tags_bilibili(cfg, conteudo)
-        campo("标签 (tags)", "\n".join(tags), nota="No Bilibili, cole uma tag por vez e tecle Enter.", lista=tags)
-        campo("转载来源 (fonte)", fonte(conteudo), nota="O trecho é de um filme de terceiros: marque 转载.")
+        campo("标题 (título)", t["titulo"], BILIBILI_TITULO)
+        campo("简介 (descrição)", t["descricao"], BILIBILI_DESCRICAO)
+        campo("标签 (tags)", "\n".join(t["tags"]), nota="No Bilibili, cole uma tag por vez e tecle Enter.",
+              lista=t["tags"])
+        campo("转载来源 (fonte)", t["fonte"], nota="O trecho é de um filme de terceiros: marque 转载.")
         passos = [
             "Na página de envio do Bilibili, escolha o vídeo.",
             "Em 类型 (tipo), marque 转载 (repost) e cole a fonte em 转载来源.",

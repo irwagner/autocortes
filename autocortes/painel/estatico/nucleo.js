@@ -30,7 +30,7 @@ const REDES = {
   facebook: { rotulo: "Facebook", nome: "Página do Facebook", cor: "#1877f2" },
 };
 const ORDEM_REDES = ["youtube", "tiktok", "instagram", "kwai", "bilibili"];
-const ROTULO_ENVIO = { oficial: "API oficial", upload_post: "via Upload-Post", manual: "à mão" };
+const ROTULO_ENVIO = { oficial: "API oficial", upload_post: "via Upload-Post", navegador: "pelo navegador", manual: "à mão" };
 const DIAS = [["seg", "Seg"], ["ter", "Ter"], ["qua", "Qua"], ["qui", "Qui"], ["sex", "Sex"], ["sab", "Sáb"], ["dom", "Dom"]];
 const IDIOMAS = [
   ["", "Detectar automaticamente"], ["pt", "Português"], ["en", "Inglês"], ["es", "Espanhol"], ["fr", "Francês"],

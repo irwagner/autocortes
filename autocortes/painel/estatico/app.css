@@ -797,3 +797,9 @@ code.caminho { display: block; margin-top: 4px; white-space: normal; word-break:
   .detalhe-corte.tarefa { grid-template-columns: minmax(0, 1fr); }
   .tarefa-lado { max-width: 360px; }
 }
+
+/* postagem pelo navegador */
+.card-navegador { border-top: 3px solid var(--aviso); }
+.card-navegador .aviso-rede { margin-bottom: 14px; }
+.card-navegador code { background: var(--painel-3); border: 1px solid var(--borda-2); padding: 1px 5px; border-radius: 6px; font-size: 12.5px; }
+.login-espera .passos { text-align: left; margin: 4px 0 10px; padding-left: 20px; display: flex; flex-direction: column; gap: 5px; color: var(--texto-2); font-size: 13px; }

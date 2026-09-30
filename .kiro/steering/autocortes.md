@@ -40,6 +40,16 @@ App local para Windows que corta filmes em vídeos verticais 1080x1920 e posta s
 - O clique global do `app.js` faz `preventDefault` em tudo com `data-acao`: link de download (`<a download>`) não pode ter `data-acao`.
 - `abrirModal` foca o primeiro campo do corpo: em tela estreita isso rola a janela. Marcar com `autofocus` o que deve receber o foco.
 
+## Envio pelo navegador (DevTools)
+- `navegador.py` é a camada base: cliente WebSocket próprio (a biblioteca padrão não tem), CDP, abertura do Chrome com perfil em `dados/chrome` e os ajudantes. `plataformas/navegador.py` tem o `ViaNavegador` e um roteiro por rede. Kwai fora: não existe página de envio.
+- O ajudante `__ac` é injetado na página e faz busca que **entra no shadow DOM**: sem isso o YouTube Studio (Polymer) é inalcançável. Ele se perde a cada navegação, então todo ajudante chama `_garantir_ajudante`.
+- Arquivo: `DOM.setFileInputFiles` pelo `objectId` (`Runtime.evaluate` sem `returnByValue` + `DOM.requestNode`), que alcança campo escondido e no shadow DOM. **Antes é obrigatório chamar `DOM.getDocument`**, senão o `requestNode` volta vazio. O Chrome aceita caminho inexistente calado: conferir antes.
+- Sessão: nada de procurar texto de login. Medido em set/2026, deslogado: o YouTube vai para o `accounts.google.com`, o Instagram mostra `input[type=password]`, e o TikTok e o Bilibili ficam na mesma URL com a página vazia. Por isso `esperar_sessao` espera um **sinal positivo** por rede (`SESSAO`), e o nome da conta do Instagram exige um `img` dentro do link, senão pega "popular" do rodapé.
+- Iframes: só reclamar de quadro que pareça uploader; Bilibili e YouTube têm quadros de terceiros inofensivos.
+- Ensaio (`[navegador].ensaio`): preenche tudo, não publica e devolve erro do tipo "corte", então a postagem fica como recusada com o motivo. Toda falha guarda imagem em `dados/navegador`.
+- Testar: páginas falsas locais que imitam cada rede (com uma em shadow DOM) mais a checagem de sessão contra os sites reais, deslogado. Os seletores reais só dão para validar com conta logada.
+- Sem API não há id nem link: `Resultado` leva `navegador-<hex>` e o link só quando a página mostra.
+
 ## Postagem à mão e Página do Facebook
 - Tarefa à mão = postagem com status `aguardando` e `via = 'manual'`. Não usar a palavra "manual" em status: `postagens.manual = 1` já quer dizer "Postar agora" (fora da agenda), que o painel mostra como "fora da agenda".
 - `aguardando` entra em `planejador.status_concluidos` (o corte sai da fila da rede) e em `status_ocupam_horario` (atende o horário, conta no intervalo mínimo e no limite do dia), mas não nos posts de hoje, na aba Publicados nem em `atualizar_concluidos`: o corte só conclui depois que o usuário marca "Já postei" ou pula. Limite de 5 tarefas esperando por rede (`manual.MAX_TAREFAS_POR_REDE`).
@@ -75,4 +85,5 @@ App local para Windows que corta filmes em vídeos verticais 1080x1920 e posta s
 
 ## Limites de conteúdo
 - Sempre avisar sobre direitos autorais e originalidade.
-- Não implementar postagem por automação de navegador ou cookies (viola os termos das redes) nem técnicas para burlar Content ID ou detecção de conteúdo repetido.
+- Não implementar técnicas para burlar Content ID nem detecção de conteúdo repetido.
+- Postagem por automação do navegador: **liberada pelo dono em 29/09/2026**, ciente de que viola os termos das redes e pode custar as contas. Só nas contas dele, com o navegador dele. Regras que ficam: perfil do Chrome dedicado em `dados/chrome/`, DevTools só em 127.0.0.1, ritmo humano com pausa aleatória, limite diário, parada automática em página inesperada ou restrição, e nada de forjar fingerprint, resolver captcha, usar API privada ou proxy. Se a rede bloquear, para e avisa; não insiste.

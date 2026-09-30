@@ -218,6 +218,33 @@ perfil = ""
 # "" = não copia.
 pasta = ""
 
+# ---------------------------------------------------------------------
+# Postagem pelo navegador (envio = "navegador"): o AutoCortes preenche a
+# página de envio da própria rede, no Chrome, com um perfil separado em
+# dados/chrome. Você entra na conta uma vez e a sessão fica salva ali.
+#
+# ATENÇÃO: isto contraria os termos de uso das redes, que só autorizam as
+# APIs oficiais, e pode custar a conta. Não há disfarce: sem forjar
+# fingerprint, sem resolver captcha, sem proxy. Se a rede pedir verificação,
+# o envio para e avisa. Use com a conta que você pode perder.
+#
+# Funciona em YouTube, TikTok, Instagram e Bilibili. O Kwai não entra: o
+# upload dele é só pelo app do celular.
+# ---------------------------------------------------------------------
+[navegador]
+# "" acha o Chrome e, se não houver, o Edge
+programa = ""
+# Porta do DevTools, só em 127.0.0.1
+porta = 9222
+# false esconde a janela; para entrar na conta e para ver o que houve, deixe true
+visivel = true
+# Pausa aleatória entre os passos, em segundos
+pausa_min_seg = 0.4
+pausa_max_seg = 1.6
+tempo_limite_seg = 180
+# true preenche tudo e NÃO publica, guardando uma imagem da tela (para conferir)
+ensaio = false
+
 [metricas]
 # Lê visualizações, curtidas e comentários dos posts (YouTube e Instagram pela API oficial)
 ativo = true

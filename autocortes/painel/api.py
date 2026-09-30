@@ -18,6 +18,7 @@ from typing import Any, Callable
 from .. import __version__, agenda, analise, config, edicao, ferramentas, ia, metricas, modelos_visuais, planejador
 from ..config import ENVIOS, PLATAFORMAS, ROTULOS, ErroConfig
 from ..midia import ErroMidia, Interrompido, base_ffmpeg, executar
+from ..navegador import ErroNavegador
 from ..plataformas import ErroPublicacao, criar
 from ..plataformas import manual as tarefas_manual
 from ..produtor import EXTENSOES, Produtor, escrever_textos_ia, varrer_biblioteca
@@ -273,7 +274,7 @@ def _alertas(ctx: Contexto, filmes: dict, cortes: dict, cobertura: dict, redes: 
             add("erro", f"{ROTULOS[rede]} pausado: {v['bloqueada']}", "redes")
         elif not v["pronta"]:
             add("info" if cfg.simulacao else "erro", f"{ROTULOS[rede]}: {v['motivo']}.", "redes")
-    if "tiktok" in ativas and cfg["tiktok"]["privacidade"] == "SELF_ONLY" and redes["tiktok"]["via"] != "manual":
+    if "tiktok" in ativas and cfg["tiktok"]["privacidade"] == "SELF_ONLY" and redes["tiktok"]["via"] == "oficial":
         if redes["tiktok"]["via"] == "upload_post":
             add("aviso", "O TikTok posta pelo Upload-Post, mas a privacidade está em \"Só eu\". "
                 "Troque para \"Todos\" para publicar em público.", "redes")
@@ -1466,6 +1467,15 @@ def iniciar_login(ctx: Contexto, rede):
     )
     _exigir(ctx.cfg[rede]["envio"] != "manual",
             f"O {ROTULOS[rede]} é postado à mão: não há conta para conectar. As tarefas aparecem no Início.")
+    if ctx.cfg[rede]["envio"] == "navegador":
+        # abre a janela do navegador do AutoCortes na tela de login: você entra na conta uma vez
+        try:
+            url = criar(rede, ctx.cfg).abrir_para_login()
+        except ErroNavegador as e:
+            raise ErroHttp(400, str(e)) from e
+        log.info("%s: janela do navegador aberta para login", ROTULOS[rede])
+        return {"estado": "navegador", "url": url, "mensagem":
+                "Entre na conta na janela que abriu. A sessão fica salva no perfil do AutoCortes."}
     painel = ctx.painel
     anterior = painel.logins.pop(rede, None)
     if anterior is not None:

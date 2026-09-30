@@ -122,6 +122,10 @@ def cmd_verificar(args) -> int:
             linha(None, f"{nome}: postagem à mão (as tarefas aparecem no Início do painel)")
             continue
         plataforma = criar(nome, cfg)
+        if cfg[nome]["envio"] == "navegador" and not args.online:
+            pronta, motivo = plataforma.pronta()
+            linha(True if pronta else None, f"{nome}: pelo navegador ({'sessão salva' if pronta else motivo})")
+            continue
         pronta, motivo = plataforma.pronta()
         if not pronta:
             linha(None if cfg.simulacao else False, f"{nome}: {motivo}")
@@ -224,6 +228,8 @@ def cmd_status(args) -> int:
                 "SELECT COUNT(*) FROM postagens WHERE plataforma=? AND status='aguardando'", (nome,)
             ).fetchone()[0]
             situacao = f"à mão: {esperando} tarefa(s) esperando"
+        elif cfg[nome]["envio"] == "navegador":
+            situacao = f"pelo navegador: {'sessão salva' if pronta else motivo}"
         else:
             situacao = "login ok" if pronta else motivo
         print(f"  {nome:<10} {situacao:<45} próximo: {h.strftime('%d/%m %H:%M') if h else '-'}  últimas 24h: {n24}")
@@ -379,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_verificar)
     sub.add_parser("baixar", help="baixa whisper.cpp e modelos").set_defaults(func=cmd_baixar)
     p = sub.add_parser("auth", help="conecta uma rede social")
-    p.add_argument("rede", choices=["youtube", "tiktok", "instagram"])
+    p.add_argument("rede", choices=list(PLATAFORMAS))
     p.set_defaults(func=cmd_auth)
     sub.add_parser("rodar", help="loop contínuo").set_defaults(func=cmd_rodar)
     sub.add_parser("status", help="resumo geral").set_defaults(func=cmd_status)

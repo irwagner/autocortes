@@ -9,12 +9,16 @@ __all__ = ["ErroPublicacao", "Plataforma", "Resultado", "criar"]
 
 
 def criar(nome: str, cfg: Config) -> Plataforma:
-    """A rede com o envio escolhido em [<rede>].envio ("oficial", "upload_post" ou "manual")."""
+    """A rede com o envio de [<rede>].envio ("oficial", "upload_post", "navegador" ou "manual")."""
     envio = cfg[nome].get("envio")
     if envio == "manual":
         from .manual import ViaManual
 
         return ViaManual(nome, cfg)
+    if envio == "navegador":
+        from .navegador import ViaNavegador
+
+        return ViaNavegador(nome, cfg)
     if envio == "upload_post":
         from .upload_post import ViaUploadPost
 

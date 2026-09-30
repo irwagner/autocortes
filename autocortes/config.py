@@ -21,12 +21,14 @@ ROTULOS = {
 }
 # formas de envio de cada rede: "oficial" (API da rede), "upload_post" (serviço já auditado) ou
 # "manual" (o AutoCortes prepara o vídeo e os textos e você posta). Kwai e Bilibili não têm API aberta.
+# "navegador" = o AutoCortes posta clicando na página da rede, no Chrome com a sua sessão.
+# O Kwai não entra: o upload dele é só pelo app do celular, não existe envio pelo site.
 ENVIOS = {
-    "youtube": ("oficial", "upload_post", "manual"),
-    "tiktok": ("oficial", "upload_post", "manual"),
-    "instagram": ("oficial", "upload_post", "manual"),
+    "youtube": ("oficial", "upload_post", "navegador", "manual"),
+    "tiktok": ("oficial", "upload_post", "navegador", "manual"),
+    "instagram": ("oficial", "upload_post", "navegador", "manual"),
     "kwai": ("manual",),
-    "bilibili": ("manual",),
+    "bilibili": ("navegador", "manual"),
 }
 DIAS_SEMANA = ("seg", "ter", "qua", "qui", "sex", "sab", "dom")
 # campos que nunca voltam para o painel em texto puro
@@ -168,6 +170,20 @@ PADRAO: dict = {
         # pasta sincronizada (OneDrive, Google Drive...) que recebe o vídeo e os textos de cada
         # tarefa de postagem à mão, numa subpasta por rede ("" = não copia)
         "pasta": "",
+    },
+    "navegador": {
+        # usado pelas redes com envio = "navegador": o AutoCortes posta pela página da rede,
+        # no Chrome com um perfil separado (dados/chrome), onde você loga uma vez
+        "programa": "",  # "" = acha o Chrome e, se não houver, o Edge
+        "porta": 9222,
+        # false esconde a janela; para logar e para ver o que aconteceu, deixe true
+        "visivel": True,
+        # pausa aleatória entre os passos, em segundos (ritmo humano)
+        "pausa_min_seg": 0.4,
+        "pausa_max_seg": 1.6,
+        "tempo_limite_seg": 180,
+        # true preenche tudo e para antes de publicar (para você conferir)
+        "ensaio": False,
     },
     "metricas": {
         "ativo": True,
@@ -514,6 +530,14 @@ def validar(cfg: Config) -> None:
     for rede in PLATAFORMAS:
         opcao(rede, "envio", ENVIOS[rede])
     numero("youtube", "max_segundos", 15, 180)
+    numero("navegador", "porta", 1024, 65535)
+    numero("navegador", "pausa_min_seg", 0, 30)
+    numero("navegador", "pausa_max_seg", 0, 60)
+    numero("navegador", "tempo_limite_seg", 30, 1800)
+    if cfg["navegador"]["pausa_min_seg"] > cfg["navegador"]["pausa_max_seg"]:
+        erros.append("[navegador].pausa_min_seg não pode ser maior que pausa_max_seg")
+    if cfg["navegador"]["porta"] == cfg["painel"]["porta"]:
+        erros.append("[navegador].porta não pode ser a mesma do painel")
     if not re.fullmatch(r"\d{0,30}", str(cfg["instagram"]["facebook_pagina_id"]).strip()):
         erros.append("[instagram].facebook_pagina_id deve ter só os números do ID da Página")
     if re.search(r"[\x00-\x1f*?\"<>|]", str(cfg["manual"]["pasta"])):
