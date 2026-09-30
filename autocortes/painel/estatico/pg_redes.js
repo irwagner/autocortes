@@ -125,8 +125,11 @@ function statusContaHtml(r, envio) {
     titulo = r.pronta ? r.conta || "Sessão salva no navegador" : "Sem sessão no navegador";
     sub = r.pronta ? "pelo navegador, com a sua sessão" : r.motivo;
     if (r.gravando) { classe = "pendente"; icone = "microfone"; titulo = "Gravando o roteiro"; sub = "Poste um vídeo à mão na janela que abriu"; }
-    else if (r.roteiro && r.roteiro.tem) sub += ` · roteiro gravado (${plural(r.roteiro.passos, "passo", "passos")})`;
-    else if (r.pronta) sub += " · sem roteiro gravado: uso os passos que eu escrevi";
+    else if (r.roteiro && r.roteiro.tem) {
+      const erros = (r.roteiro.erros || []).length;
+      sub += ` · roteiro de ${plural(r.roteiro.linhas, "ação", "ações")}`;
+      if (erros) { classe = "erro"; icone = "erro"; sub += ` · ${plural(erros, "linha com problema", "linhas com problema")}`; }
+    } else if (r.pronta) sub += " · sem roteiro gravado: uso os passos que eu escrevi";
   } else if (r.pronta) {
     classe = "ok"; icone = "ok"; titulo = r.conta || "Pronta para postar"; sub = ROTULO_ENVIO[r.via] || r.via;
     if (r.facebook && r.facebook.ativo) sub += ` · também na Página${r.facebook.pagina ? ` ${r.facebook.pagina}` : " do Facebook"}`;
@@ -207,6 +210,7 @@ function botoesRede(rede, r, envio) {
     b.push(h`<button class="btn" data-acao="rede-testar" data-rede="${rede}">${ic("ok")}Testar a sessão</button>`);
     const tem = r.roteiro && r.roteiro.tem;
     b.push(h`<button class="btn ${r.pronta && !tem ? "primario" : ""}" data-acao="rede-gravar" data-rede="${rede}">${ic("microfone")}${tem ? "Gravar de novo" : "Aprender a postar"}</button>`);
+    b.push(h`<button class="btn" data-acao="rede-roteiro" data-rede="${rede}">${ic("terminal")}Ver o roteiro</button>`);
     if (tem) b.push(h`<button class="btn fantasma" data-acao="rede-roteiro-apagar" data-rede="${rede}">Apagar o roteiro</button>`);
     if (r.conta) b.push(h`<button class="btn fantasma" data-acao="rede-desconectar" data-rede="${rede}">Esquecer a conta</button>`);
   } else if (envio === "upload_post") {
@@ -626,6 +630,59 @@ App.acoes["grava-cancelar"] = async (el) => {
   fecharModal();
   toast("Gravação cancelada", "info");
   await App.paginas.redes.recarregar();
+};
+
+/* ------------------------------------------------------------ ver e editar o roteiro */
+
+function ajudaRoteiroHtml(comandos) {
+  return h`<details class="guia"><summary>${ic("lista")}Comandos que valem no roteiro</summary><div class="ajuda-roteiro">
+    ${(comandos || []).map((c) => h`<div class="cmd"><button type="button" class="tag-copiar" data-acao="roteiro-inserir" data-linha="${c.exemplo}" title="Inserir esta linha no roteiro"><code>${c.exemplo}</code>${ic("mais")}</button><small>${c.o_que}</small></div>`)}
+  </div></details>`;
+}
+
+function roteiroHtml(rede, d) {
+  const r = d.resumo;
+  const linhas = Math.max(14, Math.min(30, (d.texto || "").split("\n").length + 2));
+  return h`<div class="editor-roteiro">
+    <p class="nota">Uma ação por linha, na ordem em que eu faço. Linha que começa com <code>#</code> é comentário e não faz nada, então dá para desligar um passo sem apagar. Precisa de um tempo em algum ponto? Ponha <code>esperar 5</code> ali.</p>
+    ${ajudaRoteiroHtml(d.comandos)}
+    <label class="campo"><span>Roteiro do ${REDES[rede].rotulo}</span><textarea id="roteiro-texto" rows="${linhas}" spellcheck="false" placeholder="Nenhum roteiro ainda. Grave um em Aprender a postar, ou escreva aqui.">${d.texto || ""}</textarea></label>
+    <div id="roteiro-erros">${r && r.erros && r.erros.length ? h`<div class="aviso-rede">${ic("alerta")}<span>${r.erros.map((x) => h`${x}<br>`)}</span></div>` : ""}</div>
+    <p class="nota">${r ? h`${plural(r.linhas, "ação", "ações")}${r.papeis && r.papeis.length ? ` · escreve ${r.papeis.join(", ")}` : ""}` : "vazio"} · arquivo: <code class="caminho">${d.arquivo}</code></p>
+    <div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Fechar</button><button class="btn primario" data-acao="roteiro-salvar" data-rede="${rede}">${ic("check")}Salvar o roteiro</button></div>
+  </div>`;
+}
+
+App.acoes["rede-roteiro"] = async (el) => {
+  const rede = el.dataset.rede;
+  const d = await ocupado(el, () => api(`/redes/${rede}/roteiro`));
+  abrirModal({ titulo: `Roteiro do ${REDES[rede].rotulo}`, largura: 860, corpo: roteiroHtml(rede, d) });
+};
+
+App.acoes["roteiro-inserir"] = (el) => {
+  const area = $("#roteiro-texto");
+  if (!area) return;
+  const linha = el.dataset.linha;
+  const pos = area.selectionStart ?? area.value.length;
+  const quebra = area.value.slice(0, pos).match(/\n?$/) ? "" : "\n";
+  area.value = area.value.slice(0, pos) + quebra + linha + "\n" + area.value.slice(pos);
+  area.focus();
+  area.selectionStart = area.selectionEnd = pos + quebra.length + linha.length + 1;
+};
+
+App.acoes["roteiro-salvar"] = async (el) => {
+  const rede = el.dataset.rede;
+  const texto = ($("#roteiro-texto") || {}).value || "";
+  try {
+    const r = await ocupado(el, () => post(`/redes/${rede}/roteiro`, { texto }));
+    montar($("#roteiro-erros"), "");
+    toast(`Roteiro salvo: ${plural(r.resumo.linhas, "ação", "ações")}`, "ok");
+    await App.paginas.redes.recarregar();
+  } catch (e) {
+    const erros = (e.dados && e.dados.erros) || [String(e.message)];
+    montar($("#roteiro-erros"), h`<div class="aviso-rede">${ic("alerta")}<span>${erros.map((x) => h`${x}<br>`)}</span></div>`);
+    toast("Não salvei: veja o que está errado", "erro");
+  }
 };
 
 App.acoes["rede-roteiro-apagar"] = async (el) => {

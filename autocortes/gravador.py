@@ -1,47 +1,33 @@
-"""Aprender a postar: grava você publicando um vídeo à mão e guarda o roteiro para repetir depois.
+"""Aprender a postar: grava você publicando um vídeo à mão e escreve o roteiro em texto.
 
 O AutoCortes abre a página de envio da rede na janela dele (já logada), escuta os seus cliques e
-o que você digita, e monta um roteiro com várias formas de achar cada elemento. Depois, na hora
-de postar sozinho, ele repete esses passos com o texto do corte.
+o que você digita, e escreve um roteiro na linguagem de `roteiro.py`, que você pode ler e editar
+no painel.
 
 Para saber qual campo é qual, o painel te dá textos-marca (@@TITULO@@, @@DESCRICAO@@...): quando
-você cola um deles num campo, o gravador anota o papel daquele campo. Nada de adivinhação.
+você cola um deles num campo, o gravador anota o papel daquele campo. Numa rede com um campo de
+texto só, nem precisa: ele descobre por eliminação.
 
 Nunca grava campo de senha nem nada digitado em página de login.
 """
 
 from __future__ import annotations
 
-import json
 import re
-import time
 from pathlib import Path
 
 from .config import Config
-from .util import log, salvar_json, sem_acentos
+from .roteiro import MARCAS, NOMES, PAPEIS_DA_REDE, gerar
+from .util import log, sem_acentos
 
-VERSAO = 1
-# textos-marca que você cola nos campos para o gravador saber o papel de cada um.
-# A comparação é tolerante: maiúscula, acento, plural e espaço não importam, e
-# "@@legendas@@", "@@Legenda@@" ou "@@LEGEND@@" valem a mesma coisa.
-MARCAS = {
-    "titulo": "@@TITULO@@",
-    "descricao": "@@DESCRICAO@@",
-    "legenda": "@@LEGENDA@@",
-    "tags": "@@TAGS@@",
-    "fonte": "@@FONTE@@",
-}
+__all__ = ["SCRIPT", "analisar", "arquivo_roteiro", "carregar", "lista_passos", "papeis", "salvar"]
+
 _MARCA = re.compile(r"@@\s*([^@\s]{2,20})\s*@@")
-# o que cada rede precisa que você marque (o resto do que você digitar é repetido igual)
-PAPEIS_DA_REDE = {
-    "youtube": ("titulo", "descricao", "tags"),
-    "tiktok": ("legenda",),
-    "instagram": ("legenda",),
-    "bilibili": ("titulo", "descricao", "tags", "fonte"),
-}
 
 # Gravador injetado na página. Escuta na fase de captura e usa composedPath, então enxerga
-# também o que está dentro do shadow DOM (YouTube Studio).
+# também o que está dentro do shadow DOM (YouTube Studio). Além dos eventos, varre os campos de
+# texto de tempo em tempo: o editor de legenda do TikTok não dispara evento nenhum que dê para
+# escutar de fora, e a varredura é o que garante que o texto seja anotado.
 SCRIPT = r"""
 window.__acGrav = (() => {
   const passos = [];
@@ -132,9 +118,8 @@ window.__acGrav = (() => {
     if (el && el.tagName === "INPUT" && el.type === "password") return;
     anotar({ tipo: "tecla", tecla: ev.key });
   }, true);
-  // --- varredura: a rede do editor de texto de cada site dispara eventos diferentes (o do TikTok
-  // não dispara nenhum que dê para escutar), então de tempo em tempo eu comparo o conteúdo de todos
-  // os campos de texto da página. É o que garante que o que você escreveu seja anotado.
+
+  // --- varredura dos campos de texto (não depende de evento nenhum)
   const raizes = () => {
     const achadas = [document];
     const fila = [document];
@@ -196,7 +181,7 @@ window.__acGrav = (() => {
 
 
 def arquivo_roteiro(cfg: Config, rede: str) -> Path:
-    return cfg.pasta_dados / "roteiros" / f"{rede}.json"
+    return cfg.pasta_dados / "roteiros" / f"{rede}.txt"
 
 
 def papeis(rede: str) -> dict:
@@ -215,11 +200,6 @@ def _papel_do_valor(valor: str) -> tuple[str | None, list[str]]:
                 return papel, []
         estranhas.append(achado.group(0))
     return None, estranhas
-
-
-def tem_marca(valor: str) -> bool:
-    """Tem cara de marca colada (mesmo que eu não reconheça qual é)."""
-    return bool(_MARCA.search(valor))
 
 
 def limpar_passos(rede: str, passos: list[dict]) -> list[dict]:
@@ -324,47 +304,6 @@ def analisar(rede: str, passos: list[dict]) -> dict:
     }
 
 
-def salvar(cfg: Config, rede: str, passos: list[dict], url_inicial: str, confirmacao: str = "") -> dict:
-    """Grava o roteiro aprendido, se ele servir. Devolve ok=False sem gravar quando não serve."""
-    a = analisar(rede, passos)
-    limpos = a.pop("passos_limpos")
-    if a["faltando"] or a["estranhas"] or not a["tem_arquivo"]:
-        # roteiro pela metade postaria texto errado: não gravo nem apago o que já havia
-        log.warning("%s: gravação descartada (falta %s, marcas estranhas %s, vídeo %s)",
-                    rede, a["faltando"] or "nada", a["estranhas"] or "nenhuma", a["tem_arquivo"])
-        return {"ok": False, "passos": len(limpos), **a}
-    roteiro = {
-        "versao": VERSAO,
-        "rede": rede,
-        "gravado_em": time.time(),
-        "url_inicial": url_inicial,
-        "passos": limpos,
-        "publicar_em": a["publicar_em"],
-        "confirmacao": confirmacao[:300],
-    }
-    destino = arquivo_roteiro(cfg, rede)
-    salvar_json(destino, roteiro)
-    log.info("%s: roteiro aprendido com %d passos salvo em %s", rede, len(limpos), destino)
-    return {"ok": True, **resumo(roteiro), **a, "arquivo": str(destino)}
-
-
-def carregar(cfg: Config, rede: str) -> dict | None:
-    arquivo = arquivo_roteiro(cfg, rede)
-    if not arquivo.is_file():
-        return None
-    try:
-        dados = json.loads(arquivo.read_text(encoding="utf-8"))
-    except (ValueError, OSError) as e:
-        log.warning("%s: roteiro aprendido ilegível (%s)", rede, e)
-        return None
-    if not isinstance(dados, dict) or dados.get("versao") != VERSAO or not dados.get("passos"):
-        return None
-    return dados
-
-
-NOMES = {"titulo": "título", "descricao": "descrição", "legenda": "legenda", "tags": "tags", "fonte": "fonte"}
-
-
 def fragil(passo: dict) -> bool:
     """Passo sem âncora estável: só sobrou o caminho na página, que quebra fácil."""
     seletores = passo.get("seletores") or []
@@ -407,20 +346,32 @@ def lista_passos(rede: str, passos: list[dict]) -> list[dict]:
     return saida
 
 
-def resumo(roteiro: dict | None) -> dict:
-    """Resumo para o painel: quantos passos, quais papéis e quando foi gravado."""
-    if not roteiro:
-        return {"tem": False}
-    passos = roteiro.get("passos") or []
-    contagem: dict[str, int] = {}
-    for passo in passos:
-        contagem[passo["tipo"]] = contagem.get(passo["tipo"], 0) + 1
-    return {
-        "tem": True,
-        "gravado_em": roteiro.get("gravado_em"),
-        "passos": len(passos),
-        "contagem": contagem,
-        "papeis": sorted({p["papel"] for p in passos if p.get("papel")}),
-        "tem_arquivo": any(p["tipo"] == "arquivo" for p in passos),
-        "confirmacao": roteiro.get("confirmacao") or "",
-    }
+def salvar(cfg: Config, rede: str, passos: list[dict], url_inicial: str, confirmacao: str = "") -> dict:
+    """Escreve o roteiro em texto, se ele servir. Devolve ok=False sem gravar quando não serve."""
+    a = analisar(rede, passos)
+    limpos = a.pop("passos_limpos")
+    if a["faltando"] or a["estranhas"] or not a["tem_arquivo"]:
+        # roteiro pela metade postaria texto errado: não gravo nem apago o que já havia
+        log.warning("%s: gravação descartada (falta %s, marcas estranhas %s, vídeo %s)",
+                    rede, a["faltando"] or "nada", a["estranhas"] or "nenhuma", a["tem_arquivo"])
+        return {"ok": False, "passos": len(limpos), **a}
+    texto = gerar(rede, limpos, url_inicial, confirmacao, a["publicar_em"])
+    destino = arquivo_roteiro(cfg, rede)
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    destino.write_text(texto, encoding="utf-8")
+    log.info("%s: roteiro de %d passos escrito em %s", rede, len(limpos), destino)
+    return {"ok": True, "passos": len(limpos), "papeis": sorted({p["papel"] for p in limpos if p.get("papel")}),
+            **a, "arquivo": str(destino), "texto": texto}
+
+
+def carregar(cfg: Config, rede: str) -> str | None:
+    """O texto do roteiro salvo ("" não conta)."""
+    arquivo = arquivo_roteiro(cfg, rede)
+    if not arquivo.is_file():
+        return None
+    try:
+        texto = arquivo.read_text(encoding="utf-8")
+    except OSError as e:
+        log.warning("%s: não consegui ler o roteiro (%s)", rede, e)
+        return None
+    return texto if texto.strip() else None

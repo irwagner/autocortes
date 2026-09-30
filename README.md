@@ -140,7 +140,9 @@ Atualizado em setembro de 2026.
 | Edição vertical (legenda, título, barra, áudio) | ✅ Pronta e testada |
 | Envio para YouTube, TikTok e Instagram pela API oficial | 🧪 Pronto; testado contra um servidor simulado, ainda não nas APIs reais |
 | Envio pelo Upload-Post (opcional, por rede) | 🧪 Pronto; testado contra um servidor simulado, ainda não no serviço real |
-| Envio pelo seu navegador (YouTube, TikTok, Instagram, Bilibili) | ⚠️ Mecânica pronta e testada com o Chrome real; os seletores das páginas só dão para validar com a conta logada, no ensaio |
+| Envio pelo seu navegador (YouTube, TikTok, Instagram, Bilibili) | ⚠️ Mecânica pronta e testada com o Chrome real; cada roteiro só dá para validar com a conta logada, no ensaio |
+| "Aprender a postar": grava o roteiro enquanto você posta à mão | ⚠️ Pronto e testado com o Chrome real; a gravação de cada rede depende da conta logada |
+| Roteiro como linguagem simples, editável no painel | ✅ Pronto e testado |
 | Instagram também na Página do Facebook (opcional) | 🧪 Pronto, pela API oficial e pelo Upload-Post; testado contra um servidor simulado |
 | Kwai, Bilibili e postagem à mão em qualquer rede | ✅ Pronto e testado: tarefas no Início com vídeo, textos por rede, "Já postei" e pasta sincronizada |
 | YouTube só com Shorts (vertical ou quadrado, até o limite de duração) | ✅ Pronto e testado |
@@ -225,7 +227,7 @@ Abre no navegador pelo `AutoCortes.bat`. A lateral mostra se o motor está ligad
 - **Agenda:** calendário de 7 ou 14 dias com cada horário e o corte previsto, dias de conteúdo por rede, pausa geral, horários e dias de cada rede, presets e regras (variação, tolerância, intervalo, limites e tentativas).
 - **Cortes:** abas por situação (aguardando aprovação, na fila, encontrados, publicados e descartados), filtro por filme e aprovar todos. O detalhe de cada corte tem o vídeo, por que o trecho foi escolhido, os textos do post (editar, gerar com IA, ver como o post sai), a situação em cada rede (e na Página do Facebook) com "Postar agora", "Postar à mão" ou "Ver a tarefa", e o histórico.
 - **Filmes:** enviar filmes e legendas arrastando para a página, situação e progresso da análise, reanalisar, ignorar e editar título, ano, hashtags e idioma.
-- **Redes sociais:** modo simulação ou publicação real, forma de envio de cada rede (API oficial, Upload-Post, pelo navegador ou à mão), conectar (YouTube e TikTok pelo navegador, Instagram colando o token), testar e desconectar, com passo a passo e as opções dos posts (duração máxima do YouTube, Página do Facebook, tags do Bilibili), mais a pasta sincronizada da postagem à mão.
+- **Redes sociais:** modo simulação ou publicação real, forma de envio de cada rede (API oficial, Upload-Post, pelo navegador ou à mão), conectar (YouTube e TikTok pelo navegador, Instagram colando o token), testar e desconectar, com passo a passo e as opções dos posts (duração máxima do YouTube, Página do Facebook, tags do Bilibili), mais a pasta sincronizada da postagem à mão. Nas redes pelo navegador, "Aprender a postar" grava o roteiro com log ao vivo, desfazer e recomeçar, e "Ver o roteiro" abre o editor da [linguagem de roteiro](#aprender-a-postar-e-o-roteiro).
 - **Estúdio:** o visual dos cortes numa tela de celular. Arraste o vídeo, o título e a legenda para cima e para baixo (ou use as setas do teclado), escolha ou envie a moldura, o tamanho do vídeo (Menor, Inteiro com o quadro todo, Padrão de 1,25x e Maior de 1,7x, ou o valor exato), o fundo, a fonte, o tamanho e as cores do título e da legenda, a barra e o fade. "O que os apps cobrem" mostra as faixas onde ficam os botões e a descrição das redes, e "Como vai sair" mostra o quadro gerado pelo mesmo editor dos cortes.
 - **Configurações:** abas Geral, Cortes, Vídeo (qualidade e volume), Textos dos posts, IA, Transcrição e Sistema, com exemplo do post, teste da IA, download do modelo de transcrição e iniciar com o Windows. As alterações ficam pendentes numa barra no rodapé até você salvar (Ctrl+S também salva).
 - **Registro:** mensagens ao vivo, com busca, filtro de avisos e erros e cópia.
@@ -336,8 +338,9 @@ Funciona em **YouTube, TikTok, Instagram e Bilibili**. O Kwai não entra: o uplo
 | 1 | Em Redes sociais, escolha "Pelo seu navegador" na rede e salve |
 | 2 | Clique em **Conectar**: abre a janela do Chrome do AutoCortes. Entre na conta e resolva o 2FA |
 | 3 | Clique em **Testar a sessão**: o AutoCortes abre a página de envio e confirma |
-| 4 | Ligue o **ensaio** no cartão "Postagem pelo navegador" e poste um corte: ele preenche tudo, **não publica** e guarda uma imagem da tela em `dados/navegador` |
-| 5 | Conferiu? Desligue o ensaio |
+| 4 | Clique em **Aprender a postar** e poste um vídeo à mão, uma vez: o AutoCortes assiste e escreve o roteiro ([veja abaixo](#aprender-a-postar-e-o-roteiro)) |
+| 5 | Ligue o **ensaio** no cartão "Postagem pelo navegador" e poste um corte: ele segue o roteiro, **não publica** e guarda uma imagem da tela em `dados/navegador` |
+| 6 | Conferiu? Desligue o ensaio |
 
 O que o AutoCortes faz e não faz:
 - Pausa aleatória entre os passos, uma aba por vez e o limite diário da agenda, como em qualquer rede.
@@ -346,7 +349,45 @@ O que o AutoCortes faz e não faz:
 - Sem API não há link do post na hora: o histórico guarda um número interno, e o link aparece quando a própria página mostra (o YouTube mostra).
 - A Página do Facebook continua pela API. Com o Instagram no navegador, ligue "Compartilhar no Facebook" na hora de publicar.
 
-**O ponto fraco:** os seletores das páginas. Quando a rede muda o layout, o envio falha com o passo que quebrou e uma imagem da tela, e precisa de ajuste no código. Testei a mecânica contra páginas que imitam cada rede (inclusive o shadow DOM do YouTube Studio) e a checagem de sessão contra os sites reais, mas os seletores só podem ser validados com a conta logada, no ensaio.
+**O ponto fraco:** os seletores das páginas. Quando a rede muda o layout, o envio falha com o passo que quebrou e uma imagem da tela. Aí é gravar de novo (ou ajustar uma linha do roteiro), sem mexer no código. Testei a mecânica contra páginas que imitam cada rede (inclusive o shadow DOM do YouTube Studio) e a checagem de sessão contra os sites reais, mas cada roteiro só pode ser validado com a conta logada, no ensaio.
+
+#### Aprender a postar, e o roteiro
+
+Em vez de deixar os cliques de cada rede fixos no código, o AutoCortes **aprende assistindo**. Em Redes sociais, "Aprender a postar" abre a página de envio, e você posta um vídeo à mão como faria normalmente. Enquanto isso, o painel mostra o **log de ações ao vivo**: cada clique, cada campo preenchido, cada passo reconhecido. Se faltar algo, repita o passo ali mesmo, ou use **Desfazer** e **Recomeçar**. No fim, clique em **Terminei**.
+
+Para saber qual texto vai em qual campo, cole a **marca** no campo durante a gravação: `@@TITULO@@`, `@@DESCRICAO@@`, `@@LEGENDA@@`, `@@TAGS@@` ou `@@FONTE@@`. Quando a rede tem só um campo de texto (TikTok e Instagram), escreva normal: o AutoCortes deduz por eliminação. Um detalhe: **espere o envio do vídeo terminar antes de clicar em publicar**, senão o roteiro sai com o clique cedo demais.
+
+O que sai da gravação é um **roteiro em texto**, uma ação por linha, em `dados/roteiros/<rede>.txt`. "Ver o roteiro" abre o editor no painel, com a lista de comandos ao lado:
+
+```
+# Roteiro do TikTok
+abrir https://www.tiktok.com/tiktokstudio/upload
+clicar #escolher ou "Selecionar vídeo"
+video
+escrever legenda em #legenda ou div[contenteditable="true"]
+esperar "Enviado"
+esperar 3
+publicar #post ou "Publicar agora"
+conferir "foi publicado"
+```
+
+| Comando | O que faz |
+|---|---|
+| `abrir <endereço>` | vai para a página. Costuma ser a primeira linha |
+| `video [em <alvo>]` | entrega o corte no campo de arquivo; sem o `em`, procura sozinho |
+| `clicar <alvo>` | clica no primeiro alvo que existir e estiver habilitado |
+| `publicar <alvo>` | o clique que publica. No ensaio eu paro aqui, sem clicar |
+| `escrever <papel\|"texto"> em <alvo>` | escreve título, descrição, legenda, fonte, ou um texto fixo entre aspas |
+| `tags em <alvo>` | escreve cada hashtag e tecla Enter, uma por uma |
+| `esperar <n>` | para de 1 a 900 segundos sem fazer nada |
+| `esperar <alvo>` | espera o texto aparecer na tela. Melhor que contar tempo |
+| `tecla Enter\|Tab\|Escape` | tecla no campo em que está |
+| `rolar [px]` | rola a página para baixo |
+| `conferir <alvo>` | no fim, espera a confirmação da rede; se não vier, aviso sem tratar como erro |
+| `opcional <linha>` | na frente de qualquer linha: se não achar o alvo, segue em frente |
+| `# comentário` | linha que começa com `#` não faz nada. Serve para desligar um passo sem apagar |
+
+Alvo entre **aspas** é procurado pelo texto que aparece na tela (`innerText`, `aria-label` ou `title`, em qualquer elemento); **sem aspas** é seletor CSS. Alternativas vão separadas por ` ou `, e a primeira que existir na página vence. Ao salvar, o roteiro é conferido linha a linha: erro de escrita, roteiro sem `video`, sem `publicar` ou sem os campos obrigatórios da rede não grava, e o painel aponta a linha.
 
 ### Postagem à mão (Kwai, Bilibili e qualquer rede)
 

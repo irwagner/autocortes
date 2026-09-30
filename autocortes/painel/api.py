@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .. import (__version__, agenda, analise, config, edicao, ferramentas, gravador, ia, metricas, modelos_visuais,
-                planejador)
+                planejador, roteiro)
 from ..config import ENVIOS, PLATAFORMAS, ROTULOS, ErroConfig
 from ..midia import ErroMidia, Interrompido, base_ffmpeg, executar
 from ..navegador import ErroNavegador
@@ -196,7 +196,8 @@ def _resumo_redes(ctx: Contexto) -> dict:
                 "pagina": plataforma.pagina() if hasattr(plataforma, "pagina") else None,
             }
         if cfg[rede]["envio"] == "navegador":
-            saida[rede]["roteiro"] = gravador.resumo(gravador.carregar(cfg, rede))
+            texto = gravador.carregar(cfg, rede)
+            saida[rede]["roteiro"] = {"tem": bool(texto), **(roteiro.resumo(texto, rede) if texto else {})}
             saida[rede]["gravando"] = rede in ctx.painel.gravacoes
     return saida
 
@@ -1634,6 +1635,37 @@ def apagar_roteiro(ctx: Contexto, rede):
     gravador.arquivo_roteiro(ctx.cfg, rede).unlink(missing_ok=True)
     log.info("%s: roteiro aprendido apagado pelo painel", ROTULOS[rede])
     return {"ok": True}
+
+
+@rota("GET", r"/redes/(\w+)/roteiro")
+def ler_roteiro(ctx: Contexto, rede):
+    """O texto do roteiro, para você ver e editar."""
+    rede = _rede(rede)
+    texto = gravador.carregar(ctx.cfg, rede) or ""
+    return {
+        "rede": rede,
+        "texto": texto,
+        "resumo": roteiro.resumo(texto, rede) if texto else None,
+        "comandos": roteiro.AJUDA,
+        "papeis": sorted(roteiro.PAPEIS_DA_REDE.get(rede, ())),
+        "arquivo": str(gravador.arquivo_roteiro(ctx.cfg, rede)),
+    }
+
+
+@rota("POST", r"/redes/(\w+)/roteiro")
+def salvar_roteiro(ctx: Contexto, rede):
+    """Grava o roteiro editado, recusando o que eu não consigo executar."""
+    rede = _rede(rede)
+    texto = str(ctx.corpo.get("texto") or "")
+    _exigir(len(texto) <= 40000, "Roteiro grande demais")
+    instrucoes, erros = roteiro.analisar(texto, rede)
+    if erros:
+        raise ErroHttp(400, "O roteiro tem linhas que eu não consigo executar", {"erros": erros})
+    destino = gravador.arquivo_roteiro(ctx.cfg, rede)
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    destino.write_text(texto if texto.endswith("\n") else texto + "\n", encoding="utf-8")
+    log.info("%s: roteiro editado pelo painel (%d linhas de ação)", ROTULOS[rede], len(instrucoes))
+    return {"ok": True, "resumo": roteiro.resumo(texto, rede)}
 
 
 @rota("POST", r"/redes/(\w+)/testar")

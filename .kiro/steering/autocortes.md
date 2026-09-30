@@ -26,6 +26,8 @@ App local para Windows que corta filmes em vídeos verticais 1080x1920 e posta s
 - Arrastar no Edge sem janela: eventos sintéticos não servem para `setPointerCapture`; usar `Input.dispatchMouseEvent` do DevTools.
 - Script de teste em Node com saída longa: o `*>` do PowerShell pode perder o fim do log se o comando estourar o tempo. Gravar o log pelo próprio script (`fs.appendFileSync`) e rodar com `Start-Process ... -PassThru` + `WaitForExit`.
 - APIs das redes nos testes: servidor HTTP simulado local e trocar as URLs da instância (`graph_url`, `rupload_facebook_url`, `api` do Upload-Post); `instagram.esperar` pode ser trocado para não dormir entre as consultas.
+- `config.toml` de teste: escrever um mínimo, à mão. Copiar o `config.example.toml` e acrescentar uma chave (`envio`, por exemplo) gera chave duplicada, o tomlkit recusa e o painel morre na abertura.
+- Chrome ou Edge de teste segurando a pasta do perfil faz o `Remove-Item` falhar: matar antes pelos processos com `_teste` na linha de comando (`Get-CimInstance Win32_Process`).
 
 ## Lições do painel
 - Os scripts das telas dividem o mesmo escopo global: nomes de nível superior não podem repetir entre arquivos (prefixar, como `cfg*` no `pg_config.js`).
@@ -41,14 +43,27 @@ App local para Windows que corta filmes em vídeos verticais 1080x1920 e posta s
 - `abrirModal` foca o primeiro campo do corpo: em tela estreita isso rola a janela. Marcar com `autofocus` o que deve receber o foco.
 
 ## Envio pelo navegador (DevTools)
-- `navegador.py` é a camada base: cliente WebSocket próprio (a biblioteca padrão não tem), CDP, abertura do Chrome com perfil em `dados/chrome` e os ajudantes. `plataformas/navegador.py` tem o `ViaNavegador` e um roteiro por rede. Kwai fora: não existe página de envio.
+- `navegador.py` é a camada base: cliente WebSocket próprio (a biblioteca padrão não tem), CDP, abertura do Chrome com perfil em `dados/chrome` e os ajudantes. `plataformas/navegador.py` tem o `ViaNavegador`, que executa o roteiro da rede. Kwai fora: não existe página de envio.
 - O ajudante `__ac` é injetado na página e faz busca que **entra no shadow DOM**: sem isso o YouTube Studio (Polymer) é inalcançável. Ele se perde a cada navegação, então todo ajudante chama `_garantir_ajudante`.
 - Arquivo: `DOM.setFileInputFiles` pelo `objectId` (`Runtime.evaluate` sem `returnByValue` + `DOM.requestNode`), que alcança campo escondido e no shadow DOM. **Antes é obrigatório chamar `DOM.getDocument`**, senão o `requestNode` volta vazio. O Chrome aceita caminho inexistente calado: conferir antes.
+- Busca por texto (`__ac.porTexto`): junta `innerText` + `aria-label` + `title` **num só texto** e olha **qualquer tag** (`*`), com nota por casamento exato, clicável e ser folha. Restringir a `button, span, a` ou usar `||` entre os atributos não acha o botão de publicar do TikTok, que é uma `div` com "Post" visível e "Publicar agora" no `aria-label`.
+- Botão desabilitado (`disabled`, `aria-disabled`, classe com `disabled`) **não conta como achado**: assim o passo de publicar espera ele liberar (até 900 s) em vez de clicar num botão morto ou desistir em 30 s.
+- Na repetição do roteiro, `__ac.travarArquivo()` sobrescreve `HTMLInputElement.prototype.click` (para `type=file`) e `showOpenFilePicker`: sem isso o clique em "Selecionar vídeo" abre a janela do Windows e trava tudo. O vídeo entra sempre pelo CDP.
 - Sessão: nada de procurar texto de login. Medido em set/2026, deslogado: o YouTube vai para o `accounts.google.com`, o Instagram mostra `input[type=password]`, e o TikTok e o Bilibili ficam na mesma URL com a página vazia. Por isso `esperar_sessao` espera um **sinal positivo** por rede (`SESSAO`), e o nome da conta do Instagram exige um `img` dentro do link, senão pega "popular" do rodapé.
 - Iframes: só reclamar de quadro que pareça uploader; Bilibili e YouTube têm quadros de terceiros inofensivos.
 - Ensaio (`[navegador].ensaio`): preenche tudo, não publica e devolve erro do tipo "corte", então a postagem fica como recusada com o motivo. Toda falha guarda imagem em `dados/navegador`.
 - Testar: páginas falsas locais que imitam cada rede (com uma em shadow DOM) mais a checagem de sessão contra os sites reais, deslogado. Os seletores reais só dão para validar com conta logada.
 - Sem API não há id nem link: `Resultado` leva `navegador-<hex>` e o link só quando a página mostra.
+
+## Gravador e linguagem de roteiro
+- O roteiro **não fica no código**: é gravado enquanto o usuário posta à mão (`gravador.py` + `Gravacao` em `plataformas/navegador.py`) e vive em `dados/roteiros/<rede>.txt`, **fonte única**. Nada de guardar JSON ao lado do texto: duas representações divergem.
+- `roteiro.py` é a linguagem: um comando por linha, `abrir`, `video`, `clicar`, `publicar`, `escrever <papel|"texto"> em <alvo>`, `tags em`, `esperar <n>` ou `esperar <alvo>`, `tecla`, `rolar`, `conferir`, prefixo `opcional`, `#` comentário. Alternativas com ` ou `; alvo entre aspas é busca por texto na tela, sem aspas é seletor CSS. `AJUDA` alimenta a lista do painel.
+- `publicar` **é** o clique que publica (o ensaio para antes dele), não um marcador separado. Comentário só no começo da linha, porque `clicar #post` usa `#` como seletor.
+- `validar` recusa salvar roteiro sem `video`, sem `publicar` ou sem os papéis obrigatórios da rede (`PAPEIS_DA_REDE`), e devolve os erros por linha ("linha 3: ..."). `gravador.salvar` devolve `ok: False` sem gravar.
+- A gravação **varre os campos de texto a cada 0,9 s** em vez de confiar em eventos: o editor do TikTok não dispara nada escutável. Os listeners continuam, só para saber a ordem.
+- Papel do campo: marcas toleranteseliminação — `@@legendas@@` casa com `@@LEGENDA@@`, e quando falta 1 papel e há 1 campo sem dono o papel é deduzido. Por isso TikTok e Instagram não precisam de marca.
+- O painel mostra o log de ações ao vivo, com desfazer, recomeçar e diagnóstico da página; avisar o usuário para **esperar o envio do vídeo terminar antes de clicar em publicar**, senão o roteiro sai com o clique cedo demais.
+- Extensão do Chrome foi descartada: `input.files` é somente leitura, rodaria no perfil pessoal e seria um segundo código para manter. Navegador dentro do painel é impossível (`X-Frame-Options: DENY` no YouTube Studio e Instagram, `SAMEORIGIN` no TikTok).
 
 ## Postagem à mão e Página do Facebook
 - Tarefa à mão = postagem com status `aguardando` e `via = 'manual'`. Não usar a palavra "manual" em status: `postagens.manual = 1` já quer dizer "Postar agora" (fora da agenda), que o painel mostra como "fora da agenda".

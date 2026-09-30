@@ -342,10 +342,14 @@ class Aba:
         """Espera um tempo aleatório entre os passos (ritmo humano, não é disfarce)."""
         import random
 
-        segundos = random.uniform(*self.ritmo) * fator
-        if self.parar is not None and self.parar.wait(segundos):
-            raise ErroNavegador("interrompido pelo usuário")
-        elif self.parar is None:
+        self.pausa_fixa(random.uniform(*self.ritmo) * fator)
+
+    def pausa_fixa(self, segundos: float) -> None:
+        """Espera o tempo pedido, acordando na hora se o motor pedir para parar."""
+        if self.parar is not None:
+            if self.parar.wait(segundos):
+                raise ErroNavegador("interrompido pelo usuário")
+        else:
             time.sleep(segundos)
 
     def esperar(self, expressao: str, segundos: float = 30, o_que: str = ""):

@@ -22,7 +22,7 @@ import time
 import uuid
 from pathlib import Path
 
-from .. import gravador
+from .. import gravador, roteiro
 from ..config import ROTULOS, Config
 from ..navegador import TRAVA, Aba, ErroNavegador, Navegador
 from ..textos import Conteudo
@@ -213,11 +213,11 @@ class ViaNavegador(Plataforma):
         ensaio = bool(self.nav["ensaio"])
         aprendido = gravador.carregar(self.cfg, self.nome)
         if aprendido:
-            def roteiro(aba, arq, t, ens):
+            def passo_a_passo(aba, arq, t, ens):
                 return self._repetir(aba, aprendido, arq, t, ens)
         else:
-            roteiro = {"youtube": self._youtube, "tiktok": self._tiktok,
-                       "instagram": self._instagram, "bilibili": self._bilibili}[self.nome]
+            passo_a_passo = {"youtube": self._youtube, "tiktok": self._tiktok,
+                             "instagram": self._instagram, "bilibili": self._bilibili}[self.nome]
         t = textos(self.cfg, self.nome, conteudo)
         with TRAVA:
             navegador = Navegador(self.cfg, parar)
@@ -234,7 +234,7 @@ class ViaNavegador(Plataforma):
                         "a página de envio está dentro de um quadro (iframe) que eu não alcanço: "
                         f"{quadros[0]}. Use o envio à mão nesta rede até eu ajustar", "bloqueio",
                     )
-                resultado = roteiro(aba, arquivo, t, ensaio)
+                resultado = passo_a_passo(aba, arquivo, t, ensaio)
                 if ensaio:
                     self._guardar_imagem(aba, "ensaio")
                     raise ErroNavegador(
@@ -254,91 +254,101 @@ class ViaNavegador(Plataforma):
         """Sem API não há id do post: guarda um número nosso e o link, quando a página mostra."""
         return Resultado(f"navegador-{uuid.uuid4().hex[:12]}", url, observacao)
 
-    # ---- roteiro aprendido (você postou uma vez e o AutoCortes anotou)
-    def _repetir(self, aba: Aba, roteiro: dict, arquivo: Path, t: dict, ensaio: bool) -> Resultado:
+    # ---- roteiro que você gravou (e pode editar no painel)
+    def _repetir(self, aba: Aba, texto_roteiro: str, arquivo: Path, t: dict, ensaio: bool) -> Resultado:
+        try:
+            instrucoes = roteiro.validar(texto_roteiro, self.nome)
+        except roteiro.ErroRoteiro as e:
+            raise ErroNavegador(
+                f"o roteiro tem linha com problema: {'; '.join(e.erros[:3])}. Corrija em Redes sociais > "
+                "Ver o roteiro", "bloqueio",
+            ) from e
         aba.js("__ac.travarArquivo()")  # o clique em "selecionar vídeo" não pode abrir a janela do Windows
-        passos = list(roteiro.get("passos") or [])
-        publicar_em = roteiro.get("publicar_em")
-        if not isinstance(publicar_em, int) or not 0 <= publicar_em < len(passos):
-            cliques = [i for i, p in enumerate(passos) if p["tipo"] == "clicar"]
-            publicar_em = cliques[-1] if cliques else len(passos)
-        for i, passo in enumerate(passos):
-            if i == publicar_em:
-                if ensaio:
-                    log.info("%s: ensaio, paro antes de clicar em publicar", self.rotulo)
-                    return self._fim()
+        for ins in instrucoes:
+            if ins.comando == "publicar" and ensaio:
+                log.info("%s: ensaio, paro antes de \u201c%s\u201d", self.rotulo, ins.descricao)
+                return self._fim()
+            if ins.comando == "publicar":
                 _conferir_bloqueio(aba)
-            # o botão de publicar só libera quando o envio do vídeo termina: espera o quanto precisar
-            segundos = 900 if i == publicar_em else 90
-            self._passo(aba, passo, arquivo, t, i, segundos)
-        confirmacao = str(roteiro.get("confirmacao") or "")
-        if confirmacao:
-            self._esperar_confirmacao(aba, confirmacao)
+            try:
+                self._rodar(aba, ins, arquivo, t)
+            except ErroNavegador as e:
+                if ins.opcional:
+                    log.info("%s: passo opcional da linha %d não deu, seguindo (%s)", self.rotulo, ins.linha, e)
+                    continue
+                raise ErroNavegador(
+                    f"a linha {ins.linha} do roteiro não funcionou (\u201c{ins.descricao}\u201d): {e}. "
+                    "Ajuste ou grave de novo em Redes sociais > Ver o roteiro", e.tipo,
+                ) from e
         link = self._link_na_pagina(aba)
         return self._fim("publicado pelo roteiro que você gravou", link)
 
-    def _passo(self, aba: Aba, passo: dict, arquivo: Path, t: dict, indice: int, segundos: float = 90) -> None:
-        tipo = passo.get("tipo")
-        onde = f"passo {indice + 1} ({tipo})"
-        try:
-            if tipo == "arquivo":
-                aba.enviar_arquivo(passo["seletores"], arquivo, segundos)
-            elif tipo == "clicar":
-                self._clicar_passo(aba, passo, segundos)
-            elif tipo == "digitar":
-                self._digitar_passo(aba, passo, t, segundos)
-            elif tipo == "tecla":
-                aba.tecla(passo.get("tecla") or "Enter")
-        except ErroNavegador as e:
-            alvo = passo.get("texto") or passo.get("rotulo") or (passo.get("seletores") or ["?"])[0]
-            raise ErroNavegador(
-                f"o {onde} do roteiro que você gravou não funcionou (\"{alvo}\"): {e}. A página deve ter mudado: "
-                "grave o roteiro de novo em Redes sociais", e.tipo,
-            ) from e
+    def _rodar(self, aba: Aba, ins: roteiro.Instrucao, arquivo: Path, t: dict) -> None:
+        # o botão de publicar só libera quando o envio do vídeo termina: espera o quanto precisar
+        segundos = 900 if ins.comando in ("publicar", "conferir") else 90
+        if ins.comando == "abrir":
+            aba.navegar(ins.url, 60)
+        elif ins.comando == "video":
+            aba.enviar_arquivo(self._seletores(ins), arquivo, segundos)
+        elif ins.comando in ("clicar", "publicar"):
+            self._clicar(aba, ins, segundos)
+        elif ins.comando == "escrever":
+            self._escrever(aba, ins, t, segundos)
+        elif ins.comando == "tags":
+            for tag in (t.get("tags") or [])[:15]:  # cada tag entra e é confirmada com Enter
+                aba.digitar(self._seletores(ins), str(tag), segundos)
+                aba.tecla("Enter")
+        elif ins.comando == "tecla":
+            aba.tecla(ins.tecla)
+        elif ins.comando == "esperar":
+            if ins.segundos is not None:
+                aba.pausa_fixa(ins.segundos)
+            else:
+                self._esperar_alvo(aba, ins, 300)
+        elif ins.comando == "conferir":
+            try:
+                self._esperar_alvo(aba, ins, segundos)
+            except ErroNavegador as e:
+                log.warning("%s: %s (o vídeo pode ter sido publicado; confira na rede)", self.rotulo, e)
+        elif ins.comando == "rolar":
+            aba.js(f"(() => {{ window.scrollBy(0, {int(ins.segundos or 600)}); return 1; }})()")
+            aba.pausa()
 
-    def _clicar_passo(self, aba: Aba, passo: dict, segundos: float = 90) -> None:
+    @staticmethod
+    def _seletores(ins: roteiro.Instrucao) -> list[str]:
+        return [a.valor for a in ins.alvos if not a.por_texto] or ["input[type=file]"]
+
+    def _clicar(self, aba: Aba, ins: roteiro.Instrucao, segundos: float) -> None:
         aba.js("__ac.travarArquivo()")  # a página pode ter navegado e perdido a trava
-        textos_alvo = [x for x in (passo.get("texto"), passo.get("rotulo"), passo.get("dica")) if x]
         # o seletor que já está na página e habilitado é o caminho mais direto
-        for seletor in passo.get("seletores") or []:
-            if aba.js(f"__ac.ligado({json.dumps(seletor)})"):
-                aba.clicar(seletor, 30)
+        for alvo in ins.alvos:
+            if not alvo.por_texto and aba.js(f"__ac.ligado({json.dumps(alvo.valor)})"):
+                aba.clicar(alvo.valor, 30)
                 return
-        if textos_alvo:
+        textos = [a.valor for a in ins.alvos if a.por_texto]
+        if textos:
             # a classe mudou (ou é uma div sem nada estável), mas o texto do botão costuma ficar.
             # Espera ele aparecer habilitado: o botão de publicar só libera com o envio terminado.
-            aba.clicar_texto("*", textos_alvo, segundos)
+            aba.clicar_texto("*", textos, segundos)
             return
-        aba.clicar(passo.get("seletores") or [], segundos)  # deixa o erro sair com o seletor original
+        aba.clicar([a.valor for a in ins.alvos], segundos)  # deixa o erro sair com o alvo original
 
-    def _digitar_passo(self, aba: Aba, passo: dict, t: dict, segundos: float = 90) -> None:
-        papel = passo.get("papel")
-        if papel == "tags":
-            marcas = t.get("tags") or []
-            for tag in marcas[:15]:  # cada tag entra e é confirmada com Enter
-                aba.digitar(passo["seletores"], str(tag), segundos)
-                aba.tecla("Enter")
-            return
-        valor = t.get(papel) if papel else passo.get("valor")
-        if valor is None:
-            valor = passo.get("valor") or ""
+    def _escrever(self, aba: Aba, ins: roteiro.Instrucao, t: dict, segundos: float) -> None:
+        valor = ins.texto if ins.papel is None else t.get(ins.papel)
         if isinstance(valor, list):
             valor = ", ".join(str(x) for x in valor)
-        aba.digitar(passo["seletores"], str(valor), segundos)
+        aba.digitar(self._seletores(ins), str(valor or ""), segundos)
 
-    def _esperar_confirmacao(self, aba: Aba, confirmacao: str) -> None:
-        """Espera reaparecer algo que estava na tela quando você terminou de postar."""
-        pistas = [p for p in _pistas(confirmacao) if p]
-        if not pistas:
-            return
-        try:
-            aba.esperar(
-                "(() => { const t = __ac.texto(); return " + " || ".join(
-                    f"t.includes({json.dumps(p)})" for p in pistas[:4]) + " ? 1 : 0; })()",
-                300, "a rede não confirmou a publicação",
-            )
-        except ErroNavegador as e:
-            log.warning("%s: %s (o vídeo pode ter sido publicado; confira na rede)", self.rotulo, e)
+    def _esperar_alvo(self, aba: Aba, ins: roteiro.Instrucao, segundos: float) -> None:
+        """Espera um texto aparecer na tela, ou um elemento existir e estar habilitado."""
+        condicoes = []
+        for alvo in ins.alvos:
+            if alvo.por_texto:
+                condicoes.append(f"__ac.texto().includes({json.dumps(alvo.valor.lower())})")
+            else:
+                condicoes.append(f"__ac.ligado({json.dumps(alvo.valor)})")
+        aba.esperar("(() => (" + " || ".join(condicoes) + ") ? 1 : 0)()", segundos,
+                    " ou ".join(str(a) for a in ins.alvos))
 
     def _link_na_pagina(self, aba: Aba) -> str | None:
         try:

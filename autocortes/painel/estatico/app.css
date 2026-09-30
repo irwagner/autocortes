@@ -825,3 +825,11 @@ code.caminho { display: block; margin-top: 4px; white-space: normal; word-break:
 .grava-passo.fragil { background: rgba(251, 191, 36, .06); }
 .grava-passo.ruim { background: rgba(248, 113, 113, .08); color: #fca5a5; }
 .marca-fragil .ic { color: var(--aviso); }
+
+/* editor do roteiro */
+.editor-roteiro textarea { font-family: Consolas, "Cascadia Mono", monospace; font-size: 13px; line-height: 1.6; white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+.editor-roteiro .nota code { background: var(--painel-3); border: 1px solid var(--borda-2); padding: 1px 5px; border-radius: 6px; }
+.ajuda-roteiro { padding: 10px 13px; display: grid; gap: 8px; }
+.ajuda-roteiro .cmd { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ajuda-roteiro .tag-copiar { flex-direction: row; font-family: Consolas, monospace; }
+.ajuda-roteiro .cmd small { color: var(--suave); font-size: 12.5px; flex: 1; min-width: 200px; }
