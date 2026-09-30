@@ -101,8 +101,9 @@ window.__acGrav = (() => {
     const el = alvo(ev);
     if (!el || !el.tagName) return;
     if (el.tagName === "INPUT" && (el.type === "file" || el.type === "password")) return;
+    const attr = (n) => limpar(el.getAttribute && el.getAttribute(n)).slice(0, 60);
     anotar({ tipo: "clicar", seletores: seletores(el), texto: limpar(el.innerText || el.textContent).slice(0, 60),
-             rotulo: limpar(el.getAttribute && el.getAttribute("aria-label")).slice(0, 60) });
+             rotulo: attr("aria-label"), dica: attr("title"), tag: (el.tagName || "").toLowerCase() });
   }, true);
   document.addEventListener("change", (ev) => {
     const el = alvo(ev);
@@ -234,12 +235,12 @@ def limpar_passos(rede: str, passos: list[dict]) -> list[dict]:
         limpo: dict = {"tipo": tipo, "seletores": seletores}
         if tipo == "clicar":
             texto = str(passo.get("texto") or "")
-            rotulo = str(passo.get("rotulo") or "")
             # clique com texto curto vira também busca por texto, que aguenta troca de classe
             if 0 < len(texto) <= 40:
                 limpo["texto"] = texto
-            if rotulo:
-                limpo["rotulo"] = rotulo
+            for extra in ("rotulo", "dica", "tag"):
+                if passo.get(extra):
+                    limpo[extra] = str(passo[extra])[:60]
         elif tipo == "digitar":
             valor = str(passo.get("valor") or "")
             if "fakepath" in valor or any("type=\"file\"" in s for s in seletores):
@@ -359,6 +360,51 @@ def carregar(cfg: Config, rede: str) -> dict | None:
     if not isinstance(dados, dict) or dados.get("versao") != VERSAO or not dados.get("passos"):
         return None
     return dados
+
+
+NOMES = {"titulo": "título", "descricao": "descrição", "legenda": "legenda", "tags": "tags", "fonte": "fonte"}
+
+
+def fragil(passo: dict) -> bool:
+    """Passo sem âncora estável: só sobrou o caminho na página, que quebra fácil."""
+    seletores = passo.get("seletores") or []
+    if not seletores:
+        return True
+    if passo["tipo"] == "clicar" and (passo.get("texto") or passo.get("rotulo") or passo.get("dica")):
+        return False  # o texto do botão serve de âncora
+    return all(" > " in s or s in ("input[type=\"text\"]", "div", "span", "button") for s in seletores)
+
+
+def descrever(passo: dict) -> str:
+    """O passo em uma linha, para o log da gravação."""
+    tipo = passo["tipo"]
+    if tipo == "arquivo":
+        return "escolheu o vídeo"
+    if tipo == "tecla":
+        return f"teclou {passo.get('tecla') or 'Enter'}"
+    if tipo == "clicar":
+        alvo = passo.get("texto") or passo.get("rotulo") or passo.get("dica")
+        return f"clicou em \u201c{alvo}\u201d" if alvo else f"clicou em {(passo.get('seletores') or ['?'])[0]}"
+    onde = (passo.get("seletores") or ["?"])[0]
+    if passo.get("papel"):
+        return f"escreveu a {NOMES.get(passo['papel'], passo['papel'])} em {onde}"
+    if passo.get("marca_estranha"):
+        return f"colou {passo['marca_estranha']} em {onde} (marca que eu não conheço)"
+    valor = str(passo.get("valor") or "")
+    return f"escreveu \u201c{valor[:40]}{'…' if len(valor) > 40 else ''}\u201d em {onde}"
+
+
+def lista_passos(rede: str, passos: list[dict]) -> list[dict]:
+    """Os passos já limpos, descritos para o log ao vivo da gravação."""
+    saida = []
+    a = analisar(rede, passos)
+    for i, passo in enumerate(a["passos_limpos"], 1):
+        saida.append({
+            "n": i, "tipo": passo["tipo"], "texto": descrever(passo),
+            "fragil": fragil(passo), "papel": passo.get("papel"),
+            "estranha": passo.get("marca_estranha"),
+        })
+    return saida
 
 
 def resumo(roteiro: dict | None) -> dict:

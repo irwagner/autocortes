@@ -816,3 +816,12 @@ code.caminho { display: block; margin-top: 4px; white-space: normal; word-break:
 .grava-estado small { margin-left: auto; color: var(--suave); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .diag { padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--texto-2); text-align: left; }
 .diag code { display: inline-block; margin: 0 3px; background: var(--painel-3); border: 1px solid var(--borda-2); padding: 1px 5px; border-radius: 6px; word-break: break-all; }
+.grava-log { max-height: 190px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; background: var(--bg-2); border: 1px solid var(--borda); border-radius: 11px; padding: 8px; }
+.grava-log.vazio-log { flex-direction: row; align-items: center; gap: 9px; color: var(--suave); font-size: 13px; padding: 14px; }
+.grava-passo { display: flex; align-items: center; gap: 8px; padding: 5px 7px; border-radius: 8px; font-size: 13px; color: var(--texto-2); }
+.grava-passo .n { min-width: 20px; text-align: right; color: var(--fraco); font-variant-numeric: tabular-nums; font-size: 12px; }
+.grava-passo .ic { width: 14px; height: 14px; flex: none; color: var(--suave); }
+.grava-passo .txt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grava-passo.fragil { background: rgba(251, 191, 36, .06); }
+.grava-passo.ruim { background: rgba(248, 113, 113, .08); color: #fca5a5; }
+.marca-fragil .ic { color: var(--aviso); }

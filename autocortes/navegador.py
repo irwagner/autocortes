@@ -199,12 +199,47 @@ window.__ac = (() => {
   };
   const achar = (sel) => todos(sel).find(visivel) || todos(sel)[0] || null;
   const limpar = (t) => String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
-  const porTexto = (sel, textos) => {
-    const lista = (Array.isArray(textos) ? textos : [textos]).map(limpar);
-    return todos(sel).filter(visivel).find((el) => {
-      const t = limpar(el.innerText || el.textContent || el.getAttribute("aria-label"));
-      return lista.some((x) => x && t.includes(x));
-    }) || null;
+  const atributo = (el, nome) => (el.getAttribute ? el.getAttribute(nome) || "" : "");
+  // junta tudo que identifica o botão: o texto dentro dele, o rótulo de acessibilidade e a dica
+  const textoDe = (el) => limpar([el.innerText, atributo(el, "aria-label"), atributo(el, "title"),
+                                  el.value].filter(Boolean).join(" "));
+  const desligado = (el) => !!(el.disabled || atributo(el, "aria-disabled") === "true"
+                               || atributo(el, "disabled") === "true");
+  const clicavel = (el) => {
+    const tag = (el.tagName || "").toLowerCase();
+    if (["button", "a", "summary", "label", "option"].includes(tag)) return true;
+    if (["button", "link", "menuitem", "tab", "option", "checkbox", "radio"].includes(atributo(el, "role"))) return true;
+    if (el.hasAttribute && (el.hasAttribute("tabindex") || el.hasAttribute("onclick"))) return true;
+    try { return getComputedStyle(el).cursor === "pointer"; } catch (e) { return false; }
+  };
+  // Procura em qualquer elemento, não só em button/span/a: o botão de publicar do TikTok é uma div.
+  // Nota melhor para quem casa exato, é clicável e tem o texto nele mesmo (e não num filho).
+  const porTexto = (sel, textos, incluirDesligado) => {
+    const alvos = (Array.isArray(textos) ? textos : [textos]).map(limpar).filter(Boolean);
+    if (!alvos.length) return null;
+    // primeiro um filtro barato pelo textContent, para não medir estilo de milhares de elementos
+    const candidatos = todos(sel || "*").filter((el) => {
+      const bruto = limpar([el.textContent, atributo(el, "aria-label"), atributo(el, "title")].join(" "));
+      return bruto && alvos.some((a) => bruto.includes(a));
+    });
+    let melhor = null;
+    let melhorNota = -1;
+    for (const el of candidatos) {
+      if (!visivel(el)) continue;
+      if (!incluirDesligado && desligado(el)) continue;
+      const t = textoDe(el);
+      if (!t) continue;
+      let nota = -1;
+      for (const alvo of alvos) {
+        if (t === alvo) nota = Math.max(nota, 100);
+        else if (t.includes(alvo)) nota = Math.max(nota, 60 - Math.min(45, t.length - alvo.length));
+      }
+      if (nota < 0) continue;
+      if (clicavel(el)) nota += 25;
+      if (!el.children || el.children.length === 0) nota += 10;
+      if (nota > melhorNota) { melhorNota = nota; melhor = el; }
+    }
+    return melhor;
   };
   const clicar = (el) => {
     if (!el) return false;
@@ -213,10 +248,13 @@ window.__ac = (() => {
     return true;
   };
   return {
-    achar, todos, porTexto, visivel,
+    achar, todos, porTexto, visivel, desligado, textoDe,
     existe: (sel) => !!achar(sel),
+    // ligado = achou e não está desabilitado (o botão de publicar só libera quando o envio termina)
+    ligado: (sel) => { const el = achar(sel); return !!el && !desligado(el); },
+    ligadoPorTexto: (sel, textos) => !!porTexto(sel, textos),
     clicarSel: (sel) => clicar(achar(sel)),
-    clicarTexto: (sel, textos) => clicar(porTexto(sel, textos)),
+    clicarTexto: (sel, textos) => clicar(porTexto(sel, textos) || porTexto(sel, textos, true)),
     // quadros de outro site (iframe) não entram na busca: os roteiros avisam quando aparecem
     iframes: () => [...document.querySelectorAll("iframe")].map((f) => f.getAttribute("src") || "(sem src)"),
     // O botão "selecionar vídeo" do site manda o navegador abrir a janela do Windows, que eu não

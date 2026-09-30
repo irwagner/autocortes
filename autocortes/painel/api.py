@@ -1613,6 +1613,21 @@ def cancelar_gravacao(ctx: Contexto, rede):
     return {"ok": True}
 
 
+@rota("POST", r"/redes/(\w+)/gravar/desfazer")
+def desfazer_passo(ctx: Contexto, rede):
+    sessao = ctx.painel.gravacoes.get(_rede(rede))
+    _exigir(sessao is not None, "Nenhuma gravação em andamento nesta rede")
+    return sessao.desfazer()
+
+
+@rota("POST", r"/redes/(\w+)/gravar/recomecar")
+def recomecar_gravacao(ctx: Contexto, rede):
+    sessao = ctx.painel.gravacoes.get(_rede(rede))
+    _exigir(sessao is not None, "Nenhuma gravação em andamento nesta rede")
+    log.info("%s: gravação reiniciada pelo painel", ROTULOS[rede])
+    return sessao.recomecar()
+
+
 @rota("POST", r"/redes/(\w+)/roteiro/apagar")
 def apagar_roteiro(ctx: Contexto, rede):
     rede = _rede(rede)

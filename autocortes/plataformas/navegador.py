@@ -268,23 +268,25 @@ class ViaNavegador(Plataforma):
                     log.info("%s: ensaio, paro antes de clicar em publicar", self.rotulo)
                     return self._fim()
                 _conferir_bloqueio(aba)
-            self._passo(aba, passo, arquivo, t, i)
+            # o botão de publicar só libera quando o envio do vídeo termina: espera o quanto precisar
+            segundos = 900 if i == publicar_em else 90
+            self._passo(aba, passo, arquivo, t, i, segundos)
         confirmacao = str(roteiro.get("confirmacao") or "")
         if confirmacao:
             self._esperar_confirmacao(aba, confirmacao)
         link = self._link_na_pagina(aba)
         return self._fim("publicado pelo roteiro que você gravou", link)
 
-    def _passo(self, aba: Aba, passo: dict, arquivo: Path, t: dict, indice: int) -> None:
+    def _passo(self, aba: Aba, passo: dict, arquivo: Path, t: dict, indice: int, segundos: float = 90) -> None:
         tipo = passo.get("tipo")
         onde = f"passo {indice + 1} ({tipo})"
         try:
             if tipo == "arquivo":
-                aba.enviar_arquivo(passo["seletores"], arquivo, 90)
+                aba.enviar_arquivo(passo["seletores"], arquivo, segundos)
             elif tipo == "clicar":
-                self._clicar_passo(aba, passo)
+                self._clicar_passo(aba, passo, segundos)
             elif tipo == "digitar":
-                self._digitar_passo(aba, passo, t)
+                self._digitar_passo(aba, passo, t, segundos)
             elif tipo == "tecla":
                 aba.tecla(passo.get("tecla") or "Enter")
         except ErroNavegador as e:
@@ -294,24 +296,27 @@ class ViaNavegador(Plataforma):
                 "grave o roteiro de novo em Redes sociais", e.tipo,
             ) from e
 
-    def _clicar_passo(self, aba: Aba, passo: dict) -> None:
+    def _clicar_passo(self, aba: Aba, passo: dict, segundos: float = 90) -> None:
         aba.js("__ac.travarArquivo()")  # a página pode ter navegado e perdido a trava
+        textos_alvo = [x for x in (passo.get("texto"), passo.get("rotulo"), passo.get("dica")) if x]
+        # o seletor que já está na página e habilitado é o caminho mais direto
         for seletor in passo.get("seletores") or []:
-            if aba.existe(seletor):
+            if aba.js(f"__ac.ligado({json.dumps(seletor)})"):
                 aba.clicar(seletor, 30)
                 return
-        textos_alvo = [x for x in (passo.get("texto"), passo.get("rotulo")) if x]
-        if textos_alvo:  # a classe mudou, mas o texto do botão costuma ficar
-            aba.clicar_texto("button, div[role='button'], span, a, tp-yt-paper-item, ytcp-button", textos_alvo, 30)
+        if textos_alvo:
+            # a classe mudou (ou é uma div sem nada estável), mas o texto do botão costuma ficar.
+            # Espera ele aparecer habilitado: o botão de publicar só libera com o envio terminado.
+            aba.clicar_texto("*", textos_alvo, segundos)
             return
-        aba.clicar(passo.get("seletores") or [], 30)  # deixa o erro sair com o seletor original
+        aba.clicar(passo.get("seletores") or [], segundos)  # deixa o erro sair com o seletor original
 
-    def _digitar_passo(self, aba: Aba, passo: dict, t: dict) -> None:
+    def _digitar_passo(self, aba: Aba, passo: dict, t: dict, segundos: float = 90) -> None:
         papel = passo.get("papel")
         if papel == "tags":
             marcas = t.get("tags") or []
             for tag in marcas[:15]:  # cada tag entra e é confirmada com Enter
-                aba.digitar(passo["seletores"], str(tag), 30)
+                aba.digitar(passo["seletores"], str(tag), segundos)
                 aba.tecla("Enter")
             return
         valor = t.get(papel) if papel else passo.get("valor")
@@ -319,7 +324,7 @@ class ViaNavegador(Plataforma):
             valor = passo.get("valor") or ""
         if isinstance(valor, list):
             valor = ", ".join(str(x) for x in valor)
-        aba.digitar(passo["seletores"], str(valor), 30)
+        aba.digitar(passo["seletores"], str(valor), segundos)
 
     def _esperar_confirmacao(self, aba: Aba, confirmacao: str) -> None:
         """Espera reaparecer algo que estava na tela quando você terminou de postar."""
@@ -514,6 +519,17 @@ class Gravacao:
         self.thread.start()
         log.info("%s: gravando o roteiro. Poste um vídeo à mão na janela que abriu.", ROTULOS[self.rede])
 
+    def _colher(self) -> None:
+        """Traz o que o gravador anotou na página (precisa da trava)."""
+        if self._aba is None:
+            return
+        if not self._aba.avaliar("typeof window.__acGrav !== 'undefined' ? 1 : 0"):
+            self._aba.avaliar(gravador.SCRIPT)  # a página navegou e levou o gravador
+        novos = self._aba.avaliar("window.__acGrav.tirar()") or []
+        self.passos.extend(n for n in novos if isinstance(n, dict))
+        self.url = self._aba.url()
+        self.texto = str(self._aba.avaliar("window.__acGrav.texto()") or "")
+
     def _acompanhar(self) -> None:
         """Recolhe os passos de tempo em tempo e reinjeta o gravador quando a página troca."""
         try:
@@ -525,12 +541,7 @@ class Gravacao:
                     if self._aba is None:
                         break
                     try:
-                        if not self._aba.avaliar("typeof window.__acGrav !== 'undefined' ? 1 : 0"):
-                            self._aba.avaliar(gravador.SCRIPT)  # a página navegou e levou o gravador
-                        novos = self._aba.avaliar("window.__acGrav.tirar()") or []
-                        self.passos.extend(n for n in novos if isinstance(n, dict))
-                        self.url = self._aba.url()
-                        self.texto = str(self._aba.avaliar("window.__acGrav.texto()") or "")
+                        self._colher()
                     except ErroNavegador as e:
                         self.erro = f"perdi a janela da gravação ({e})"
                         break
@@ -538,15 +549,41 @@ class Gravacao:
             GRAVANDO.discard(self.rede)
 
     def situacao(self) -> dict:
+        lista = gravador.lista_passos(self.rede, self.passos)
         return {
             "rede": self.rede,
-            "passos": len(gravador.limpar_passos(self.rede, self.passos)),
+            "passos": len(lista),
+            "lista": lista,
             "brutos": len(self.passos),
             "url": self.url,
             "erro": self.erro,
+            "parada": self._parar.is_set(),
             "segundos": int(time.time() - self.inicio),
             "marcas": gravador.papeis(self.rede),
         }
+
+    def desfazer(self) -> dict:
+        """Apaga o último passo anotado (você errou um clique e quer refazer na hora)."""
+        with self._trava:
+            try:
+                self._colher()
+            except ErroNavegador:
+                pass
+            alvo = len(gravador.limpar_passos(self.rede, self.passos))
+            while self.passos and alvo and len(gravador.limpar_passos(self.rede, self.passos)) >= alvo:
+                self.passos.pop()
+        return self.situacao()
+
+    def recomecar(self) -> dict:
+        """Zera o que foi anotado, sem fechar a janela: você recomeça do zero."""
+        with self._trava:
+            try:
+                self._colher()
+            except ErroNavegador:
+                pass
+            self.passos.clear()
+            self.inicio = time.time()
+        return self.situacao()
 
     def concluir(self) -> dict:
         """Salva o que foi gravado e fecha a aba."""
@@ -557,13 +594,13 @@ class Gravacao:
         with self._trava:
             aba, self._aba = self._aba, None
             if aba is not None:
+                self._aba = aba  # _colher precisa dela
                 try:  # última colheita, com o que ficou na tela ao terminar
-                    novos = aba.avaliar("window.__acGrav.tirar()") or []
-                    self.passos.extend(n for n in novos if isinstance(n, dict))
-                    self.texto = str(aba.avaliar("window.__acGrav.texto()") or "")
+                    self._colher()
                     diagnostico = aba.avaliar("window.__acGrav.diagnostico()") or {}
                 except ErroNavegador:
                     pass
+                self._aba = None
                 self._navegador.fechar_aba(aba)
         GRAVANDO.discard(self.rede)
         if not self.passos:

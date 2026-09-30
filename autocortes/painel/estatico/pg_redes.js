@@ -470,22 +470,39 @@ function marcasHtml(marcas) {
   return h`<div class="marcas">${Object.entries(marcas || {}).map(([papel, marca]) => h`<button type="button" class="tag-copiar" data-acao="copiar" data-texto="${marca}" title="Copiar ${marca}"><b>${nomes[papel] || papel}</b><code>${marca}</code>${ic("copiar")}</button>`)}</div>`;
 }
 
+const ICONE_PASSO = { arquivo: "video", clicar: "seta-dir", digitar: "texto", tecla: "terminal" };
+
+function logGravacaoHtml(s) {
+  const lista = s.lista || [];
+  if (!lista.length) {
+    return h`<div class="grava-log vazio-log">${ic("microfone")}<span>Nada anotado ainda. Faça o primeiro passo na janela do Chrome.</span></div>`;
+  }
+  return h`<div class="grava-log">${lista.map((p) => h`<div class="grava-passo${p.fragil ? " fragil" : ""}${p.estranha ? " ruim" : ""}"><span class="n">${p.n}</span>${ic(ICONE_PASSO[p.tipo] || "lista")}<span class="txt">${p.texto}</span>${p.papel ? badge([NOME_PAPEL[p.papel] || p.papel, "ok"], true) : ""}${p.fragil ? h`<span class="marca-fragil" title="Sem âncora estável: esse passo é o que quebra mais fácil se a página mudar">${ic("alerta")}</span>` : ""}</div>`)}</div>`;
+}
+
 function gravandoHtml(rede, s) {
   const marcas = Object.keys(s.marcas || {}).length;
   return h`<div class="gravando">
     <p><span class="ponto-grava"></span>Gravando. Faça a postagem na janela do Chrome que abriu, do começo até publicar.</p>
     <ol class="passos">
       <li>Escolha o vídeo normalmente (qualquer vídeo seu serve).</li>
-      ${marcas ? h`<li><b>Nos campos de texto, cole estas marcas em vez de escrever</b> (clique para copiar). É assim que eu descubro qual campo é qual:${marcasHtml(s.marcas)}</li>` : ""}
-      <li>Se a rede pedir tags uma por uma, cole a marca de tags numa e tecle Enter.</li>
+      ${marcas ? h`<li>Esta rede tem mais de um campo de texto, então <b>cole estas marcas em vez de escrever</b> (clique para copiar), para eu saber qual é qual:${marcasHtml(s.marcas)}</li>`
+    : h`<li>Escreva a legenda normalmente, como você postaria de verdade. Aqui tem um campo de texto só, então eu descubro sozinho.</li>`}
       <li>Ajuste o resto como você quiser (privacidade, capa, opções) — eu repito igual.</li>
-      <li>Clique em publicar e espere a confirmação aparecer.</li>
+      <li>Clique em publicar e espere a confirmação aparecer na tela.</li>
       <li>Volte aqui e clique em <b>Terminei</b>.</li>
     </ol>
-    <div class="grava-estado">${ic("lista")}<span id="grava-contagem">${plural(s.passos || 0, "passo anotado", "passos anotados")}</span><small id="grava-url">${(s.url || "").slice(0, 70)}</small></div>
-    ${s.erro ? h`<p class="erro-texto">${s.erro}</p>` : ""}
-    <p class="nota">Campo de senha nunca é gravado, e nada do que você fizer numa tela de login entra no roteiro.</p>
-    <div class="acoes-modal"><button class="btn fantasma" data-acao="grava-cancelar" data-rede="${rede}">Cancelar</button><button class="btn primario" data-acao="grava-fim" data-rede="${rede}">${ic("check")}Terminei</button></div></div>`;
+    <div class="rotulo-campo">O que eu anotei até agora</div>
+    <div id="grava-log">${logGravacaoHtml(s)}</div>
+    <div class="grava-estado">${ic("lista")}<span id="grava-contagem">${plural(s.passos || 0, "passo anotado", "passos anotados")}</span><small id="grava-url">${(s.url || "").slice(0, 60)}</small></div>
+    <div id="grava-erro">${s.erro ? h`<p class="erro-texto">${s.erro}</p>` : ""}</div>
+    <p class="nota">Se um clique não aparecer na lista, repita ele na janela. O ${ic("alerta")} marca o passo sem âncora estável, que é o que quebra mais fácil. Campo de senha nunca é gravado.</p>
+    <div class="acoes-modal">
+      <button class="btn fantasma" data-acao="grava-cancelar" data-rede="${rede}">Cancelar</button>
+      <button class="btn" data-acao="grava-desfazer" data-rede="${rede}">${ic("refazer")}Desfazer o último</button>
+      <button class="btn" data-acao="grava-recomecar" data-rede="${rede}">Recomeçar</button>
+      <button class="btn primario" data-acao="grava-fim" data-rede="${rede}">${ic("check")}Terminei</button>
+    </div></div>`;
 }
 
 function pararGravacao() {
@@ -503,16 +520,22 @@ async function acompanharGravacao(rede) {
     return;
   }
   if (Gravacao.rede !== rede) return;
+  desenharGravacao(s);
+  if (s.erro) return;
+  Gravacao.timer = setTimeout(() => acompanharGravacao(rede), 1500);
+}
+
+function desenharGravacao(s) {
   const contagem = $("#grava-contagem");
   if (contagem) contagem.textContent = plural(s.passos || 0, "passo anotado", "passos anotados");
   const url = $("#grava-url");
-  if (url) url.textContent = (s.url || "").slice(0, 70);
-  if (s.erro) {
-    const corpo = corpoModal();
-    if (corpo) montar(corpo, gravandoHtml(rede, s));
-    return;
+  if (url) url.textContent = (s.url || "").slice(0, 60);
+  const log = $("#grava-log");
+  if (log) {
+    const antes = log.scrollHeight - log.scrollTop <= log.clientHeight + 30;
+    if (montarSeMudou(log, logGravacaoHtml(s)) && antes) log.scrollTop = log.scrollHeight;
   }
-  Gravacao.timer = setTimeout(() => acompanharGravacao(rede), 2000);
+  montarSeMudou($("#grava-erro"), s.erro ? h`<p class="erro-texto">${s.erro}</p>` : "");
 }
 
 App.acoes["rede-gravar"] = async (el) => {
@@ -580,6 +603,20 @@ App.acoes["grava-fim"] = async (el) => {
     <div class="acoes-modal"><button class="btn primario" data-acao="fechar-modal">Entendi</button></div></div>`);
   toast(`Roteiro do ${REDES[rede].rotulo} gravado com ${r.passos} passos`, "ok", 7000);
   await App.paginas.redes.recarregar();
+};
+
+App.acoes["grava-desfazer"] = async (el) => {
+  const s = await ocupado(el, () => post(`/redes/${el.dataset.rede}/gravar/desfazer`));
+  desenharGravacao(s);
+};
+
+App.acoes["grava-recomecar"] = async (el) => {
+  const rede = el.dataset.rede;
+  const ok = await confirmar({ titulo: "Recomeçar a gravação?", texto: "Eu esqueço tudo que anotei até agora. A janela do Chrome continua aberta: recomece a postagem por lá.", botao: "Recomeçar" });
+  if (!ok) return;
+  const s = await ocupado(el, () => post(`/redes/${rede}/gravar/recomecar`));
+  desenharGravacao(s);
+  toast("Gravação zerada. Comece de novo na janela do Chrome.", "info");
 };
 
 App.acoes["grava-cancelar"] = async (el) => {
