@@ -1624,8 +1624,10 @@ def apagar_roteiro(ctx: Contexto, rede):
 @rota("POST", r"/redes/(\w+)/testar")
 def testar_rede(ctx: Contexto, rede):
     plataforma = criar(_rede(rede), ctx.cfg)
-    pronta, motivo = plataforma.pronta()
-    _exigir(pronta, f"{ROTULOS[rede]}: {motivo}")
+    if plataforma.via != "navegador":
+        # no navegador é o próprio teste que confirma a sessão e guarda a conta: não exigir antes
+        pronta, motivo = plataforma.pronta()
+        _exigir(pronta, f"{ROTULOS[rede]}: {motivo}")
     try:
         conta = plataforma.verificar()
     except ErroPublicacao as e:

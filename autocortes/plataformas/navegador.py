@@ -77,8 +77,9 @@ def _pistas(texto: str) -> list[str]:
 
 def _erro_sessao(rede: str) -> ErroNavegador:
     return ErroNavegador(
-        f"a sessão do {ROTULOS[rede]} caiu (a página de envio não abriu). Em Redes sociais, clique em "
-        "Conectar e entre na conta de novo", "bloqueio",
+        f"não encontrei a sua sessão do {ROTULOS[rede]} na janela do AutoCortes: a página de envio não abriu. "
+        "Clique em Conectar, entre na conta nessa janela (e não numa aba do seu Chrome normal) e tente de novo",
+        "bloqueio",
     )
 
 
