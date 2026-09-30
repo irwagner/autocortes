@@ -814,3 +814,5 @@ code.caminho { display: block; margin-top: 4px; white-space: normal; word-break:
 .marcas code { color: #ffd27a; font-size: 12px; }
 .grava-estado { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: 11px; background: var(--bg-2); border: 1px solid var(--borda); font-size: 13px; }
 .grava-estado small { margin-left: auto; color: var(--suave); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diag { padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--texto-2); text-align: left; }
+.diag code { display: inline-block; margin: 0 3px; background: var(--painel-3); border: 1px solid var(--borda-2); padding: 1px 5px; border-radius: 6px; word-break: break-all; }

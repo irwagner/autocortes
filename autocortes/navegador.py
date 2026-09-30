@@ -219,6 +219,20 @@ window.__ac = (() => {
     clicarTexto: (sel, textos) => clicar(porTexto(sel, textos)),
     // quadros de outro site (iframe) não entram na busca: os roteiros avisam quando aparecem
     iframes: () => [...document.querySelectorAll("iframe")].map((f) => f.getAttribute("src") || "(sem src)"),
+    // O botão "selecionar vídeo" do site manda o navegador abrir a janela do Windows, que eu não
+    // consigo fechar e travaria o envio. Aqui o clique no campo de arquivo não abre nada: quem
+    // entrega o arquivo é o DevTools (DOM.setFileInputFiles).
+    travarArquivo: () => {
+      if (window.__acTravado) return true;
+      const original = HTMLInputElement.prototype.click;
+      HTMLInputElement.prototype.click = function () {
+        if (this.type === "file") return undefined;
+        return original.apply(this, arguments);
+      };
+      if (window.showOpenFilePicker) window.showOpenFilePicker = () => Promise.reject(new Error("cancelado"));
+      window.__acTravado = true;
+      return true;
+    },
     // junta o texto do shadow DOM: o innerText nem sempre alcança o que está dentro dele
     texto: () => {
       let t = document.body ? document.body.innerText : "";

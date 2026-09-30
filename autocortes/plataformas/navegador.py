@@ -256,6 +256,7 @@ class ViaNavegador(Plataforma):
 
     # ---- roteiro aprendido (você postou uma vez e o AutoCortes anotou)
     def _repetir(self, aba: Aba, roteiro: dict, arquivo: Path, t: dict, ensaio: bool) -> Resultado:
+        aba.js("__ac.travarArquivo()")  # o clique em "selecionar vídeo" não pode abrir a janela do Windows
         passos = list(roteiro.get("passos") or [])
         publicar_em = roteiro.get("publicar_em")
         if not isinstance(publicar_em, int) or not 0 <= publicar_em < len(passos):
@@ -294,6 +295,7 @@ class ViaNavegador(Plataforma):
             ) from e
 
     def _clicar_passo(self, aba: Aba, passo: dict) -> None:
+        aba.js("__ac.travarArquivo()")  # a página pode ter navegado e perdido a trava
         for seletor in passo.get("seletores") or []:
             if aba.existe(seletor):
                 aba.clicar(seletor, 30)
@@ -551,6 +553,7 @@ class Gravacao:
         self._parar.set()
         if self.thread is not None:
             self.thread.join(timeout=5)
+        diagnostico: dict = {}
         with self._trava:
             aba, self._aba = self._aba, None
             if aba is not None:
@@ -558,6 +561,7 @@ class Gravacao:
                     novos = aba.avaliar("window.__acGrav.tirar()") or []
                     self.passos.extend(n for n in novos if isinstance(n, dict))
                     self.texto = str(aba.avaliar("window.__acGrav.texto()") or "")
+                    diagnostico = aba.avaliar("window.__acGrav.diagnostico()") or {}
                 except ErroNavegador:
                     pass
                 self._navegador.fechar_aba(aba)
@@ -565,8 +569,12 @@ class Gravacao:
         if not self.passos:
             raise ErroNavegador(
                 "não gravei nenhum passo. Poste um vídeo à mão na janela que abriu antes de concluir", "corte")
-        resumo = gravador.salvar(self.cfg, self.rede, self.passos, PAGINAS[self.rede][1], self.texto)
-        return resumo
+        resultado = gravador.salvar(self.cfg, self.rede, self.passos, PAGINAS[self.rede][1], self.texto)
+        if not resultado.get("ok") and diagnostico:
+            # sem digitação anotada, o diagnóstico mostra se o campo estava num quadro (iframe)
+            log.warning("%s: diagnóstico da página ao terminar: %s", ROTULOS[self.rede], diagnostico)
+            resultado["diagnostico"] = diagnostico
+        return resultado
 
     def cancelar(self) -> None:
         self._parar.set()

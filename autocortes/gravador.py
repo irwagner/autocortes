@@ -13,14 +13,17 @@ Nunca grava campo de senha nem nada digitado em página de login.
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 
 from .config import Config
-from .util import log, salvar_json
+from .util import log, salvar_json, sem_acentos
 
 VERSAO = 1
-# textos-marca que você cola nos campos para o gravador saber o papel de cada um
+# textos-marca que você cola nos campos para o gravador saber o papel de cada um.
+# A comparação é tolerante: maiúscula, acento, plural e espaço não importam, e
+# "@@legendas@@", "@@Legenda@@" ou "@@LEGEND@@" valem a mesma coisa.
 MARCAS = {
     "titulo": "@@TITULO@@",
     "descricao": "@@DESCRICAO@@",
@@ -28,6 +31,7 @@ MARCAS = {
     "tags": "@@TAGS@@",
     "fonte": "@@FONTE@@",
 }
+_MARCA = re.compile(r"@@\s*([^@\s]{2,20})\s*@@")
 # o que cada rede precisa que você marque (o resto do que você digitar é repetido igual)
 PAPEIS_DA_REDE = {
     "youtube": ("titulo", "descricao", "tags"),
@@ -87,7 +91,12 @@ window.__acGrav = (() => {
     passos.push(passo);
     if (passos.length > 400) passos.shift();
   };
-  const alvo = (ev) => (ev.composedPath && ev.composedPath()[0]) || ev.target;
+  // composedPath entra no shadow DOM; se cair num nó de texto, sobe até o elemento
+  const alvo = (ev) => {
+    let el = (ev.composedPath && ev.composedPath()[0]) || ev.target;
+    while (el && !el.tagName && el.parentElement) el = el.parentElement;
+    return el;
+  };
   document.addEventListener("click", (ev) => {
     const el = alvo(ev);
     if (!el || !el.tagName) return;
@@ -122,10 +131,63 @@ window.__acGrav = (() => {
     if (el && el.tagName === "INPUT" && el.type === "password") return;
     anotar({ tipo: "tecla", tecla: ev.key });
   }, true);
+  // --- varredura: a rede do editor de texto de cada site dispara eventos diferentes (o do TikTok
+  // não dispara nenhum que dê para escutar), então de tempo em tempo eu comparo o conteúdo de todos
+  // os campos de texto da página. É o que garante que o que você escreveu seja anotado.
+  const raizes = () => {
+    const achadas = [document];
+    const fila = [document];
+    while (fila.length) {
+      const raiz = fila.shift();
+      for (const el of raiz.querySelectorAll("*")) {
+        if (el.shadowRoot) { achadas.push(el.shadowRoot); fila.push(el.shadowRoot); }
+      }
+    }
+    return achadas;
+  };
+  const TIPOS_TEXTO = ["", "text", "search", "url", "email", "tel", "number"];
+  const campos = () => {
+    const saida = [];
+    for (const raiz of raizes()) {
+      for (const el of raiz.querySelectorAll('input, textarea, [contenteditable="true"], [contenteditable=""]')) {
+        if (el.tagName === "INPUT" && !TIPOS_TEXTO.includes(el.type || "")) continue;
+        saida.push(el);
+      }
+    }
+    return saida;
+  };
+  const conteudo = (el) => (el.isContentEditable ? limpar(el.innerText) : limpar(el.value));
+  const vistos = new Map();
+  const varrer = () => {
+    if (ehLogin()) return;
+    for (const el of campos()) {
+      let valor;
+      try { valor = conteudo(el); } catch (e) { continue; }
+      if (vistos.get(el) === valor) continue;
+      vistos.set(el, valor);
+      if (!valor) continue;
+      const chave = (el.id || "") + "|" + (seletores(el)[0] || "");
+      const existente = passos.find((p) => p.tipo === "digitar" && p.chave === chave);
+      if (existente) { existente.valor = valor; existente.em = Date.now(); continue; }
+      anotar({ tipo: "digitar", seletores: seletores(el), valor, chave });
+    }
+  };
+  for (const el of campos()) { try { vistos.set(el, conteudo(el)); } catch (e) { /* ignora */ } }
+  const relogio = setInterval(varrer, 900);
   return {
     passos,
-    tirar: () => passos.splice(0, passos.length),
+    varrer,
+    tirar: () => { varrer(); return passos.splice(0, passos.length); },
+    parar: () => clearInterval(relogio),
     texto: () => limpar(document.body ? document.body.innerText : "").slice(0, 3000),
+    // se a digitação não for anotada, isto diz onde ela estava escondida
+    diagnostico: () => ({
+      campos: campos().length,
+      com_texto: campos().filter((el) => { try { return !!conteudo(el); } catch (e) { return false; } })
+        .map((el) => ({ seletor: seletores(el)[0] || "?", tamanho: conteudo(el).length })).slice(0, 8),
+      quadros: [...document.querySelectorAll("iframe")].map((f) => (f.getAttribute("src") || "(sem src)").slice(0, 120)),
+      url: location.href,
+    }),
   };
 })();
 1
@@ -141,16 +203,29 @@ def papeis(rede: str) -> dict:
     return {papel: MARCAS[papel] for papel in PAPEIS_DA_REDE.get(rede, ())}
 
 
-def _papel_do_valor(valor: str) -> str | None:
-    for papel, marca in MARCAS.items():
-        if marca in valor:
-            return papel
-    return None
+def _papel_do_valor(valor: str) -> tuple[str | None, list[str]]:
+    """O papel do campo pela marca colada, e as marcas que eu não reconheci."""
+    estranhas: list[str] = []
+    for achado in _MARCA.finditer(valor):
+        palavra = sem_acentos(achado.group(1)).lower().strip("_-. ")
+        for papel in MARCAS:
+            base = sem_acentos(papel).lower()
+            if palavra.startswith(base[:5]) or base.startswith(palavra[:5]):
+                return papel, []
+        estranhas.append(achado.group(0))
+    return None, estranhas
+
+
+def tem_marca(valor: str) -> bool:
+    """Tem cara de marca colada (mesmo que eu não reconheça qual é)."""
+    return bool(_MARCA.search(valor))
 
 
 def limpar_passos(rede: str, passos: list[dict]) -> list[dict]:
     """Tira o que não serve e marca o papel dos campos pelos textos-marca."""
     saida: list[dict] = []
+    # a varredura pode anotar um campo depois de um clique: a hora manda na ordem
+    passos = sorted(passos, key=lambda p: p.get("em") or 0)
     for passo in passos:
         tipo = passo.get("tipo")
         seletores = [s for s in (passo.get("seletores") or []) if s]
@@ -169,9 +244,12 @@ def limpar_passos(rede: str, passos: list[dict]) -> list[dict]:
             valor = str(passo.get("valor") or "")
             if "fakepath" in valor or any("type=\"file\"" in s for s in seletores):
                 continue  # resquício do campo de arquivo, não é texto que você digitou
-            papel = _papel_do_valor(valor)
+            papel, estranhas = _papel_do_valor(valor)
             if papel:
                 limpo["papel"] = papel
+            elif estranhas:
+                # marca que eu não conheço: nunca digitar isso num post de verdade
+                limpo["marca_estranha"] = estranhas[0]
             else:
                 limpo["valor"] = valor  # texto seu, repetido igual
         elif tipo == "tecla":
@@ -190,19 +268,28 @@ def _mesmo_campo(a: dict, b: dict) -> bool:
 
 
 def _juntar(passos: list[dict]) -> list[dict]:
-    """Junta digitações repetidas no mesmo campo e tira cliques duplicados seguidos."""
+    """Um passo por campo (com o texto final) e sem cliques repetidos seguidos."""
     saida: list[dict] = []
+    por_campo: dict[tuple, dict] = {}
     for passo in passos:
         anterior = saida[-1] if saida else None
-        if anterior and passo["tipo"] == "digitar" and anterior["tipo"] == "digitar" \
-                and anterior["seletores"] == passo["seletores"]:
-            saida[-1] = passo
-            continue
         if passo["tipo"] == "digitar":
-            # o Enter num campo de tag dispara outro evento no mesmo campo: não repetir
-            anteriores = [p for p in saida if p["tipo"] != "tecla"]
-            if anteriores and anteriores[-1]["tipo"] == "digitar" and _mesmo_campo(anteriores[-1], passo):
+            chave = tuple(passo["seletores"])
+            ja = por_campo.get(chave)
+            if ja is not None:
+                # o mesmo campo digitado de novo (ou revisto pela varredura): fica o texto final,
+                # no lugar onde ele apareceu primeiro
+                ja["valor"] = passo.get("valor", ja.get("valor"))
+                if passo.get("marca_estranha"):
+                    ja["marca_estranha"] = passo["marca_estranha"]
+                elif "valor" in passo:
+                    ja.pop("marca_estranha", None)
+                if passo.get("papel"):
+                    ja["papel"] = passo["papel"]
+                    ja.pop("valor", None)
+                    ja.pop("marca_estranha", None)
                 continue
+            por_campo[chave] = passo
         if anterior and passo["tipo"] == "clicar" and anterior["tipo"] == "clicar" \
                 and anterior["seletores"] == passo["seletores"] and anterior.get("texto") == passo.get("texto"):
             continue
@@ -210,22 +297,54 @@ def _juntar(passos: list[dict]) -> list[dict]:
     return saida
 
 
-def salvar(cfg: Config, rede: str, passos: list[dict], url_inicial: str, confirmacao: str = "") -> dict:
-    """Grava o roteiro aprendido e devolve o resumo dele."""
+def analisar(rede: str, passos: list[dict]) -> dict:
+    """Limpa os passos e diz se o roteiro serve: campos identificados, o que falta e o que sobrou."""
     limpos = limpar_passos(rede, passos)
-    faltando = [p for p in PAPEIS_DA_REDE.get(rede, ()) if not any(x.get("papel") == p for x in limpos)]
+    necessarios = list(PAPEIS_DA_REDE.get(rede, ()))
+    achados = {p["papel"] for p in limpos if p.get("papel")}
+    faltando = [p for p in necessarios if p not in achados]
+    inferido = None
+    sem_dono = [p for p in limpos if p["tipo"] == "digitar" and not p.get("papel")]
+    if len(faltando) == 1 and len(sem_dono) == 1:
+        # um papel faltando e um único campo de texto sem dono: não tem como errar
+        sem_dono[0]["papel"] = faltando[0]
+        sem_dono[0].pop("valor", None)
+        sem_dono[0].pop("marca_estranha", None)
+        inferido, faltando = faltando[0], []
+    estranhas = [p["marca_estranha"] for p in limpos if p.get("marca_estranha")]
+    cliques = [i for i, p in enumerate(limpos) if p["tipo"] == "clicar"]
+    return {
+        "passos_limpos": limpos,
+        "faltando": faltando,
+        "estranhas": estranhas,
+        "inferido": inferido,
+        "tem_arquivo": any(p["tipo"] == "arquivo" for p in limpos),
+        "publicar_em": cliques[-1] if cliques else None,
+    }
+
+
+def salvar(cfg: Config, rede: str, passos: list[dict], url_inicial: str, confirmacao: str = "") -> dict:
+    """Grava o roteiro aprendido, se ele servir. Devolve ok=False sem gravar quando não serve."""
+    a = analisar(rede, passos)
+    limpos = a.pop("passos_limpos")
+    if a["faltando"] or a["estranhas"] or not a["tem_arquivo"]:
+        # roteiro pela metade postaria texto errado: não gravo nem apago o que já havia
+        log.warning("%s: gravação descartada (falta %s, marcas estranhas %s, vídeo %s)",
+                    rede, a["faltando"] or "nada", a["estranhas"] or "nenhuma", a["tem_arquivo"])
+        return {"ok": False, "passos": len(limpos), **a}
     roteiro = {
         "versao": VERSAO,
         "rede": rede,
         "gravado_em": time.time(),
         "url_inicial": url_inicial,
         "passos": limpos,
+        "publicar_em": a["publicar_em"],
         "confirmacao": confirmacao[:300],
     }
     destino = arquivo_roteiro(cfg, rede)
     salvar_json(destino, roteiro)
     log.info("%s: roteiro aprendido com %d passos salvo em %s", rede, len(limpos), destino)
-    return {**resumo(roteiro), "faltando": faltando, "arquivo": str(destino)}
+    return {"ok": True, **resumo(roteiro), **a, "arquivo": str(destino)}
 
 
 def carregar(cfg: Config, rede: str) -> dict | None:

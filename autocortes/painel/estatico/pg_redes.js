@@ -535,21 +535,50 @@ App.acoes["rede-gravar"] = async (el) => {
   Gravacao.timer = setTimeout(() => acompanharGravacao(rede), 2000);
 };
 
+const NOME_PAPEL = { titulo: "título", descricao: "descrição", legenda: "legenda", tags: "tags", fonte: "fonte" };
+
 App.acoes["grava-fim"] = async (el) => {
   const rede = el.dataset.rede;
   const r = await ocupado(el, () => post(`/redes/${rede}/gravar/fim`));
   pararGravacao();
-  const faltando = r.faltando || [];
+  const nomes = (lista) => (lista || []).map((p) => NOME_PAPEL[p] || p).join(", ");
+  if (!r.ok) {
+    const motivos = [];
+    if (r.estranhas && r.estranhas.length) {
+      motivos.push(h`<p class="erro-texto">Você colou <code>${r.estranhas[0]}</code>, que eu não reconheço. Use uma das marcas que eu mostrei: clique nelas para copiar, em vez de digitar.</p>`);
+    }
+    if (r.faltando && r.faltando.length) {
+      motivos.push(h`<p class="erro-texto">Não achei onde vai ${nomes(r.faltando)}. Cole a marca desse campo no lugar do texto.</p>`);
+    }
+    if (!r.tem_arquivo) {
+      motivos.push(h`<p class="erro-texto">Não vi você escolher o vídeo. Escolha o vídeo na janela do AutoCortes, não em outra.</p>`);
+    }
+    const d = r.diagnostico;
+    if (d) {
+      motivos.push(h`<details class="guia"><summary>${ic("info")}O que eu estava vendo na página (me mande isto se travar de novo)</summary><div class="diag">
+        <div>Campos de texto na página: <b>${d.campos}</b></div>
+        <div>Com algo escrito: ${(d.com_texto || []).length ? (d.com_texto || []).map((c) => h`<code>${c.seletor}</code> (${c.tamanho})`) : "nenhum"}</div>
+        <div>Quadros (iframe): ${(d.quadros || []).length ? (d.quadros || []).map((q) => h`<code>${q}</code>`) : "nenhum"}</div>
+      </div></details>`);
+    }
+    tituloModal(`A gravação do ${REDES[rede].rotulo} não deu`);
+    montar(corpoModal(), h`<div class="login-espera">${ic("alerta", "grande")}
+      <p><b>${plural(r.passos, "passo anotado", "passos anotados")}</b>, mas o roteiro não serve, então eu <b>não salvei</b>.</p>
+      ${motivos}
+      ${marcasHtml(Object.fromEntries((r.faltando || []).map((p) => [p, `@@${p.toUpperCase()}@@`])))}
+      <p class="nota">O roteiro que já existia (se havia um) continua valendo.</p>
+      <div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Fechar</button><button class="btn primario" data-acao="rede-gravar" data-rede="${rede}">${ic("microfone")}Gravar de novo</button></div></div>`);
+    toast("Gravação descartada: veja o que faltou", "erro", 7000);
+    await App.paginas.redes.recarregar();
+    return;
+  }
   tituloModal(`Roteiro do ${REDES[rede].rotulo} gravado`);
-  montar(corpoModal(), h`<div class="login-espera">
-    ${ic(faltando.length ? "alerta" : "ok", "grande")}
-    <p><b>${plural(r.passos, "passo gravado", "passos gravados")}</b>${r.tem_arquivo ? ", incluindo a escolha do vídeo" : ", mas eu não vi você escolher o vídeo"}.</p>
-    <p class="nota">Campos identificados: ${r.papeis && r.papeis.length ? r.papeis.join(", ") : "nenhum"}.</p>
-    ${faltando.length ? h`<p class="erro-texto">Faltou colar a marca de: ${faltando.join(", ")}. Sem isso eu não sei onde escrever esse texto. Grave de novo.</p>` : ""}
-    ${r.tem_arquivo ? "" : h`<p class="erro-texto">Sem o passo do vídeo eu não consigo postar. Grave de novo, escolhendo o vídeo na janela.</p>`}
+  montar(corpoModal(), h`<div class="login-espera">${ic("ok", "grande")}
+    <p><b>${plural(r.passos, "passo gravado", "passos gravados")}</b>, incluindo a escolha do vídeo.</p>
+    <p class="nota">Campos identificados: ${nomes(r.papeis) || "nenhum"}.${r.inferido ? h` O campo de <b>${NOME_PAPEL[r.inferido] || r.inferido}</b> eu descobri por eliminação, por ser o único campo de texto.` : ""}</p>
     <p class="nota">Agora ligue o ensaio e poste um corte: ele repete estes passos e para antes de publicar.</p>
     <div class="acoes-modal"><button class="btn primario" data-acao="fechar-modal">Entendi</button></div></div>`);
-  toast(`Roteiro do ${REDES[rede].rotulo} gravado com ${r.passos} passos`, faltando.length ? "info" : "ok", 7000);
+  toast(`Roteiro do ${REDES[rede].rotulo} gravado com ${r.passos} passos`, "ok", 7000);
   await App.paginas.redes.recarregar();
 };
 
