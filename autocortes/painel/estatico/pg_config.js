@@ -5,10 +5,16 @@ const ABAS_CONFIG = [
   ["geral", "Geral", "ajustes", "Como o AutoCortes trabalha: simulação, aprovação, reserva de cortes e pastas."],
   ["cortes", "Cortes", "tesoura", "Duração dos cortes e como os melhores trechos de cada filme são escolhidos."],
   ["video", "Vídeo", "video", "Qualidade da edição e volume do som. O visual (moldura, legenda, título) fica no Estúdio."],
+  ["criacao", "Criação", "varinha", "Vídeos montados do zero: imagens de fundo, narração e música. As pautas ficam na aba Criação."],
   ["textos", "Textos dos posts", "lapis", "Título, descrição e hashtags de cada postagem."],
   ["ia", "IA", "varinha", "Textos dos posts escritos por uma IA a partir da fala de cada corte. É opcional."],
   ["transcricao", "Transcrição", "microfone", "De onde vêm as falas usadas nas legendas e na escolha dos trechos."],
   ["sistema", "Sistema", "cpu", "Inicialização, desempenho, métricas, ferramentas e pastas."],
+];
+const CFG_VOZES = [
+  ["pt-BR-AntonioNeural", "Antônio (masculina)"],
+  ["pt-BR-FranciscaNeural", "Francisca (feminina)"],
+  ["pt-BR-ThalitaMultilingualNeural", "Thalita (feminina, multilíngue)"],
 ];
 const CFG_CODECS = [
   ["libx264", "Processador (libx264), melhor qualidade"], ["h264_amf", "Placa AMD (AMF), mais rápido"],
@@ -176,6 +182,41 @@ function cfgAbaIa() {
   ];
 }
 
+function cfgAbaCriacao() {
+  const fonte = valor("estoque.fonte");
+  const itens = [
+    campo({ chave: "criacao.ativo", tipo: "switch", rotulo: "Criar vídeos do zero", ajuda: "O motor transforma as pautas (e os temas da fila) em vídeos com narração, e eles entram na mesma agenda dos cortes. As pautas ficam na aba Criação." }),
+    campo({ chave: "criacao.prioridade", tipo: "select", rotulo: "Quem sai primeiro", opcoes: [["filmes", "Os cortes de filme"], ["criacao", "Os vídeos criados"]], ajuda: "Quando falta estoque e há os dois tipos esperando." }),
+    campo({ chave: "criacao.duracao_alvo_seg", tipo: "numero", min: 10, max: 180, sufixo: "s", rotulo: "Duração que a IA mira", ajuda: "Tamanho do roteiro que a IA escreve. A duração real vem da narração." }),
+    secao("Imagens de fundo"),
+    campo({ chave: "estoque.fonte", tipo: "select", rotulo: "De onde vêm", opcoes: [["pasta", "Meus arquivos, numa pasta"], ["pexels", "Pexels (chave grátis)"], ["pixabay", "Pixabay (chave grátis)"]] }),
+  ];
+  if (fonte === "pasta") {
+    itens.push(campo({ chave: "estoque.pasta", tipo: "texto", rotulo: "Pasta do material", placeholder: "material", ajuda: "Vídeos e imagens seus. Vazio = a pasta \"material\" ao lado do config." }));
+  } else {
+    const onde = fonte === "pexels" ? "pexels.com/api" : "pixabay.com/api/docs";
+    itens.push(campo({ chave: `estoque.${fonte}_chaves`, tipo: "chips", larga: true, rotulo: "Chaves da API", ajuda: `Pegue de graça em ${onde}. Várias chaves são alternadas, porque cada uma tem limite por hora.` }));
+  }
+  itens.push(
+    campo({ chave: "estoque.duracao_min_seg", tipo: "numero", min: 0, max: 60, sufixo: "s", rotulo: "Clipe mínimo", ajuda: "Clipe mais curto que isso não entra." }),
+    campo({ chave: "estoque.evitar_repetidos", tipo: "switch", rotulo: "Não repetir material", ajuda: "As redes tratam repetição de material como conteúdo não original." }),
+    campo({ chave: "criacao.ken_burns", tipo: "switch", rotulo: "Zoom lento nas imagens", ajuda: "Imagem parada sem movimento vira apresentação de slides." }),
+    campo({ chave: "criacao.embaralhar_clipes", tipo: "switch", rotulo: "Embaralhar a ordem dos clipes" }),
+    secao("Narração"),
+    campo({ chave: "voz.voz", tipo: "select", rotulo: "Voz", opcoes: CFG_VOZES, ajuda: "Vozes neurais em português do Brasil, pelo serviço de leitura em voz alta do Edge. O texto do roteiro sai do seu computador." }),
+    campo({ chave: "voz.ritmo", tipo: "texto", rotulo: "Velocidade", placeholder: "+0%", ajuda: "Como +10% (mais rápido) ou -10% (mais devagar)." }),
+    campo({ chave: "voz.tom", tipo: "texto", rotulo: "Tom", placeholder: "+0Hz", ajuda: "Como +2Hz ou -2Hz." }),
+    campo({ chave: "voz.pausa_linha_seg", tipo: "numero", min: 0, max: 5, passo: 0.05, sufixo: "s", rotulo: "Respiro entre linhas", ajuda: "Silêncio depois de cada linha do roteiro. Para uma pausa maior num ponto exato, escreva [pausa: 2s] no texto." }),
+    secao("Música e acabamento"),
+    campo({ chave: "criacao.pasta_musicas", tipo: "texto", rotulo: "Pasta das músicas", placeholder: "musicas", ajuda: "Vazio = sem música. A música abaixa sozinha sob a voz." }),
+    campo({ chave: "criacao.volume_musica", tipo: "range", min: 0, max: 1, passo: 0.02, formato: "pct", rotulo: "Volume da música" }),
+    campo({ chave: "criacao.cauda_seg", tipo: "numero", min: 0, max: 5, passo: 0.1, sufixo: "s", rotulo: "Sobra no fim", ajuda: "Imagem depois da última palavra." }),
+    campo({ chave: "criacao.fps", tipo: "numero", min: 24, max: 60, rotulo: "Quadros por segundo" }),
+    h`<p class="nota rodape-card">Juntar clipe de banco com voz sintética é o formato que as redes mais filtram hoje: serve para crescer e testar nicho, mas não conte com monetização direta.</p>`,
+  );
+  return itens;
+}
+
 function cfgAbaTranscricao() {
   const modelos = (App.meta && App.meta.modelos) || {};
   const opcoesModelo = Object.entries(modelos).map(([nome, m]) => [nome, `${nome} · ${m.descricao}${m.baixado ? " · baixado" : ""}`]);
@@ -226,7 +267,7 @@ function cfgAbaSistema() {
 }
 
 const CFG_ABAS_FN = {
-  geral: cfgAbaGeral, cortes: cfgAbaCortes, video: cfgAbaVideo,
+  geral: cfgAbaGeral, cortes: cfgAbaCortes, video: cfgAbaVideo, criacao: cfgAbaCriacao,
   textos: cfgAbaTextos, ia: cfgAbaIa, transcricao: cfgAbaTranscricao, sistema: cfgAbaSistema,
 };
 

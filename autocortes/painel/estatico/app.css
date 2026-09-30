@@ -847,3 +847,18 @@ code.caminho { display: block; margin-top: 4px; white-space: normal; word-break:
 .prf-limite label { color: var(--suave); font-weight: 600; font-size: 13px; }
 .prf-limite input { width: 74px; }
 .prf-limite small { flex-basis: 100%; margin: 0; }
+
+/* ------------------------------------------------------------ criação (pautas) */
+.card-pauta { display: flex; gap: 16px; padding: 14px 16px; align-items: stretch; }
+.pauta-capa { width: 92px; flex: none; border-radius: 12px; overflow: hidden; background: #04060a; border: 1px solid var(--borda); position: relative; cursor: pointer; display: grid; place-items: center; }
+.pauta-capa img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pauta-capa:hover { border-color: var(--acento); }
+.pauta-capa .capa-vazia { display: flex; flex-direction: column; align-items: center; gap: 6px; color: var(--fraco); text-align: center; padding: 8px; font-size: 11px; }
+.pauta-capa .tempo { position: absolute; bottom: 5px; right: 5px; background: rgba(0, 0, 0, .7); border-radius: 6px; padding: 1px 5px; font-size: 11px; font-variant-numeric: tabular-nums; }
+.pauta-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.pauta-info .card-topo { margin-bottom: 8px; }
+.pauta-info h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pauta-info .lista-simples { margin: 0 0 8px; }
+.pauta-info .lista-simples li { padding-bottom: 5px; font-size: 13px; }
+.pauta-info .rodape-card { margin-top: auto; padding-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: space-between; }
+#cri-temas, #cri-texto { font-family: Consolas, "Cascadia Mono", monospace; font-size: 13px; line-height: 1.6; }

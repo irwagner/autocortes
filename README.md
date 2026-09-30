@@ -71,7 +71,7 @@ Mantém 3 cortes prontos à frente das postagens e volta aos filmes já analisad
 <td valign="top">
 
 **🖥️ Painel no navegador**<br>
-9 telas, com o Estúdio para ajustar o visual numa tela de celular, o calendário da semana e o registro ao vivo.
+10 telas, com o Estúdio para ajustar o visual numa tela de celular, o calendário da semana e o registro ao vivo.
 
 </td>
 </tr>
@@ -147,12 +147,12 @@ Atualizado em setembro de 2026.
 | Kwai, Bilibili e postagem à mão em qualquer rede | ✅ Pronto e testado: tarefas no Início com vídeo, textos por rede, "Já postei" e pasta sincronizada |
 | YouTube só com Shorts (vertical ou quadrado, até o limite de duração) | ✅ Pronto e testado |
 | Agenda por rede, fila e planejador | ✅ Pronto e testado de ponta a ponta em simulação |
-| Painel no navegador (9 telas, API local com 59 rotas) | ✅ Pronto e testado no Edge |
+| Painel no navegador (10 telas, API local com 65 rotas) | ✅ Pronto e testado no Edge |
 | Perfis de nicho: vários nichos na mesma instalação, cada um com suas contas | ✅ Pronto e testado (dois perfis abertos ao mesmo tempo, de verdade) |
 | Vídeos criados do zero: narração, imagens de fundo e legenda no tempo da voz | ✅ Pronto e testado de ponta a ponta (narração no serviço real) |
 | Pauta escrita à mão (`pautas/*.txt`) | ✅ Pronta e testada |
 | IA escrevendo a pauta, fila de temas e vídeo criado entrando na agenda | ✅ Pronto e testado com o Ollama de verdade (tema → roteiro → vídeo → fila → post) |
-| Tela do painel para as pautas e os temas | 🚧 A fazer (hoje as pautas são arquivos, e o vídeo criado já aparece em Cortes) |
+| Tela Criação no painel (pautas, fila de temas, editor e criar na hora) | ✅ Pronta e testada no Edge |
 | Moldura, modelos visuais e aba Estúdio | ✅ Prontos; testados com o episódio de The Great e conferidos quadro a quadro |
 | IA opcional para título, descrição e hashtags | 🧪 Pronta; testada com um servidor que imita o Ollama, ainda não com um modelo real |
 | Métricas dos posts (YouTube e Instagram) | 🧪 Prontas; testadas contra um servidor simulado |
@@ -235,6 +235,7 @@ Abre no navegador pelo `AutoCortes.bat`. A lateral mostra se o motor está ligad
 - **Filmes:** enviar filmes e legendas arrastando para a página, situação e progresso da análise, reanalisar, ignorar e editar título, ano, hashtags e idioma.
 - **Redes sociais:** modo simulação ou publicação real, forma de envio de cada rede (API oficial, Upload-Post, pelo navegador ou à mão), conectar (YouTube e TikTok pelo navegador, Instagram colando o token), testar e desconectar, com passo a passo e as opções dos posts (duração máxima do YouTube, Página do Facebook, tags do Bilibili), mais a pasta sincronizada da postagem à mão. Nas redes pelo navegador, "Aprender a postar" grava o roteiro com log ao vivo, desfazer e recomeçar, e "Ver o roteiro" abre o editor da [linguagem de roteiro](#aprender-a-postar-e-o-roteiro).
 - **Estúdio:** o visual dos cortes numa tela de celular. Arraste o vídeo, o título e a legenda para cima e para baixo (ou use as setas do teclado), escolha ou envie a moldura, o tamanho do vídeo (Menor, Inteiro com o quadro todo, Padrão de 1,25x e Maior de 1,7x, ou o valor exato), o fundo, a fonte, o tamanho e as cores do título e da legenda, a barra e o fade. "O que os apps cobrem" mostra as faixas onde ficam os botões e a descrição das redes, e "Como vai sair" mostra o quadro gerado pelo mesmo editor dos cortes.
+- **Criação:** as pautas dos [vídeos feitos do zero](#vídeos-criados-do-zero) e a fila de temas. Escrever a pauta à mão ou pedir o roteiro à IA, editar o texto, criar o vídeo na hora e ver o que cada pauta já rendeu.
 - **Perfis:** vários nichos na mesma instalação ([veja abaixo](#perfis-vários-nichos-de-uma-vez)), cada um com sua pasta, suas contas e seu tema. Criar, abrir, fechar, ajustar portas e excluir, com o limite de quantos trabalham ao mesmo tempo.
 - **Configurações:** abas Geral, Cortes, Vídeo (qualidade e volume), Textos dos posts, IA, Transcrição e Sistema, com exemplo do post, teste da IA, download do modelo de transcrição e iniciar com o Windows. As alterações ficam pendentes numa barra no rodapé até você salvar (Ctrl+S também salva).
 - **Registro:** mensagens ao vivo, com busca, filtro de avisos e erros e cópia.

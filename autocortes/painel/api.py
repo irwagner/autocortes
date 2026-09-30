@@ -15,8 +15,8 @@ from datetime import date, datetime, time as dtime
 from pathlib import Path
 from typing import Any, Callable
 
-from .. import (__version__, agenda, analise, config, edicao, ferramentas, gravador, ia, metricas, modelos_visuais,
-                perfis, planejador, roteiro)
+from .. import (__version__, agenda, analise, config, criacao, edicao, ferramentas, gravador, ia, metricas,
+                modelos_visuais, perfis, planejador, roteiro, voz)
 from ..config import ENVIOS, PLATAFORMAS, ROTULOS, ErroConfig
 from ..midia import ErroMidia, Interrompido, base_ffmpeg, executar
 from ..navegador import ErroNavegador
@@ -1756,6 +1756,195 @@ def encerrar(ctx: Contexto):
     log.info("Encerramento pedido pelo painel")
     threading.Timer(0.3, ctx.painel.encerrar.set).start()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- criação (pautas e temas)
+
+def _pauta(conn: sqlite3.Connection, pauta_id) -> sqlite3.Row:
+    linha = conn.execute("SELECT * FROM filmes WHERE id=? AND tipo='pauta'", (int(pauta_id),)).fetchone()
+    _exigir(linha is not None, "Pauta não encontrada", 404)
+    return linha
+
+
+def _pauta_json(cfg, conn: sqlite3.Connection, f: sqlite3.Row) -> dict:
+    cortes = conn.execute(
+        "SELECT id, status, arquivo, fim, renderizado_em FROM cortes WHERE filme_id=? ORDER BY id DESC",
+        (f["id"],),
+    ).fetchall()
+    feitos = [c for c in cortes if c["status"] != "descartado"]
+    ultimo = feitos[0] if feitos else None
+    caminho = Path(f["caminho"])
+    return {
+        "id": f["id"], "titulo": f["titulo"], "arquivo": caminho.name, "status": f["status"],
+        "erro": f["erro"], "duracao": f["duracao"], "criado_em": f["criado_em"],
+        "videos": len(feitos),
+        "corte": ({"id": ultimo["id"], "status": ultimo["status"],
+                   "miniatura": _urls(ultimo["id"], ultimo["arquivo"], ultimo["renderizado_em"])[1],
+                   "duracao": round(ultimo["fim"] or 0, 1)} if ultimo else None),
+        "existe": caminho.is_file(),
+    }
+
+
+@rota("GET", r"/pautas")
+def listar_pautas(ctx: Contexto):
+    cfg, conn = ctx.cfg, ctx.conn
+    criacao_mod = criacao
+    linhas = conn.execute(
+        "SELECT * FROM filmes WHERE tipo='pauta' "
+        "ORDER BY CASE status WHEN 'erro' THEN 0 WHEN 'novo' THEN 1 ELSE 2 END, id DESC"
+    ).fetchall()
+    fonte = str(cfg["estoque"]["fonte"])
+    if fonte == "pasta":
+        pasta_material = criacao_mod.estoque.pasta_material(cfg)
+        material_ok = pasta_material.is_dir() and any(
+            p.suffix.lower() in (criacao_mod.estoque.EXTENSOES_VIDEO | criacao_mod.estoque.EXTENSOES_IMAGEM)
+            for p in pasta_material.rglob("*") if p.is_file())
+        material = {"fonte": fonte, "ok": material_ok, "pasta": str(pasta_material)}
+    else:
+        material = {"fonte": fonte, "ok": bool(cfg["estoque"][f"{fonte}_chaves"]), "pasta": ""}
+    return {
+        "pautas": [_pauta_json(cfg, conn, f) for f in linhas],
+        "temas": criacao_mod.temas(cfg),
+        "pasta": str(criacao_mod.pasta_pautas(cfg)),
+        "arquivo_temas": criacao_mod.ARQUIVO_TEMAS,
+        "ativo": bool(cfg["criacao"]["ativo"]),
+        "prioridade": str(cfg["criacao"]["prioridade"]),
+        "ia": ia.disponivel(cfg),
+        "material": material,
+        "vozes": [{"nome": n, "rotulo": r} for n, r in voz.VOZES_SUGERIDAS],
+        "voz_atual": str(cfg["voz"]["voz"]),
+        "duracao_alvo": int(cfg["criacao"]["duracao_alvo_seg"]),
+    }
+
+
+@rota("POST", r"/pautas/nova")
+def criar_pauta(ctx: Contexto):
+    cfg, conn = ctx.cfg, ctx.conn
+    tema = str(ctx.corpo.get("tema") or "").strip()
+    _exigir(bool(tema), "Escreva o tema ou o título da pauta")
+    _exigir(len(tema) <= 120, "Tema comprido demais")
+    if ctx.corpo.get("com_ia"):
+        _exigir(ia.disponivel(cfg), "Ligue a IA em Configurações > IA para ela escrever o roteiro")
+        try:
+            arquivo = criacao.pauta_do_tema(cfg, conn, tema)
+        except criacao.ErroCriacao as e:
+            raise ErroHttp(400, str(e)) from e
+    else:
+        arquivo = criacao.pasta_pautas(cfg) / f"{slug_pauta(tema)}.txt"
+        _exigir(not arquivo.exists(), "Já existe uma pauta com esse nome")
+        criacao.escrever_pauta(arquivo, criacao.Pauta(titulo=tema, texto="", tema=tema))
+        criacao.sincronizar(cfg, conn)
+    linha = conn.execute("SELECT * FROM filmes WHERE caminho=?", (str(arquivo.resolve()),)).fetchone()
+    _exigir(linha is not None, "A pauta foi gravada, mas não entrou no banco (confira o formato)", 500)
+    return {"pauta": _pauta_json(cfg, conn, linha)}
+
+
+def slug_pauta(texto: str) -> str:
+    from ..util import slug
+
+    return slug(texto, 50)
+
+
+@rota("GET", r"/pautas/(\d+)")
+def ler_pauta_painel(ctx: Contexto, pauta_id):
+    f = _pauta(ctx.conn, pauta_id)
+    caminho = Path(f["caminho"])
+    dados = _pauta_json(ctx.cfg, ctx.conn, f)
+    dados["texto"] = caminho.read_text(encoding="utf-8-sig") if caminho.is_file() else ""
+    dados["caminho"] = str(caminho)
+    return dados
+
+
+@rota("POST", r"/pautas/(\d+)")
+def salvar_pauta_painel(ctx: Contexto, pauta_id):
+    cfg, conn = ctx.cfg, ctx.conn
+    f = _pauta(conn, pauta_id)
+    texto = str(ctx.corpo.get("texto") or "")
+    _exigir(len(texto) <= 20000, "Pauta grande demais")
+    caminho = Path(f["caminho"])
+    anterior = caminho.read_text(encoding="utf-8-sig") if caminho.is_file() else ""
+    temporario = caminho.with_name(caminho.name + ".tmp")
+    temporario.write_text(texto.replace("\r\n", "\n"), encoding="utf-8")
+    temporario.replace(caminho)
+    try:
+        criacao.ler_pauta(caminho)
+    except criacao.ErroCriacao as e:
+        caminho.write_text(anterior, encoding="utf-8")  # volta o que estava lá: pauta inválida não fica salva
+        raise ErroHttp(400, str(e)) from e
+    criacao.sincronizar(cfg, conn)
+    return ler_pauta_painel(ctx, pauta_id)
+
+
+@rota("POST", r"/pautas/(\d+)/acao")
+def acao_pauta(ctx: Contexto, pauta_id):
+    cfg, conn = ctx.cfg, ctx.conn
+    f = _pauta(conn, pauta_id)
+    acao = ctx.corpo.get("acao")
+    if acao == "criar_agora":
+        _exigir(not TRAVA_CRIACAO.locked(), "Já existe um vídeo sendo criado agora", 409)
+        conn.execute("UPDATE filmes SET status='novo', esgotado=0, erro=NULL, tentativas=0, atualizado_em=? "
+                     "WHERE id=?", (time.time(), f["id"]))
+        _criar_em_segundo_plano(ctx.painel, f["id"])
+    elif acao == "escrever_com_ia":
+        _exigir(ia.disponivel(cfg), "Ligue a IA em Configurações > IA")
+        caminho = Path(f["caminho"])
+        try:
+            pauta = criacao.ler_pauta(caminho)
+            criacao.completar_com_ia(cfg, criacao.Pauta(
+                titulo=pauta.titulo, texto="", termos=pauta.termos, voz=pauta.voz, musica=pauta.musica,
+                topo=pauta.topo, tema=pauta.tema or pauta.titulo, arquivo=caminho))
+        except criacao.ErroCriacao as e:
+            raise ErroHttp(400, str(e)) from e
+        criacao.sincronizar(cfg, conn)
+    elif acao == "excluir":
+        Path(f["caminho"]).unlink(missing_ok=True)
+        tem_video = conn.execute("SELECT 1 FROM cortes WHERE filme_id=? LIMIT 1", (f["id"],)).fetchone()
+        if tem_video:  # os vídeos já feitos continuam na fila: a pauta só sai da lista
+            conn.execute("UPDATE filmes SET status='ausente', atualizado_em=? WHERE id=?", (time.time(), f["id"]))
+        else:
+            conn.execute("DELETE FROM filmes WHERE id=?", (f["id"],))
+        log.info("Pauta '%s' excluída pelo painel", f["titulo"])
+    elif acao == "mostrar":
+        try:
+            sistema.mostrar_arquivo(Path(f["caminho"]))
+        except OSError as e:
+            raise ErroHttp(500, f"Não consegui abrir o Explorer: {e}") from e
+    else:
+        raise ErroHttp(400, "Ação desconhecida")
+    return {"ok": True}
+
+
+TRAVA_CRIACAO = threading.Lock()
+
+
+def _criar_em_segundo_plano(painel, pauta_id: int) -> None:
+    def trabalho():
+        if not TRAVA_CRIACAO.acquire(blocking=False):
+            return
+        conn = painel.conectar()
+        try:
+            linha = conn.execute("SELECT * FROM filmes WHERE id=?", (pauta_id,)).fetchone()
+            if linha is not None:
+                ATIVIDADES.definir(f"Criando o vídeo '{linha['titulo']}'")
+                criacao.criar_do_banco(painel.cfg, conn, linha, painel.encerrar)
+        finally:
+            conn.close()
+            TRAVA_CRIACAO.release()
+
+    _em_segundo_plano(f"criacao-{pauta_id}", trabalho)
+
+
+@rota("POST", r"/pautas/temas")
+def salvar_temas(ctx: Contexto):
+    cfg = ctx.cfg
+    texto = str(ctx.corpo.get("texto") or "")
+    _exigir(len(texto) <= 20000, "Lista grande demais")
+    alvo = criacao.arquivo_temas(cfg)
+    alvo.parent.mkdir(parents=True, exist_ok=True)
+    temporario = alvo.with_name(alvo.name + ".tmp")
+    temporario.write_text(texto.replace("\r\n", "\n").strip() + "\n", encoding="utf-8")
+    temporario.replace(alvo)
+    return {"temas": criacao.temas(cfg)}
 
 
 # ---------------------------------------------------------------- perfis (nichos)

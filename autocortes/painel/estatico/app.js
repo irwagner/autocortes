@@ -7,6 +7,7 @@ const MENU = [
   ["cortes", "Cortes", "tesoura"],
   ["filmes", "Filmes", "filme"],
   ["estudio", "Estúdio", "varinha"],
+  ["criacao", "Criação", "varinha"],
   ["redes", "Redes sociais", "rede"],
   ["perfis", "Perfis", "caixa"],
   ["config", "Configurações", "ajustes"],
