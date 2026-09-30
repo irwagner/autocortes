@@ -42,6 +42,72 @@ def fontes_disponiveis(cfg: Config) -> list[dict]:
     return saida
 
 
+# ---------------------------------------------------------------- placa de vídeo
+
+# quanto de VRAM um modelo de linguagem em Q4 pede, por tamanho (GB de VRAM -> sugestão)
+SUGESTOES_IA = (
+    (14, "14B", "qwen3:14b"),
+    (7, "8B", "qwen3:8b"),
+    (5, "4B", "qwen3:4b-instruct-2507-q4_K_M"),
+    (0, "1,7B", "qwen3:1.7b"),
+)
+
+
+def placas_video() -> list[dict]:
+    """Placas de vídeo com a VRAM de verdade, lida do registro.
+
+    O `AdapterRAM` do WMI satura em 4 GB e engana (uma placa de 8 GB aparece como 4).
+    """
+    if os.name != "nt":
+        return []
+    import winreg
+
+    chave_classe = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+    saida: list[dict] = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, chave_classe) as raiz:
+            for i in range(64):
+                try:
+                    nome_sub = winreg.EnumKey(raiz, i)
+                except OSError:
+                    break
+                try:
+                    with winreg.OpenKey(raiz, nome_sub) as sub:
+                        try:
+                            memoria = winreg.QueryValueEx(sub, "HardwareInformation.qwMemorySize")[0]
+                        except FileNotFoundError:
+                            continue
+                        try:
+                            nome = str(winreg.QueryValueEx(sub, "DriverDesc")[0])
+                        except FileNotFoundError:
+                            nome = "placa de vídeo"
+                except OSError:
+                    continue
+                gb = round(int(memoria) / 1024**3, 1)
+                if gb >= 0.1:
+                    saida.append({"nome": nome, "vram_gb": gb, "integrada": gb < 2})
+    except OSError:
+        return []
+    return sorted(saida, key=lambda p: -p["vram_gb"])
+
+
+def info_ia() -> dict:
+    """Placa dedicada e o tamanho de modelo que cabe nela (para a dica na aba IA)."""
+    placas = placas_video()
+    dedicada = next((p for p in placas if not p["integrada"]), None)
+    if dedicada is None:
+        return {"placas": placas, "vram_gb": 0, "cabe": "", "sugestao": ""}
+    vram = float(dedicada["vram_gb"])
+    tamanho, modelo = next((t, m) for minimo, t, m in SUGESTOES_IA if vram >= minimo)
+    return {
+        "placas": placas,
+        "placa": dedicada["nome"],
+        "vram_gb": vram,
+        "cabe": tamanho,
+        "sugestao": modelo,
+    }
+
+
 def abrir_pasta(pasta: Path) -> None:
     if os.name != "nt":
         raise OSError("disponível só no Windows")

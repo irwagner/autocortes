@@ -282,7 +282,25 @@ function cfgAjudaIaHtml() {
       <li>Deixe o Ollama aberto. Ele atende em http://127.0.0.1:11434.</li>
       <li>Ligue a IA ao lado, salve e clique em Testar a IA.</li>
     </ol>
-    <p class="nota">Assim tudo roda no seu computador. Modelos de 3 a 4 bilhões de parâmetros cabem numa placa de vídeo de 4 GB. Também funciona com o LM Studio (http://127.0.0.1:1234/v1) ou com uma API online; nesse caso, a fala de cada trecho vai para o serviço.</p>
+    <p class="nota">Assim tudo roda no seu computador. Também funciona com o LM Studio (http://127.0.0.1:1234/v1) ou com uma API online; nesse caso, a fala de cada trecho vai para o serviço.</p>
+  </div>
+  ${cfgDicaModeloHtml()}`;
+}
+
+/* Quanto maior o modelo, melhores os textos. A dica usa a VRAM real da placa. */
+function cfgDicaModeloHtml() {
+  const g = (App.meta || {}).ia_hardware || {};
+  const atual = String(valor("ia.modelo") || "").trim().toLowerCase();
+  const jaUsa = Boolean(g.sugestao) && atual === String(g.sugestao).toLowerCase();
+  return h`<div class="card"><div class="card-topo"><h3>${ic("raio")}Dá para melhorar depois</h3></div>
+    ${g.vram_gb
+      ? h`<p class="nota">Sua ${g.placa} tem <b>${fmtNum(g.vram_gb, 1)} GB</b> de memória de vídeo, então cabe um modelo de até cerca de <b>${g.cabe}</b> rodando inteiro na placa. Modelo maior escreve título e descrição melhores e erra menos o formato; em troca, leva mais tempo por corte e ocupa mais disco.</p>`
+      : h`<p class="nota">Não consegui ler a memória da sua placa de vídeo. Na dúvida, um modelo de 4B em Q4 (cerca de 2,5 GB) roda em quase tudo, e um de 8B pede uns 8 GB de memória de vídeo.</p>`}
+    ${g.sugestao && !jaUsa
+      ? h`<p class="nota">Para experimentar, baixe e depois troque o campo Modelo:</p>
+         <div class="copiavel"><code>ollama pull ${g.sugestao}</code><button type="button" class="btn pequeno icone" data-acao="copiar" data-texto="ollama pull ${g.sugestao}" title="Copiar" aria-label="Copiar o comando">${ic("copiar")}</button></div>`
+      : ""}
+    <p class="nota">Sem pressa: o modelo atual dá conta. Se um modelo grande demais não couber na placa, ele roda em parte na CPU e fica lento, mas continua funcionando. Sempre confira o texto de um corte em Cortes antes de deixar no automático.</p>
   </div>`;
 }
 

@@ -426,6 +426,8 @@ def _meta_config(ctx: Contexto) -> dict:
         "whisper_instalado": cli.exists() and vad.exists(),
         "fontes": sistema.fontes_disponiveis(cfg),
         "inicializacao": sistema.inicializacao_ativa(),
+        # placa de vídeo e o tamanho de modelo que cabe nela (dica na aba IA)
+        "ia_hardware": sistema.info_ia(),
         "presets": agenda.PRESETS,
         "envios": ENVIOS,
         "max_tarefas": tarefas_manual.MAX_TAREFAS_POR_REDE,
