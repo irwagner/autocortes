@@ -18,6 +18,7 @@ Comandos principais:
   auth <rede>           conecta youtube, tiktok ou instagram pelo terminal (Kwai e Bilibili são à mão)
   rodar                 loop contínuo sem painel (modo terminal)
   status                resumo de filmes, cortes e próximas postagens
+  criar [pauta]         gera um vídeo do zero (narração + imagens) a partir de uma pauta
 
 Comandos manuais:
   baixar                baixa whisper.cpp e modelos agora
@@ -189,6 +190,53 @@ def cmd_painel(args) -> int:
         iniciar_motor=not getattr(args, "motor_desligado", False),
         porta=getattr(args, "porta", None),
     )
+
+
+def cmd_criar(args) -> int:
+    from . import criacao
+
+    cfg = _carregar(args)
+    pasta = criacao.pasta_pautas(cfg)
+    if args.pauta:
+        alvo = Path(args.pauta)
+        if not alvo.is_absolute():
+            alvo = alvo if alvo.is_file() else pasta / alvo
+        if not alvo.is_file() and alvo.suffix != ".txt":
+            alvo = alvo.with_suffix(".txt")
+        arquivos = [alvo]
+    else:
+        arquivos = criacao.pautas(cfg)
+    if not arquivos or not arquivos[0].is_file():
+        pasta.mkdir(parents=True, exist_ok=True)
+        exemplo = pasta / "exemplo.txt"
+        if not exemplo.exists():
+            exemplo.write_text(
+                "titulo: Comece pequeno\n"
+                "termos: mar ao amanhecer, montanha com neblina, cidade de noite\n"
+                "voz: pt-BR-AntonioNeural\n"
+                "---\n"
+                "Ninguém constrói nada grande em um dia.\n"
+                "Você constrói em mil dias pequenos, quase iguais, quase chatos.\n"
+                "[pausa: 1s] O segredo é não deixar de aparecer.\n",
+                encoding="utf-8",
+            )
+            print(f"Criei uma pauta de exemplo em {exemplo}")
+        print(f"Escreva suas pautas em {pasta} e rode de novo.")
+        return 1
+
+    for arquivo in arquivos:
+        try:
+            pauta = criacao.ler_pauta(arquivo)
+            print(f"'{pauta.titulo}' ({arquivo.name}): narrando e montando...")
+            r = criacao.criar(cfg, pauta)
+        except criacao.ErroCriacao as e:
+            print(f"Erro em {arquivo.name}: {e}", file=sys.stderr)
+            return 1
+        print(f"  vídeo: {r.video}")
+        print(f"  {r.duracao:.1f} s, {r.palavras} palavras, {len(r.clipes)} clipe(s)")
+        if r.creditos:
+            print(f"  crédito para a descrição: {r.creditos}")
+    return 0
 
 
 def cmd_status(args) -> int:
@@ -389,6 +437,9 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_auth)
     sub.add_parser("rodar", help="loop contínuo").set_defaults(func=cmd_rodar)
     sub.add_parser("status", help="resumo geral").set_defaults(func=cmd_status)
+    p = sub.add_parser("criar", help="gera um vídeo do zero a partir de uma pauta")
+    p.add_argument("pauta", nargs="?", help="arquivo da pauta (padrão: todas as de pautas/)")
+    p.set_defaults(func=cmd_criar)
     p = sub.add_parser("analisar", help="analisa filmes novos agora")
     p.add_argument("--filme", type=int, help="id do filme (veja em status)")
     p.set_defaults(func=cmd_analisar)

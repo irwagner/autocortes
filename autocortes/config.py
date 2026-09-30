@@ -189,6 +189,51 @@ PADRAO: dict = {
         # true preenche tudo e para antes de publicar (para você conferir)
         "ensaio": False,
     },
+    "criacao": {
+        # vídeos gerados do zero (motivacional, frases, curiosidades), sem partir de um filme
+        "ativo": False,
+        "fps": 30,
+        # segundos de imagem depois da última palavra (dá um respiro antes de cortar)
+        "cauda_seg": 0.6,
+        # troca a ordem dos clipes em cada vídeo
+        "embaralhar_clipes": True,
+        # zoom lento nas imagens paradas (sem isso parece apresentação de slides)
+        "ken_burns": True,
+        # pasta com músicas de fundo ("" = sem música). A música abaixa sozinha sob a voz.
+        "pasta_musicas": "",
+        "volume_musica": 0.18,
+        "fade_audio_seg": 0.6,
+    },
+    "estoque": {
+        # de onde vêm as imagens de fundo dos vídeos gerados: "pasta" (seus arquivos, sem chave),
+        # "pexels" ou "pixabay" (bancos gratuitos, com chave de API própria)
+        "fonte": "pasta",
+        # pasta com seus vídeos e imagens ("" = a pasta "material" ao lado do config)
+        "pasta": "",
+        # chaves da API (grátis). Várias chaves são alternadas, porque cada uma tem limite por hora.
+        "pexels_chaves": [],
+        "pixabay_chaves": [],
+        # clipe mais curto que isto não entra
+        "duracao_min_seg": 3.0,
+        # não repetir num vídeo novo o material que já saiu antes (as redes tratam repetição
+        # como conteúdo não original)
+        "evitar_repetidos": True,
+    },
+    "voz": {
+        # narração dos vídeos gerados do zero. "edge" = serviço de leitura em voz alta do
+        # Microsoft Edge (gratuito, vozes neurais, devolve o tempo de cada palavra).
+        # O texto do roteiro sai do computador.
+        "motor": "edge",
+        "voz": "pt-BR-AntonioNeural",
+        # velocidade, tom e volume da fala (ex.: "+10%", "-2Hz")
+        "ritmo": "+0%",
+        "tom": "+0Hz",
+        "volume": "+0%",
+        # silêncio entre as linhas do roteiro, para dar respiro (use [pausa: 2s] no texto
+        # quando quiser uma pausa maior num ponto exato)
+        "pausa_linha_seg": 0.35,
+        "tempo_limite_seg": 120,
+    },
     "metricas": {
         "ativo": True,
         "intervalo_horas": 6,
@@ -548,6 +593,31 @@ def validar(cfg: Config) -> None:
         erros.append("[manual].pasta tem caracteres que não valem num caminho do Windows")
     numero("ia", "temperatura", 0, 2)
     numero("ia", "tempo_limite_seg", 10, 1800)
+    numero("criacao", "fps", 24, 60)
+    numero("criacao", "cauda_seg", 0, 5)
+    numero("criacao", "volume_musica", 0, 1)
+    numero("criacao", "fade_audio_seg", 0, 3)
+    if re.search(r"[\x00-\x1f*?\"<>|]", str(cfg["criacao"]["pasta_musicas"])):
+        erros.append("[criacao].pasta_musicas tem caracteres que não valem num caminho do Windows")
+    opcao("estoque", "fonte", ("pasta", "pexels", "pixabay"))
+    numero("estoque", "duracao_min_seg", 0, 60)
+    if re.search(r"[\x00-\x1f*?\"<>|]", str(cfg["estoque"]["pasta"])):
+        erros.append("[estoque].pasta tem caracteres que não valem num caminho do Windows")
+    for fonte in ("pexels", "pixabay"):
+        if cfg["estoque"]["fonte"] == fonte and not [c for c in cfg["estoque"][f"{fonte}_chaves"] if str(c).strip()]:
+            erros.append(f"[estoque].fonte = \"{fonte}\" precisa de pelo menos uma chave em {fonte}_chaves")
+        for chave in cfg["estoque"][f"{fonte}_chaves"]:
+            if not re.fullmatch(r"[\w-]{10,120}", str(chave).strip()):
+                erros.append(f"[estoque].{fonte}_chaves tem uma chave com caracteres inválidos")
+    opcao("voz", "motor", ("edge",))
+    numero("voz", "tempo_limite_seg", 10, 900)
+    numero("voz", "pausa_linha_seg", 0, 5)
+    if not re.fullmatch(r"[a-z]{2}-[A-Z]{2}-[A-Za-z]+", str(cfg["voz"]["voz"]).strip()):
+        erros.append("[voz].voz deve ser um nome de voz como pt-BR-AntonioNeural")
+    for chave, padrao_valor in (("ritmo", r"[+-]\d{1,3}%"), ("volume", r"[+-]\d{1,3}%"), ("tom", r"[+-]\d{1,3}Hz")):
+        if not re.fullmatch(padrao_valor, str(cfg["voz"][chave]).strip()):
+            exemplo = "+10%" if chave != "tom" else "+2Hz"
+            erros.append(f"[voz].{chave} deve ser algo como {exemplo}")
     numero("metricas", "intervalo_horas", 1, 168)
     numero("metricas", "janela_dias", 1, 90)
     if not re.fullmatch(r"https?://[^\s]+", str(cfg["ia"]["url"]).strip()):

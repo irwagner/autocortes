@@ -250,6 +250,60 @@ tempo_limite_seg = 180
 # true preenche tudo e NÃO publica, guardando uma imagem da tela (para conferir)
 ensaio = false
 
+# ---------------------------------------------------------------------
+# Vídeos criados do zero (motivacional, frases, curiosidades): a narração
+# define o tempo, as imagens de fundo entram atrás e a legenda sai palavra
+# por palavra, no tempo exato da voz. Escreva as pautas em pautas/*.txt e
+# rode: python -m autocortes criar
+#
+# Originalidade: juntar clipe de banco com voz sintética é o formato que as
+# redes mais olham com lupa. Serve para crescer, mas não conte com
+# monetização direta. Veja o README.
+# ---------------------------------------------------------------------
+[criacao]
+ativo = false
+fps = 30
+# Segundos de imagem depois da última palavra
+cauda_seg = 0.6
+# Troca a ordem dos clipes em cada vídeo
+embaralhar_clipes = true
+# Zoom lento nas imagens paradas (sem isso parece apresentação de slides)
+ken_burns = true
+# Pasta com músicas de fundo ("" = sem música). A música abaixa sozinha sob a voz.
+pasta_musicas = ""
+volume_musica = 0.18
+fade_audio_seg = 0.6
+
+[estoque]
+# De onde vêm as imagens de fundo:
+#   "pasta"   = seus vídeos e imagens, sem chave e sem internet
+#   "pexels"  = banco gratuito (chave em pexels.com/api)
+#   "pixabay" = banco gratuito (chave em pixabay.com/api/docs)
+fonte = "pasta"
+# Pasta dos seus arquivos ("" = a pasta "material" ao lado deste config)
+pasta = ""
+# Várias chaves são alternadas, porque cada uma tem limite de uso por hora
+pexels_chaves = []
+pixabay_chaves = []
+# Clipe mais curto que isto não entra
+duracao_min_seg = 3.0
+# Não repetir material que já saiu antes (as redes tratam repetição como não original)
+evitar_repetidos = true
+
+[voz]
+# Narração dos vídeos criados. "edge" = serviço de leitura em voz alta do
+# Microsoft Edge: gratuito, vozes neurais e devolve o tempo de cada palavra
+# (é o que faz a legenda casar com a voz). O texto do roteiro sai do PC.
+motor = "edge"
+voz = "pt-BR-AntonioNeural"
+# Velocidade, tom e volume da fala
+ritmo = "+0%"
+tom = "+0Hz"
+volume = "+0%"
+# Silêncio entre as linhas do roteiro (use [pausa: 2s] no texto para uma pausa maior)
+pausa_linha_seg = 0.35
+tempo_limite_seg = 120
+
 [metricas]
 # Lê visualizações, curtidas e comentários dos posts (YouTube e Instagram pela API oficial)
 ativo = true

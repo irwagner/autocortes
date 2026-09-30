@@ -10,6 +10,11 @@ dados/
 perfis/
 perfis.toml
 
+# pautas dos vídeos criados, material de fundo e músicas (conteúdo do usuário)
+pautas/
+material/
+musicas/
+
 # arquivos grandes baixados/gerados
 modelos/
 ferramentas/

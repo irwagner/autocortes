@@ -149,6 +149,9 @@ Atualizado em setembro de 2026.
 | Agenda por rede, fila e planejador | ✅ Pronto e testado de ponta a ponta em simulação |
 | Painel no navegador (9 telas, API local com 59 rotas) | ✅ Pronto e testado no Edge |
 | Perfis de nicho: vários nichos na mesma instalação, cada um com suas contas | ✅ Pronto e testado (dois perfis abertos ao mesmo tempo, de verdade) |
+| Vídeos criados do zero: narração, imagens de fundo e legenda no tempo da voz | ✅ Pronto e testado de ponta a ponta pelo comando `criar` (narração no serviço real) |
+| Pauta escrita à mão (`pautas/*.txt`) | ✅ Pronta e testada |
+| IA escrevendo a pauta sozinha, com agenda e painel | 🚧 A fazer (hoje o vídeo criado sai pelo terminal, fora da fila) |
 | Moldura, modelos visuais e aba Estúdio | ✅ Prontos; testados com o episódio de The Great e conferidos quadro a quadro |
 | IA opcional para título, descrição e hashtags | 🧪 Pronta; testada com um servidor que imita o Ollama, ainda não com um modelo real |
 | Métricas dos posts (YouTube e Instagram) | 🧪 Prontas; testadas contra um servidor simulado |
@@ -198,6 +201,7 @@ Comandos, todos no formato `.venv\Scripts\python -m autocortes <comando>`:
 | `painel [--sem-navegador] [--motor-desligado] [--porta N]` | abre o painel; é o padrão quando não há comando |
 | `rodar` | loop contínuo sem painel |
 | `status` | filmes, cortes, redes e últimas postagens |
+| `criar [pauta]` | gera um vídeo do zero a partir de uma pauta de `pautas/` |
 | `auth <rede>` | conecta youtube, tiktok ou instagram (Kwai e Bilibili não conectam: são à mão) |
 | `verificar [--online]` | confere a instalação e testa os logins |
 | `baixar` | baixa o whisper.cpp e os modelos agora |
@@ -267,6 +271,57 @@ A **moldura** é uma imagem PNG em pé (9:16, como 1080x1920) com a área do ví
 Na posição automática, a legenda fica abaixo do vídeo quando cabe na faixa que os guias de anúncio consideram livre (até y=1248); senão, fica sobre a parte de baixo do vídeo. Com "Onde fica: Sempre abaixo do vídeo", ela sai do vídeo mesmo passando dessa faixa: na prática a descrição dos apps começa mais embaixo, mas confira no celular.
 
 Os modelos ficam em `dados/modelos_visuais.json`; o modelo em uso é o próprio `[edicao]` do `config.toml`. Troque de modelo pelo Estúdio. Se o nome for trocado à mão no `config.toml` pelo de outro modelo, o painel aplica o visual dele ao abrir; um nome novo só renomeia o modelo em uso. Se o arquivo dos modelos estragar, ele é guardado como `modelos_visuais.invalido-<data>.json` em vez de ser apagado.
+
+## Vídeos criados do zero
+
+Além de cortar filmes, o AutoCortes monta vídeos que não existem antes: você escreve (ou a IA escreve) um roteiro curto, e ele narra, busca imagens de fundo, legenda palavra por palavra e entrega o vertical pronto. É o formato de motivacional, frase do dia e curiosidade.
+
+O fluxo é inspirado no [MoneyPrinterTurbo](https://github.com/harry0703/MoneyPrinterTurbo) (licença MIT), reescrito aqui sobre FFmpeg e a biblioteca padrão do Python, sem as dependências pesadas dele.
+
+> [!IMPORTANT]
+> **Originalidade:** juntar clipe de banco com voz sintética é justamente o formato que as redes mais filtram hoje. A Meta trata montagem de material de terceiros como conteúdo não original, e o TikTok só remunera vídeo original de 1 minuto ou mais. Serve para crescer e testar nicho; não conte com monetização direta. Material do Pexels e do Pixabay é de uso livre, mas nenhum dos dois autoriza revender o clipe cru.
+
+### A pauta
+
+Cada vídeo sai de um arquivo de texto em `pautas/`, com um cabeçalho simples e o roteiro:
+
+```
+titulo: Comece pequeno
+termos: mar ao amanhecer, montanha com neblina, cidade de noite
+voz: pt-BR-AntonioNeural
+musica: calma.mp3
+topo: COMECE HOJE
+---
+Ninguém constrói nada grande em um dia.
+Você constrói em mil dias pequenos, quase iguais, quase chatos.
+[pausa: 1s] O segredo é não deixar de aparecer.
+```
+
+Só o roteiro (depois do `---`) é obrigatório. Cada quebra de linha vira um respiro na narração, e `[pausa: 2s]` cria um silêncio maior num ponto exato. `termos` é o que buscar como imagem de fundo (sem isso, o título é usado), e `topo` é o texto queimado no alto do vídeo.
+
+Para gerar: `python -m autocortes criar` (todas as pautas) ou `python -m autocortes criar comece-pequeno`. Sem nenhuma pauta, ele cria um exemplo para você editar.
+
+### Narração
+
+A voz vem do serviço de leitura em voz alta do Microsoft Edge: gratuito, sem chave, com vozes neurais de pt-BR (Antônio, Francisca e Thalita). O detalhe que importa: ele devolve **o tempo exato de cada palavra**, e é isso que faz a legenda karaokê casar com a voz sem precisar transcrever o áudio de volta.
+
+Dois avisos: o texto do roteiro sai do seu computador (vai para o serviço), e esse endpoint é o do navegador, não uma API pública — a Microsoft já quebrou clientes não oficiais dele antes. Se parar de funcionar, a saída é trocar de motor, e a camada de voz já está preparada para receber um motor offline.
+
+### Imagens de fundo
+
+Em `[estoque].fonte`:
+
+| Fonte | O que precisa |
+|---|---|
+| `pasta` (padrão) | seus vídeos e imagens numa pasta, sem chave e sem internet |
+| `pexels` | chave grátis em [pexels.com/api](https://www.pexels.com/api/) |
+| `pixabay` | chave grátis em [pixabay.com/api/docs](https://pixabay.com/api/docs/) |
+
+Cada fonte aceita várias chaves, que vão sendo alternadas porque o limite é por chave. O que é baixado fica em cache, então o mesmo clipe não vem duas vezes. O material que já entrou num vídeo é anotado por perfil e não se repete no próximo, o que reduz a chance de cair na detecção de conteúdo repetido. Imagem parada ganha zoom lento (Ken Burns); sem isso o vídeo parece apresentação de slides.
+
+A troca de imagem acontece na fronteira das frases da narração, não a cada X segundos: cortar no meio de uma frase corta o raciocínio. Se houver música em `[criacao].pasta_musicas`, ela abaixa sozinha sob a voz (ducking), em vez de brigar com ela.
+
+O visual é o mesmo dos cortes de filme: moldura, cores, fonte, barra de progresso e área segura vêm do modelo visual escolhido no Estúdio, então o canal fica com uma cara só.
 
 ### IA para os textos (opcional)
 

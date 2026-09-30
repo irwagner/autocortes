@@ -1,4 +1,4 @@
-"""Controle do Chrome pelo protocolo do DevTools (CDP), para postar pelo navegador.
+﻿"""Controle do Chrome pelo protocolo do DevTools (CDP), para postar pelo navegador.
 
 O AutoCortes abre o Chrome com um perfil separado, guardado em dados/chrome. Você loga
 uma vez em cada rede nessa janela e a sessão fica ali entre reinícios. Depois, o envio é
@@ -14,11 +14,9 @@ O CDP fala WebSocket, que a biblioteca padrão do Python não tem, então o clie
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import os
 import shutil
-import socket
 import subprocess
 import threading
 import time
@@ -29,12 +27,12 @@ import requests
 
 from .config import Config
 from .util import ler_json, log, salvar_json
+from .websocket import ErroWebsocket, Websocket
 
 # uma aba por vez: as redes dividem a mesma janela do navegador
 TRAVA = threading.Lock()
 # anotação de qual janela do Chrome é deste perfil (dentro da pasta do perfil do Chrome)
 ARQUIVO_JANELA = ".autocortes-janela.json"
-GUID_WS = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"  # constante do protocolo WebSocket
 PROGRAMAS = (
     Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Google/Chrome/Application/chrome.exe",
     Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Google/Chrome/Application/chrome.exe",
@@ -52,119 +50,26 @@ class ErroNavegador(Exception):
         self.tipo = tipo
 
 
-# ---------------------------------------------------------------- WebSocket
-
-class _Websocket:
-    """Cliente WebSocket mínimo: só o que o CDP usa (texto, ping e continuação)."""
+class _Websocket(Websocket):
+    """O cliente de `websocket.py` com os erros contados como falha do navegador."""
 
     def __init__(self, url: str, timeout: float = 60):
-        partes = urlparse(url)
-        if partes.scheme != "ws":
-            raise ErroNavegador(f"endereço do DevTools inesperado: {url}")
-        porta = partes.port or 80
-        caminho = partes.path + (f"?{partes.query}" if partes.query else "")
         try:
-            self._sock = socket.create_connection((partes.hostname, porta), timeout=15)
-        except OSError as e:
-            raise ErroNavegador(f"não consegui falar com o navegador ({e})") from e
-        self._sock.settimeout(timeout)
-        self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        self._buffer = b""
-        chave = base64.b64encode(os.urandom(16)).decode()
-        pedido = (
-            f"GET {caminho} HTTP/1.1\r\n"
-            f"Host: {partes.hostname}:{porta}\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            f"Sec-WebSocket-Key: {chave}\r\n"
-            "Sec-WebSocket-Version: 13\r\n\r\n"
-        )
-        self._sock.sendall(pedido.encode("ascii"))
-        cabecalhos = self._ler_ate(b"\r\n\r\n").decode("latin-1")
-        primeira = cabecalhos.split("\r\n", 1)[0]
-        if "101" not in primeira:
-            raise ErroNavegador(f"o navegador recusou a conexão do DevTools ({primeira})")
-        esperado = base64.b64encode(hashlib.sha1((chave + GUID_WS).encode()).digest()).decode()
-        if esperado.lower() not in cabecalhos.lower():
-            raise ErroNavegador("resposta inválida do DevTools (Sec-WebSocket-Accept)")
-
-    # ---- leitura de bytes
-    def _ler_ate(self, marca: bytes) -> bytes:
-        while marca not in self._buffer:
-            bloco = self._sock.recv(65536)
-            if not bloco:
-                raise ErroNavegador("o navegador encerrou a conexão")
-            self._buffer += bloco
-        cabeca, self._buffer = self._buffer.split(marca, 1)
-        return cabeca + marca
-
-    def _ler_exato(self, n: int) -> bytes:
-        while len(self._buffer) < n:
-            bloco = self._sock.recv(max(65536, n - len(self._buffer)))
-            if not bloco:
-                raise ErroNavegador("o navegador encerrou a conexão")
-            self._buffer += bloco
-        dados, self._buffer = self._buffer[:n], self._buffer[n:]
-        return dados
-
-    # ---- quadros
-    def _enviar_quadro(self, opcode: int, dados: bytes) -> None:
-        cabeca = bytes([0x80 | opcode])
-        n = len(dados)
-        if n < 126:
-            cabeca += bytes([0x80 | n])
-        elif n < 65536:
-            cabeca += bytes([0x80 | 126]) + n.to_bytes(2, "big")
-        else:
-            cabeca += bytes([0x80 | 127]) + n.to_bytes(8, "big")
-        mascara = os.urandom(4)  # o cliente é obrigado a mascarar
-        corpo = bytes(b ^ mascara[i % 4] for i, b in enumerate(dados))
-        try:
-            self._sock.sendall(cabeca + mascara + corpo)
-        except OSError as e:
-            raise ErroNavegador(f"não consegui enviar ao navegador ({e})") from e
+            super().__init__(url, timeout=timeout, rotulo="o navegador")
+        except ErroWebsocket as e:
+            raise ErroNavegador(str(e)) from e
 
     def enviar(self, texto: str) -> None:
-        self._enviar_quadro(0x1, texto.encode("utf-8"))
+        try:
+            super().enviar(texto)
+        except ErroWebsocket as e:
+            raise ErroNavegador(str(e)) from e
 
     def receber(self) -> str:
-        """Uma mensagem completa (junta os quadros de continuação e responde aos pings)."""
-        partes: list[bytes] = []
-        while True:
-            try:
-                b1, b2 = self._ler_exato(2)
-            except socket.timeout as e:
-                raise ErroNavegador("o navegador não respondeu no tempo esperado") from e
-            fim, opcode = b1 & 0x80, b1 & 0x0F
-            mascarado, tamanho = b2 & 0x80, b2 & 0x7F
-            if tamanho == 126:
-                tamanho = int.from_bytes(self._ler_exato(2), "big")
-            elif tamanho == 127:
-                tamanho = int.from_bytes(self._ler_exato(8), "big")
-            mascara = self._ler_exato(4) if mascarado else b""
-            dados = self._ler_exato(tamanho) if tamanho else b""
-            if mascarado:
-                dados = bytes(b ^ mascara[i % 4] for i, b in enumerate(dados))
-            if opcode == 0x9:  # ping do navegador
-                self._enviar_quadro(0xA, dados)
-                continue
-            if opcode == 0xA:  # pong
-                continue
-            if opcode == 0x8:
-                raise ErroNavegador("o navegador fechou a conexão do DevTools")
-            partes.append(dados)
-            if fim:
-                return b"".join(partes).decode("utf-8", "replace")
-
-    def fechar(self) -> None:
         try:
-            self._enviar_quadro(0x8, b"")
-        except ErroNavegador:
-            pass
-        try:
-            self._sock.close()
-        except OSError:
-            pass
+            return super().receber()
+        except ErroWebsocket as e:
+            raise ErroNavegador(str(e)) from e
 
 
 # ---------------------------------------------------------------- aba
