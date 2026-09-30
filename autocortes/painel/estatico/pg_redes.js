@@ -124,6 +124,9 @@ function statusContaHtml(r, envio) {
     icone = r.pronta ? "ok" : "alerta";
     titulo = r.pronta ? r.conta || "Sessão salva no navegador" : "Sem sessão no navegador";
     sub = r.pronta ? "pelo navegador, com a sua sessão" : r.motivo;
+    if (r.gravando) { classe = "pendente"; icone = "microfone"; titulo = "Gravando o roteiro"; sub = "Poste um vídeo à mão na janela que abriu"; }
+    else if (r.roteiro && r.roteiro.tem) sub += ` · roteiro gravado (${plural(r.roteiro.passos, "passo", "passos")})`;
+    else if (r.pronta) sub += " · sem roteiro gravado: uso os passos que eu escrevi";
   } else if (r.pronta) {
     classe = "ok"; icone = "ok"; titulo = r.conta || "Pronta para postar"; sub = ROTULO_ENVIO[r.via] || r.via;
     if (r.facebook && r.facebook.ativo) sub += ` · também na Página${r.facebook.pagina ? ` ${r.facebook.pagina}` : " do Facebook"}`;
@@ -202,6 +205,9 @@ function botoesRede(rede, r, envio) {
   } else if (envio === "navegador") {
     b.push(h`<button class="btn ${r.pronta ? "" : "primario"}" data-acao="rede-conectar" data-rede="${rede}">${ic("externo")}${r.pronta ? "Abrir o navegador" : "Conectar"}</button>`);
     b.push(h`<button class="btn" data-acao="rede-testar" data-rede="${rede}">${ic("ok")}Testar a sessão</button>`);
+    const tem = r.roteiro && r.roteiro.tem;
+    b.push(h`<button class="btn ${r.pronta && !tem ? "primario" : ""}" data-acao="rede-gravar" data-rede="${rede}">${ic("microfone")}${tem ? "Gravar de novo" : "Aprender a postar"}</button>`);
+    if (tem) b.push(h`<button class="btn fantasma" data-acao="rede-roteiro-apagar" data-rede="${rede}">Apagar o roteiro</button>`);
     if (r.conta) b.push(h`<button class="btn fantasma" data-acao="rede-desconectar" data-rede="${rede}">Esquecer a conta</button>`);
   } else if (envio === "upload_post") {
     b.push(h`<button class="btn" data-acao="rede-testar" data-rede="${rede}">${ic("ok")}Testar conexão</button>`);
@@ -455,6 +461,116 @@ App.acoes["rede-testar"] = async (el) => {
   await App.paginas.redes.recarregar();
 };
 
+/* ------------------------------------------------------------ aprender a postar */
+
+const Gravacao = { rede: null, timer: null };
+
+function marcasHtml(marcas) {
+  const nomes = { titulo: "Título", descricao: "Descrição", legenda: "Legenda", tags: "Tags", fonte: "Fonte (转载来源)" };
+  return h`<div class="marcas">${Object.entries(marcas || {}).map(([papel, marca]) => h`<button type="button" class="tag-copiar" data-acao="copiar" data-texto="${marca}" title="Copiar ${marca}"><b>${nomes[papel] || papel}</b><code>${marca}</code>${ic("copiar")}</button>`)}</div>`;
+}
+
+function gravandoHtml(rede, s) {
+  const marcas = Object.keys(s.marcas || {}).length;
+  return h`<div class="gravando">
+    <p><span class="ponto-grava"></span>Gravando. Faça a postagem na janela do Chrome que abriu, do começo até publicar.</p>
+    <ol class="passos">
+      <li>Escolha o vídeo normalmente (qualquer vídeo seu serve).</li>
+      ${marcas ? h`<li><b>Nos campos de texto, cole estas marcas em vez de escrever</b> (clique para copiar). É assim que eu descubro qual campo é qual:${marcasHtml(s.marcas)}</li>` : ""}
+      <li>Se a rede pedir tags uma por uma, cole a marca de tags numa e tecle Enter.</li>
+      <li>Ajuste o resto como você quiser (privacidade, capa, opções) — eu repito igual.</li>
+      <li>Clique em publicar e espere a confirmação aparecer.</li>
+      <li>Volte aqui e clique em <b>Terminei</b>.</li>
+    </ol>
+    <div class="grava-estado">${ic("lista")}<span id="grava-contagem">${plural(s.passos || 0, "passo anotado", "passos anotados")}</span><small id="grava-url">${(s.url || "").slice(0, 70)}</small></div>
+    ${s.erro ? h`<p class="erro-texto">${s.erro}</p>` : ""}
+    <p class="nota">Campo de senha nunca é gravado, e nada do que você fizer numa tela de login entra no roteiro.</p>
+    <div class="acoes-modal"><button class="btn fantasma" data-acao="grava-cancelar" data-rede="${rede}">Cancelar</button><button class="btn primario" data-acao="grava-fim" data-rede="${rede}">${ic("check")}Terminei</button></div></div>`;
+}
+
+function pararGravacao() {
+  clearTimeout(Gravacao.timer);
+  Gravacao.rede = null;
+}
+
+async function acompanharGravacao(rede) {
+  if (Gravacao.rede !== rede) return;
+  let s;
+  try {
+    s = await api(`/redes/${rede}/gravar`);
+  } catch (e) {
+    Gravacao.timer = setTimeout(() => acompanharGravacao(rede), 3000);
+    return;
+  }
+  if (Gravacao.rede !== rede) return;
+  const contagem = $("#grava-contagem");
+  if (contagem) contagem.textContent = plural(s.passos || 0, "passo anotado", "passos anotados");
+  const url = $("#grava-url");
+  if (url) url.textContent = (s.url || "").slice(0, 70);
+  if (s.erro) {
+    const corpo = corpoModal();
+    if (corpo) montar(corpo, gravandoHtml(rede, s));
+    return;
+  }
+  Gravacao.timer = setTimeout(() => acompanharGravacao(rede), 2000);
+}
+
+App.acoes["rede-gravar"] = async (el) => {
+  const rede = el.dataset.rede;
+  if (!vazio(App.pendente)) {
+    const salvo = await ocupado(el, salvarConfig);
+    if (!salvo) return;
+  }
+  const s = await ocupado(el, () => post(`/redes/${rede}/gravar`));
+  Gravacao.rede = rede;
+  abrirModal({
+    titulo: `Aprender a postar no ${REDES[rede].rotulo}`,
+    largura: 660,
+    corpo: gravandoHtml(rede, s),
+    aoFechar: () => {
+      if (Gravacao.rede === rede) post(`/redes/${rede}/gravar/cancelar`).catch(() => {});
+      pararGravacao();
+    },
+  });
+  Gravacao.timer = setTimeout(() => acompanharGravacao(rede), 2000);
+};
+
+App.acoes["grava-fim"] = async (el) => {
+  const rede = el.dataset.rede;
+  const r = await ocupado(el, () => post(`/redes/${rede}/gravar/fim`));
+  pararGravacao();
+  const faltando = r.faltando || [];
+  tituloModal(`Roteiro do ${REDES[rede].rotulo} gravado`);
+  montar(corpoModal(), h`<div class="login-espera">
+    ${ic(faltando.length ? "alerta" : "ok", "grande")}
+    <p><b>${plural(r.passos, "passo gravado", "passos gravados")}</b>${r.tem_arquivo ? ", incluindo a escolha do vídeo" : ", mas eu não vi você escolher o vídeo"}.</p>
+    <p class="nota">Campos identificados: ${r.papeis && r.papeis.length ? r.papeis.join(", ") : "nenhum"}.</p>
+    ${faltando.length ? h`<p class="erro-texto">Faltou colar a marca de: ${faltando.join(", ")}. Sem isso eu não sei onde escrever esse texto. Grave de novo.</p>` : ""}
+    ${r.tem_arquivo ? "" : h`<p class="erro-texto">Sem o passo do vídeo eu não consigo postar. Grave de novo, escolhendo o vídeo na janela.</p>`}
+    <p class="nota">Agora ligue o ensaio e poste um corte: ele repete estes passos e para antes de publicar.</p>
+    <div class="acoes-modal"><button class="btn primario" data-acao="fechar-modal">Entendi</button></div></div>`);
+  toast(`Roteiro do ${REDES[rede].rotulo} gravado com ${r.passos} passos`, faltando.length ? "info" : "ok", 7000);
+  await App.paginas.redes.recarregar();
+};
+
+App.acoes["grava-cancelar"] = async (el) => {
+  const rede = el.dataset.rede;
+  await ocupado(el, () => post(`/redes/${rede}/gravar/cancelar`));
+  pararGravacao();
+  fecharModal();
+  toast("Gravação cancelada", "info");
+  await App.paginas.redes.recarregar();
+};
+
+App.acoes["rede-roteiro-apagar"] = async (el) => {
+  const rede = el.dataset.rede;
+  const ok = await confirmar({ titulo: `Apagar o roteiro do ${REDES[rede].rotulo}?`, texto: "Sem o roteiro gravado, volto a usar os passos que eu escrevi, que podem não bater com a página.", botao: "Apagar", perigo: true });
+  if (!ok) return;
+  await ocupado(el, () => post(`/redes/${rede}/roteiro/apagar`));
+  toast("Roteiro apagado", "info");
+  await App.paginas.redes.recarregar();
+};
+
 App.acoes["rede-desconectar"] = async (el) => {
   const rede = el.dataset.rede;
   const ok = await confirmar({ titulo: `Desconectar o ${REDES[rede].rotulo}?`, texto: "O login salvo é apagado deste computador. Para voltar a postar, conecte a conta de novo.", botao: "Desconectar", perigo: true });
@@ -513,5 +629,6 @@ App.paginas.redes = {
   },
   sair() {
     pararLogin();
+    pararGravacao();
   },
 };

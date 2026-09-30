@@ -803,3 +803,14 @@ code.caminho { display: block; margin-top: 4px; white-space: normal; word-break:
 .card-navegador .aviso-rede { margin-bottom: 14px; }
 .card-navegador code { background: var(--painel-3); border: 1px solid var(--borda-2); padding: 1px 5px; border-radius: 6px; font-size: 12.5px; }
 .login-espera .passos { text-align: left; margin: 4px 0 10px; padding-left: 20px; display: flex; flex-direction: column; gap: 5px; color: var(--texto-2); font-size: 13px; }
+
+/* aprender a postar */
+.gravando > p:first-child { display: flex; align-items: center; gap: 9px; font-weight: 600; margin-top: 0; }
+.ponto-grava { width: 10px; height: 10px; border-radius: 50%; background: var(--erro); flex: none; animation: pulsar 1.4s infinite; }
+@keyframes pulsar { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+.gravando .passos { margin: 0 0 12px; padding-left: 20px; display: flex; flex-direction: column; gap: 7px; color: var(--texto-2); font-size: 13px; }
+.marcas { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 2px; }
+.marcas .tag-copiar { flex-direction: row; gap: 8px; }
+.marcas code { color: #ffd27a; font-size: 12px; }
+.grava-estado { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: 11px; background: var(--bg-2); border: 1px solid var(--borda); font-size: 13px; }
+.grava-estado small { margin-left: auto; color: var(--suave); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

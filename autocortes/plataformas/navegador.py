@@ -15,11 +15,14 @@ preenche tudo sem publicar, e qualquer falha guarda uma imagem da tela em dados/
 
 from __future__ import annotations
 
+import json
+import re
 import threading
 import time
 import uuid
 from pathlib import Path
 
+from .. import gravador
 from ..config import ROTULOS, Config
 from ..navegador import TRAVA, Aba, ErroNavegador, Navegador
 from ..textos import Conteudo
@@ -45,6 +48,8 @@ SESSAO = {
 }
 # endereços de login: se a página cair num deles, a sessão acabou
 URL_LOGIN = ("/login", "accounts/login", "accounts.google.com", "passport.bilibili.com", "/signin")
+# redes com gravação em andamento: o motor não posta pelo navegador enquanto você está gravando
+GRAVANDO: set[str] = set()
 # textos que indicam bloqueio: o roteiro para e não tenta de novo
 BLOQUEIO = (
     "verifique que você é humano", "confirme que você não é um robô", "captcha", "verify you are human",
@@ -61,6 +66,13 @@ def _conferir_bloqueio(aba: Aba) -> None:
                 f"a rede pediu verificação ou bloqueou o acesso ('{marca}'). Abra a janela do navegador "
                 "em Redes sociais, resolva na mão e tente de novo", "bloqueio",
             )
+
+
+def _pistas(texto: str) -> list[str]:
+    """Trechos curtos e específicos do fim da postagem, para reconhecer que deu certo."""
+    limpo = " ".join(str(texto).split()).lower()
+    frases = [f.strip() for f in re.split(r"[.!|·•\n]", limpo) if 12 <= len(f.strip()) <= 60]
+    return frases[:6]
 
 
 def _erro_sessao(rede: str) -> ErroNavegador:
@@ -192,9 +204,19 @@ class ViaNavegador(Plataforma):
 
     # ------------------------------------------------------------ publicação
     def publicar(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None) -> Resultado:
+        if GRAVANDO:
+            raise ErroPublicacao(
+                f"{self.rotulo}: você está gravando o roteiro de {', '.join(sorted(GRAVANDO))} agora. "
+                "Termine a gravação no painel e eu posto em seguida", "temporario",
+            )
         ensaio = bool(self.nav["ensaio"])
-        roteiro = {"youtube": self._youtube, "tiktok": self._tiktok,
-                   "instagram": self._instagram, "bilibili": self._bilibili}[self.nome]
+        aprendido = gravador.carregar(self.cfg, self.nome)
+        if aprendido:
+            def roteiro(aba, arq, t, ens):
+                return self._repetir(aba, aprendido, arq, t, ens)
+        else:
+            roteiro = {"youtube": self._youtube, "tiktok": self._tiktok,
+                       "instagram": self._instagram, "bilibili": self._bilibili}[self.nome]
         t = textos(self.cfg, self.nome, conteudo)
         with TRAVA:
             navegador = Navegador(self.cfg, parar)
@@ -230,6 +252,95 @@ class ViaNavegador(Plataforma):
     def _fim(self, observacao: str | None = None, url: str | None = None) -> Resultado:
         """Sem API não há id do post: guarda um número nosso e o link, quando a página mostra."""
         return Resultado(f"navegador-{uuid.uuid4().hex[:12]}", url, observacao)
+
+    # ---- roteiro aprendido (você postou uma vez e o AutoCortes anotou)
+    def _repetir(self, aba: Aba, roteiro: dict, arquivo: Path, t: dict, ensaio: bool) -> Resultado:
+        passos = list(roteiro.get("passos") or [])
+        publicar_em = roteiro.get("publicar_em")
+        if not isinstance(publicar_em, int) or not 0 <= publicar_em < len(passos):
+            cliques = [i for i, p in enumerate(passos) if p["tipo"] == "clicar"]
+            publicar_em = cliques[-1] if cliques else len(passos)
+        for i, passo in enumerate(passos):
+            if i == publicar_em:
+                if ensaio:
+                    log.info("%s: ensaio, paro antes de clicar em publicar", self.rotulo)
+                    return self._fim()
+                _conferir_bloqueio(aba)
+            self._passo(aba, passo, arquivo, t, i)
+        confirmacao = str(roteiro.get("confirmacao") or "")
+        if confirmacao:
+            self._esperar_confirmacao(aba, confirmacao)
+        link = self._link_na_pagina(aba)
+        return self._fim("publicado pelo roteiro que você gravou", link)
+
+    def _passo(self, aba: Aba, passo: dict, arquivo: Path, t: dict, indice: int) -> None:
+        tipo = passo.get("tipo")
+        onde = f"passo {indice + 1} ({tipo})"
+        try:
+            if tipo == "arquivo":
+                aba.enviar_arquivo(passo["seletores"], arquivo, 90)
+            elif tipo == "clicar":
+                self._clicar_passo(aba, passo)
+            elif tipo == "digitar":
+                self._digitar_passo(aba, passo, t)
+            elif tipo == "tecla":
+                aba.tecla(passo.get("tecla") or "Enter")
+        except ErroNavegador as e:
+            alvo = passo.get("texto") or passo.get("rotulo") or (passo.get("seletores") or ["?"])[0]
+            raise ErroNavegador(
+                f"o {onde} do roteiro que você gravou não funcionou (\"{alvo}\"): {e}. A página deve ter mudado: "
+                "grave o roteiro de novo em Redes sociais", e.tipo,
+            ) from e
+
+    def _clicar_passo(self, aba: Aba, passo: dict) -> None:
+        for seletor in passo.get("seletores") or []:
+            if aba.existe(seletor):
+                aba.clicar(seletor, 30)
+                return
+        textos_alvo = [x for x in (passo.get("texto"), passo.get("rotulo")) if x]
+        if textos_alvo:  # a classe mudou, mas o texto do botão costuma ficar
+            aba.clicar_texto("button, div[role='button'], span, a, tp-yt-paper-item, ytcp-button", textos_alvo, 30)
+            return
+        aba.clicar(passo.get("seletores") or [], 30)  # deixa o erro sair com o seletor original
+
+    def _digitar_passo(self, aba: Aba, passo: dict, t: dict) -> None:
+        papel = passo.get("papel")
+        if papel == "tags":
+            marcas = t.get("tags") or []
+            for tag in marcas[:15]:  # cada tag entra e é confirmada com Enter
+                aba.digitar(passo["seletores"], str(tag), 30)
+                aba.tecla("Enter")
+            return
+        valor = t.get(papel) if papel else passo.get("valor")
+        if valor is None:
+            valor = passo.get("valor") or ""
+        if isinstance(valor, list):
+            valor = ", ".join(str(x) for x in valor)
+        aba.digitar(passo["seletores"], str(valor), 30)
+
+    def _esperar_confirmacao(self, aba: Aba, confirmacao: str) -> None:
+        """Espera reaparecer algo que estava na tela quando você terminou de postar."""
+        pistas = [p for p in _pistas(confirmacao) if p]
+        if not pistas:
+            return
+        try:
+            aba.esperar(
+                "(() => { const t = __ac.texto(); return " + " || ".join(
+                    f"t.includes({json.dumps(p)})" for p in pistas[:4]) + " ? 1 : 0; })()",
+                300, "a rede não confirmou a publicação",
+            )
+        except ErroNavegador as e:
+            log.warning("%s: %s (o vídeo pode ter sido publicado; confira na rede)", self.rotulo, e)
+
+    def _link_na_pagina(self, aba: Aba) -> str | None:
+        try:
+            link = aba.js(
+                "(() => { const a = __ac.todos('a[href]').find((x) => /youtu\\.be|\\/shorts\\/|\\/video\\/|\\/reel\\/"
+                "|\\/p\\/|bilibili\\.com\\/video/.test(x.href)); return a ? a.href : 0; })()"
+            )
+        except ErroNavegador:
+            return None
+        return str(link) if link and str(link).startswith("https://") else None
 
     # ---- TikTok: tiktok.com/tiktokstudio/upload
     def _tiktok(self, aba: Aba, arquivo: Path, t: dict, ensaio: bool) -> Resultado:
@@ -359,3 +470,109 @@ class ViaNavegador(Plataforma):
         )
         observacoes.append("o vídeo passa pela revisão do Bilibili antes de aparecer")
         return self._fim("; ".join(observacoes))
+
+
+# ---------------------------------------------------------------- aprender a postar
+
+class Gravacao:
+    """Uma gravação em andamento: a janela fica aberta enquanto você posta um vídeo à mão."""
+
+    LIMITE_SEG = 45 * 60  # esquecida aberta, ela se encerra sozinha
+
+    def __init__(self, cfg: Config, rede: str):
+        self.cfg = cfg
+        self.rede = rede
+        self.passos: list[dict] = []
+        self.erro: str | None = None
+        self.url = ""
+        self.texto = ""
+        self.inicio = time.time()
+        self._parar = threading.Event()
+        self._navegador = Navegador(cfg)
+        self._navegador.conf = dict(cfg["navegador"], visivel=True)  # você precisa ver a janela
+        self._aba: Aba | None = None
+        self._trava = threading.Lock()
+        self.thread: threading.Thread | None = None
+
+    def iniciar(self) -> None:
+        self._navegador.abrir()
+        aba = self._navegador.nova_aba("about:blank")
+        try:
+            aba.navegar(PAGINAS[self.rede][1], 60)
+            esperar_sessao(aba, self.rede)
+        except ErroNavegador:
+            self._navegador.fechar_aba(aba)
+            raise
+        aba.avaliar(gravador.SCRIPT)
+        self._aba = aba
+        self.url = aba.url()
+        GRAVANDO.add(self.rede)
+        self.thread = threading.Thread(target=self._acompanhar, name=f"gravar-{self.rede}", daemon=True)
+        self.thread.start()
+        log.info("%s: gravando o roteiro. Poste um vídeo à mão na janela que abriu.", ROTULOS[self.rede])
+
+    def _acompanhar(self) -> None:
+        """Recolhe os passos de tempo em tempo e reinjeta o gravador quando a página troca."""
+        try:
+            while not self._parar.wait(1.5):
+                if time.time() - self.inicio > self.LIMITE_SEG:
+                    self.erro = "a gravação passou de 45 min e foi encerrada"
+                    break
+                with self._trava:
+                    if self._aba is None:
+                        break
+                    try:
+                        if not self._aba.avaliar("typeof window.__acGrav !== 'undefined' ? 1 : 0"):
+                            self._aba.avaliar(gravador.SCRIPT)  # a página navegou e levou o gravador
+                        novos = self._aba.avaliar("window.__acGrav.tirar()") or []
+                        self.passos.extend(n for n in novos if isinstance(n, dict))
+                        self.url = self._aba.url()
+                        self.texto = str(self._aba.avaliar("window.__acGrav.texto()") or "")
+                    except ErroNavegador as e:
+                        self.erro = f"perdi a janela da gravação ({e})"
+                        break
+        finally:
+            GRAVANDO.discard(self.rede)
+
+    def situacao(self) -> dict:
+        return {
+            "rede": self.rede,
+            "passos": len(gravador.limpar_passos(self.rede, self.passos)),
+            "brutos": len(self.passos),
+            "url": self.url,
+            "erro": self.erro,
+            "segundos": int(time.time() - self.inicio),
+            "marcas": gravador.papeis(self.rede),
+        }
+
+    def concluir(self) -> dict:
+        """Salva o que foi gravado e fecha a aba."""
+        self._parar.set()
+        if self.thread is not None:
+            self.thread.join(timeout=5)
+        with self._trava:
+            aba, self._aba = self._aba, None
+            if aba is not None:
+                try:  # última colheita, com o que ficou na tela ao terminar
+                    novos = aba.avaliar("window.__acGrav.tirar()") or []
+                    self.passos.extend(n for n in novos if isinstance(n, dict))
+                    self.texto = str(aba.avaliar("window.__acGrav.texto()") or "")
+                except ErroNavegador:
+                    pass
+                self._navegador.fechar_aba(aba)
+        GRAVANDO.discard(self.rede)
+        if not self.passos:
+            raise ErroNavegador(
+                "não gravei nenhum passo. Poste um vídeo à mão na janela que abriu antes de concluir", "corte")
+        resumo = gravador.salvar(self.cfg, self.rede, self.passos, PAGINAS[self.rede][1], self.texto)
+        return resumo
+
+    def cancelar(self) -> None:
+        self._parar.set()
+        if self.thread is not None:
+            self.thread.join(timeout=5)
+        with self._trava:
+            aba, self._aba = self._aba, None
+            if aba is not None:
+                self._navegador.fechar_aba(aba)
+        GRAVANDO.discard(self.rede)

@@ -59,6 +59,7 @@ class Painel:
         self.token = secrets.token_urlsafe(32)
         self.encerrar = threading.Event()
         self.logins: dict[str, api.SessaoLogin] = {}
+        self.gravacoes: dict = {}  # rede -> Gravacao em andamento (aprender a postar)
         self.trava_config = threading.RLock()  # as rotas dos modelos seguram a trava e salvam o config dentro
         self.reinicio: dict[str, object] = {}  # "secao.chave" -> valor salvo que vale ao reiniciar
         self.hosts = {f"127.0.0.1:{porta}", f"localhost:{porta}"}
@@ -320,6 +321,8 @@ def iniciar_painel(cfg: Config, abrir_navegador: bool = True, iniciar_motor: boo
         servidor.server_close()
         for sessao in list(painel.logins.values()):
             sessao.cancelar()
+        for gravacao in list(painel.gravacoes.values()):
+            gravacao.cancelar()
         motor.parar()
         trava.liberar()
     return 0

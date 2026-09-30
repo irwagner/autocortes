@@ -15,12 +15,14 @@ from datetime import date, datetime, time as dtime
 from pathlib import Path
 from typing import Any, Callable
 
-from .. import __version__, agenda, analise, config, edicao, ferramentas, ia, metricas, modelos_visuais, planejador
+from .. import (__version__, agenda, analise, config, edicao, ferramentas, gravador, ia, metricas, modelos_visuais,
+                planejador)
 from ..config import ENVIOS, PLATAFORMAS, ROTULOS, ErroConfig
 from ..midia import ErroMidia, Interrompido, base_ffmpeg, executar
 from ..navegador import ErroNavegador
 from ..plataformas import ErroPublicacao, criar
 from ..plataformas import manual as tarefas_manual
+from ..plataformas.navegador import Gravacao
 from ..produtor import EXTENSOES, Produtor, escrever_textos_ia, varrer_biblioteca
 from ..publicador import MAX_TENTATIVAS_FACEBOOK, TRAVAS_REDE, Publicador
 from ..textos import fonte_dos_textos, ler_metadados, montar_conteudo, texto_topo, textos_ia, titulo_do_arquivo
@@ -193,6 +195,9 @@ def _resumo_redes(ctx: Contexto) -> dict:
                 "ativo": _facebook_ligado(cfg),
                 "pagina": plataforma.pagina() if hasattr(plataforma, "pagina") else None,
             }
+        if cfg[rede]["envio"] == "navegador":
+            saida[rede]["roteiro"] = gravador.resumo(gravador.carregar(cfg, rede))
+            saida[rede]["gravando"] = rede in ctx.painel.gravacoes
     return saida
 
 
@@ -1555,6 +1560,65 @@ def escolher_conta(ctx: Contexto):
     ctx.painel.motor.rede_atualizada("instagram")
     log.info("Instagram conectado: %s", sessao.mensagem)
     return sessao.publico()
+
+
+# ---------------------------------------------------------------- aprender a postar (navegador)
+
+def _exigir_navegador(ctx: Contexto, rede: str) -> None:
+    _exigir(ctx.cfg[rede]["envio"] == "navegador",
+            f"O {ROTULOS[rede]} não está com o envio pelo navegador. Troque a forma de envio e salve.")
+
+
+@rota("POST", r"/redes/(\w+)/gravar")
+def iniciar_gravacao(ctx: Contexto, rede):
+    """Abre a janela na página de envio e começa a anotar o que você faz."""
+    rede = _rede(rede)
+    _exigir_navegador(ctx, rede)
+    painel = ctx.painel
+    anterior = painel.gravacoes.pop(rede, None)
+    if anterior is not None:
+        anterior.cancelar()
+    sessao = Gravacao(ctx.cfg, rede)
+    try:
+        sessao.iniciar()
+    except ErroNavegador as e:
+        raise ErroHttp(400, str(e)) from e
+    painel.gravacoes[rede] = sessao
+    return {"ok": True, **sessao.situacao()}
+
+
+@rota("GET", r"/redes/(\w+)/gravar")
+def estado_gravacao(ctx: Contexto, rede):
+    sessao = ctx.painel.gravacoes.get(_rede(rede))
+    return sessao.situacao() if sessao else {"rede": rede, "passos": 0, "erro": None, "parada": True}
+
+
+@rota("POST", r"/redes/(\w+)/gravar/fim")
+def concluir_gravacao(ctx: Contexto, rede):
+    rede = _rede(rede)
+    sessao = ctx.painel.gravacoes.pop(rede, None)
+    _exigir(sessao is not None, "Nenhuma gravação em andamento nesta rede")
+    try:
+        resumo = sessao.concluir()
+    except ErroNavegador as e:
+        raise ErroHttp(400, str(e)) from e
+    return {"ok": True, **resumo}
+
+
+@rota("POST", r"/redes/(\w+)/gravar/cancelar")
+def cancelar_gravacao(ctx: Contexto, rede):
+    sessao = ctx.painel.gravacoes.pop(_rede(rede), None)
+    if sessao is not None:
+        sessao.cancelar()
+    return {"ok": True}
+
+
+@rota("POST", r"/redes/(\w+)/roteiro/apagar")
+def apagar_roteiro(ctx: Contexto, rede):
+    rede = _rede(rede)
+    gravador.arquivo_roteiro(ctx.cfg, rede).unlink(missing_ok=True)
+    log.info("%s: roteiro aprendido apagado pelo painel", ROTULOS[rede])
+    return {"ok": True}
 
 
 @rota("POST", r"/redes/(\w+)/testar")
