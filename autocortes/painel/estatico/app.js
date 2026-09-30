@@ -8,6 +8,7 @@ const MENU = [
   ["filmes", "Filmes", "filme"],
   ["estudio", "Estúdio", "varinha"],
   ["redes", "Redes sociais", "rede"],
+  ["perfis", "Perfis", "caixa"],
   ["config", "Configurações", "ajustes"],
   ["registro", "Registro", "terminal"],
 ];

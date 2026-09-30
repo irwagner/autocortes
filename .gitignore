@@ -6,6 +6,10 @@ __pycache__/
 config.toml
 dados/
 
+# perfis de nicho: cada um é um config.toml com dados e contas próprios
+perfis/
+perfis.toml
+
 # arquivos grandes baixados/gerados
 modelos/
 ferramentas/

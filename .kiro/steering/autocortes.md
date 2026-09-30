@@ -14,6 +14,7 @@ App local para Windows que corta filmes em vídeos verticais 1080x1920 e posta s
 - Opção nova no config: adicionar em `config.PADRAO` (e na validação) e no `config.example.toml`, mantendo os dois iguais. Se for do visual do corte, também em `modelos_visuais.CHAVES`.
 - Nunca apagar nem reeditar cortes do usuário (`dados\cortes`) sem ele pedir. Mudança de visual vale para os próximos cortes.
 - Rede nova: `PLATAFORMAS`, `ENVIOS` e `ROTULOS` em `config.py` (fonte única dos nomes), seção no `PADRAO` e no exemplo (começando desligada), `agenda.PRESETS`, `plataformas.criar` e, no painel, `REDES`, `ORDEM_REDES` e `LOGOS` do `nucleo.js`.
+- Tela nova no painel: `pg_<nome>.js` com `App.paginas.<nome> = {titulo, subtitulo, render, recarregar}`, `<script>` no `index.html`, linha no `MENU` do `app.js` e prefixo próprio nas funções de topo.
 
 ## Como verificar
 - `.venv\Scripts\python -m compileall -q autocortes` e `node --check` em cada `autocortes\painel\estatico\*.js`.
@@ -27,7 +28,10 @@ App local para Windows que corta filmes em vídeos verticais 1080x1920 e posta s
 - Script de teste em Node com saída longa: o `*>` do PowerShell pode perder o fim do log se o comando estourar o tempo. Gravar o log pelo próprio script (`fs.appendFileSync`) e rodar com `Start-Process ... -PassThru` + `WaitForExit`.
 - APIs das redes nos testes: servidor HTTP simulado local e trocar as URLs da instância (`graph_url`, `rupload_facebook_url`, `api` do Upload-Post); `instagram.esperar` pode ser trocado para não dormir entre as consultas.
 - `config.toml` de teste: escrever um mínimo, à mão. Copiar o `config.example.toml` e acrescentar uma chave (`envio`, por exemplo) gera chave duplicada, o tomlkit recusa e o painel morre na abertura.
-- Chrome ou Edge de teste segurando a pasta do perfil faz o `Remove-Item` falhar: matar antes pelos processos com `_teste` na linha de comando (`Get-CimInstance Win32_Process`).
+- Chrome ou Edge de teste segurando a pasta do perfil faz o `Remove-Item` falhar: matar antes pelos processos com `_teste` na linha de comando (`Get-CimInstance Win32_Process`). Cuidado com o filtro: `*_teste_ui*` também mata o servidor de teste que roda com `--config _teste_ui\...`.
+- `Invoke-WebRequest` sem `-UseBasicParsing` abre um aviso interativo e trava o comando.
+- Testar `perfis.py` sem tocar na instalação real: sobrescrever `perfis.PASTA`, `perfis.CONFIG_PRINCIPAL` e `perfis.ARQUIVO_INSTALACAO` para dentro da pasta de teste (o `navegador.py` consulta o mesmo módulo, então a troca também vale para ele).
+- No Edge sem janela, a viewport sai estreita: usar `Emulation.setDeviceMetricsOverride` antes de capturar, senão o layout em grade não aparece na imagem.
 
 ## Lições do painel
 - Os scripts das telas dividem o mesmo escopo global: nomes de nível superior não podem repetir entre arquivos (prefixar, como `cfg*` no `pg_config.js`).
@@ -42,11 +46,22 @@ App local para Windows que corta filmes em vídeos verticais 1080x1920 e posta s
 - O clique global do `app.js` faz `preventDefault` em tudo com `data-acao`: link de download (`<a download>`) não pode ter `data-acao`.
 - `abrirModal` foca o primeiro campo do corpo: em tela estreita isso rola a janela. Marcar com `autofocus` o que deve receber o foco.
 
+## Perfis de nicho
+- Perfil = pasta com `config.toml`. Como `Config.raiz` é a pasta do config e tudo pende de `pasta_dados`, `pasta_dados = "dados"` e `pasta_filmes = "filmes"` relativos já separam banco, tokens, perfil do Chrome, roteiros, modelos visuais, cortes e log. O principal é o `config.toml` da instalação; os outros ficam em `perfis/<slug>/`. **Um processo por perfil**, não multi-tenancy: a alternativa (coluna `perfil_id` em tudo) exigiria trocar todos os locks e caches de módulo (`TRAVA_EDICAO`, `TRAVAS_REDE`, cache de moldura, `navegador.TRAVA`) e um seletor em cada rota.
+- `perfis.py` cuida de listar/criar/ajustar/excluir/abrir/fechar. O que é da instalação inteira fica em `perfis.toml` (`[perfis].max_simultaneos`, 0 = sem limite); a lista de perfis é derivada das pastas, nunca duplicada num registro. `ferramentas/` e `modelos/` continuam compartilhados (`RAIZ`), o que é desejado.
+- Perfil novo nasce **em simulação e com todas as redes desligadas** (as contas ainda não existem), com portas de painel e navegador livres. `criar` usa `criar_config_se_faltar` + `config.salvar`, então o config sai comentado como o exemplo.
+- **Parar outro perfil não pode ser por HTTP**: o token do painel é aleatório por processo. O jeito é o arquivo `encerrar.pedido` na `pasta_dados`, que o laço do `iniciar_painel` confere a cada segundo (encerramento cooperativo normal: fecha servidor, cancela logins/gravações, para o motor, libera a trava). Ele é apagado na subida e no fim.
+- `/saude` (sem token) leva o nome do perfil e `perfis.identidade(pasta_dados)` (sha256 curto, nunca o caminho): é assim que se sabe **qual** perfil está numa porta, em vez de só "alguém respondeu".
+- `urlopen` numa porta fechada leva ~2 s no Windows: conferir antes com `socket.connect_ex` (`_escutando`) e consultar os perfis em paralelo (`situacoes`, ThreadPoolExecutor). Sem isso a tela levava 6 s com 3 perfis.
+- Só o principal chama `autoiniciar_pendentes` (se qualquer perfil chamasse, viraria um laço de processos).
+- `perfis/` e `perfis.toml` estão no `.gitignore`: são dados e contas do usuário.
+
 ## Envio pelo navegador (DevTools)
 - `navegador.py` é a camada base: cliente WebSocket próprio (a biblioteca padrão não tem), CDP, abertura do Chrome com perfil em `dados/chrome` e os ajudantes. `plataformas/navegador.py` tem o `ViaNavegador`, que executa o roteiro da rede. Kwai fora: não existe página de envio.
 - O ajudante `__ac` é injetado na página e faz busca que **entra no shadow DOM**: sem isso o YouTube Studio (Polymer) é inalcançável. Ele se perde a cada navegação, então todo ajudante chama `_garantir_ajudante`.
 - Arquivo: `DOM.setFileInputFiles` pelo `objectId` (`Runtime.evaluate` sem `returnByValue` + `DOM.requestNode`), que alcança campo escondido e no shadow DOM. **Antes é obrigatório chamar `DOM.getDocument`**, senão o `requestNode` volta vazio. O Chrome aceita caminho inexistente calado: conferir antes.
 - Busca por texto (`__ac.porTexto`): junta `innerText` + `aria-label` + `title` **num só texto** e olha **qualquer tag** (`*`), com nota por casamento exato, clicável e ser folha. Restringir a `button, span, a` ou usar `||` entre os atributos não acha o botão de publicar do TikTok, que é uma `div` com "Post" visível e "Publicar agora" no `aria-label`.
+- Uma porta de DevTools só pode ser de um perfil. `abrir()` só reaproveita a janela se `nosso()` confirmar, senão para com erro de `bloqueio` (senão o perfil B postaria com a conta do perfil A, calado). A prova é o arquivo `.autocortes-janela.json` que eu gravo no perfil do Chrome com a porta e o **alvo** do browser (`webSocketDebuggerUrl`, único por processo). Medido em set/2026: o Chrome 154 **não grava mais** o `DevToolsActivePort`, e `Browser.getBrowserCommandLine` só responde com `--enable-automation` — que entrega a automação para as redes, então está fora. Sem anotação (instalação antiga), a janela é adotada só se nenhum outro perfil usar aquela porta.
 - Botão desabilitado (`disabled`, `aria-disabled`, classe com `disabled`) **não conta como achado**: assim o passo de publicar espera ele liberar (até 900 s) em vez de clicar num botão morto ou desistir em 30 s.
 - Na repetição do roteiro, `__ac.travarArquivo()` sobrescreve `HTMLInputElement.prototype.click` (para `type=file`) e `showOpenFilePicker`: sem isso o clique em "Selecionar vídeo" abre a janela do Windows e trava tudo. O vídeo entra sempre pelo CDP.
 - Sessão: nada de procurar texto de login. Medido em set/2026, deslogado: o YouTube vai para o `accounts.google.com`, o Instagram mostra `input[type=password]`, e o TikTok e o Bilibili ficam na mesma URL com a página vazia. Por isso `esperar_sessao` espera um **sinal positivo** por rede (`SESSAO`), e o nome da conta do Instagram exige um `img` dentro do link, senão pega "popular" do rodapé.

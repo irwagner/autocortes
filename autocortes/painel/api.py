@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .. import (__version__, agenda, analise, config, edicao, ferramentas, gravador, ia, metricas, modelos_visuais,
-                planejador, roteiro)
+                perfis, planejador, roteiro)
 from ..config import ENVIOS, PLATAFORMAS, ROTULOS, ErroConfig
 from ..midia import ErroMidia, Interrompido, base_ffmpeg, executar
 from ..navegador import ErroNavegador
@@ -1733,6 +1733,119 @@ def encerrar(ctx: Contexto):
     log.info("Encerramento pedido pelo painel")
     threading.Timer(0.3, ctx.painel.encerrar.set).start()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- perfis (nichos)
+
+def _perfil(slug: str):
+    """O perfil da URL ('principal' = o config.toml da instalação)."""
+    try:
+        return perfis.encontrar("" if slug == "principal" else slug)
+    except ErroConfig as e:
+        raise ErroHttp(404, str(e)) from e
+
+
+def _perfis_erro(e: ErroConfig) -> ErroHttp:
+    return ErroHttp(400, str(e), {"erros": getattr(e, "erros", None) or [str(e)]})
+
+
+@rota("GET", r"/perfis")
+def listar_perfis(ctx: Contexto):
+    lista = perfis.listar()
+    estados = perfis.situacoes(lista)  # em paralelo: um perfil fechado não atrasa os outros
+    atual = ctx.cfg.caminho
+    saida = []
+    for p in lista:
+        dados = p.para_painel()
+        dados["situacao"] = estados.get(p.slug, {"rodando": False, "outro": False})
+        try:
+            dados["atual"] = p.config.resolve() == atual.resolve()
+        except OSError:
+            dados["atual"] = False
+        if dados["atual"]:  # este processo: o /saude só responde depois, mas ele está aberto agora
+            dados["situacao"] = {"rodando": True, "outro": False, "desde": ctx.painel.iniciado_em,
+                                 "motor": ctx.painel.motor.rodando}
+        saida.append(dados)
+    return {
+        "perfis": saida,
+        "instalacao": perfis.instalacao(),
+        "conflitos": perfis.conflitos(lista),
+        "max": perfis.MAX_PERFIS,
+        "abertos": sum(1 for d in saida if d["situacao"]["rodando"]),
+    }
+
+
+@rota("POST", r"/perfis/novo")
+def criar_perfil(ctx: Contexto):
+    try:
+        p = perfis.criar(str(ctx.corpo.get("nome") or ""))
+    except ErroConfig as e:
+        raise _perfis_erro(e) from e
+    except OSError as e:
+        raise ErroHttp(500, f"Não consegui criar a pasta do perfil: {e}") from e
+    return {"perfil": p.para_painel()}
+
+
+@rota("POST", r"/perfis/opcoes")
+def opcoes_perfis(ctx: Contexto):
+    try:
+        dados = perfis.salvar_instalacao(ctx.corpo or {})
+    except ErroConfig as e:
+        raise _perfis_erro(e) from e
+    except OSError as e:
+        raise ErroHttp(500, f"Não consegui gravar o perfis.toml: {e}") from e
+    return {"instalacao": dados}
+
+
+@rota("POST", r"/perfis/([\w-]{1,40})/abrir")
+def abrir_perfil(ctx: Contexto, slug):
+    p = _perfil(slug)
+    try:
+        return perfis.iniciar(p)
+    except ErroConfig as e:
+        raise _perfis_erro(e) from e
+
+
+@rota("POST", r"/perfis/([\w-]{1,40})/fechar")
+def fechar_perfil(ctx: Contexto, slug):
+    p = _perfil(slug)
+    if p.config.resolve() == ctx.cfg.caminho.resolve():
+        raise ErroHttp(400, "Este é o perfil que você está vendo: use 'Fechar o AutoCortes' na lateral")
+    try:
+        return perfis.parar(p)
+    except ErroConfig as e:
+        raise _perfis_erro(e) from e
+
+
+@rota("POST", r"/perfis/([\w-]{1,40})/salvar")
+def salvar_perfil(ctx: Contexto, slug):
+    p = _perfil(slug)
+    try:
+        novo = perfis.atualizar(p, ctx.corpo or {})
+    except ErroConfig as e:
+        raise _perfis_erro(e) from e
+    dados = novo.para_painel()
+    dados["situacao"] = perfis.situacao(novo)
+    if perfis.situacao(novo)["rodando"] and (ctx.corpo or {}).keys() & {"porta", "porta_navegador"}:
+        dados["aviso"] = "A porta nova vale quando você fechar e abrir este perfil."
+    return {"perfil": dados}
+
+
+@rota("GET", r"/perfis/([\w-]{1,40})/conteudo")
+def conteudo_perfil(ctx: Contexto, slug):
+    return perfis.conteudo(_perfil(slug))
+
+
+@rota("POST", r"/perfis/([\w-]{1,40})/excluir")
+def excluir_perfil(ctx: Contexto, slug):
+    p = _perfil(slug)
+    confirmacao = str((ctx.corpo or {}).get("confirmacao") or "").strip()
+    _exigir(confirmacao.lower() == p.nome.strip().lower(),
+            f"Para excluir, escreva o nome do perfil exatamente: {p.nome}")
+    try:
+        return {"ok": True, "apagado": perfis.excluir(p.slug)}
+    except ErroConfig as e:
+        raise _perfis_erro(e) from e
 
 
 # ---------------------------------------------------------------- mídia

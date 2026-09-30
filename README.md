@@ -71,7 +71,7 @@ Mantém 3 cortes prontos à frente das postagens e volta aos filmes já analisad
 <td valign="top">
 
 **🖥️ Painel no navegador**<br>
-8 telas, com o Estúdio para ajustar o visual numa tela de celular, o calendário da semana e o registro ao vivo.
+9 telas, com o Estúdio para ajustar o visual numa tela de celular, o calendário da semana e o registro ao vivo.
 
 </td>
 </tr>
@@ -147,7 +147,8 @@ Atualizado em setembro de 2026.
 | Kwai, Bilibili e postagem à mão em qualquer rede | ✅ Pronto e testado: tarefas no Início com vídeo, textos por rede, "Já postei" e pasta sincronizada |
 | YouTube só com Shorts (vertical ou quadrado, até o limite de duração) | ✅ Pronto e testado |
 | Agenda por rede, fila e planejador | ✅ Pronto e testado de ponta a ponta em simulação |
-| Painel no navegador (8 telas, API local com 42 rotas) | ✅ Pronto e testado no Edge |
+| Painel no navegador (9 telas, API local com 59 rotas) | ✅ Pronto e testado no Edge |
+| Perfis de nicho: vários nichos na mesma instalação, cada um com suas contas | ✅ Pronto e testado (dois perfis abertos ao mesmo tempo, de verdade) |
 | Moldura, modelos visuais e aba Estúdio | ✅ Prontos; testados com o episódio de The Great e conferidos quadro a quadro |
 | IA opcional para título, descrição e hashtags | 🧪 Pronta; testada com um servidor que imita o Ollama, ainda não com um modelo real |
 | Métricas dos posts (YouTube e Instagram) | 🧪 Prontas; testadas contra um servidor simulado |
@@ -229,10 +230,33 @@ Abre no navegador pelo `AutoCortes.bat`. A lateral mostra se o motor está ligad
 - **Filmes:** enviar filmes e legendas arrastando para a página, situação e progresso da análise, reanalisar, ignorar e editar título, ano, hashtags e idioma.
 - **Redes sociais:** modo simulação ou publicação real, forma de envio de cada rede (API oficial, Upload-Post, pelo navegador ou à mão), conectar (YouTube e TikTok pelo navegador, Instagram colando o token), testar e desconectar, com passo a passo e as opções dos posts (duração máxima do YouTube, Página do Facebook, tags do Bilibili), mais a pasta sincronizada da postagem à mão. Nas redes pelo navegador, "Aprender a postar" grava o roteiro com log ao vivo, desfazer e recomeçar, e "Ver o roteiro" abre o editor da [linguagem de roteiro](#aprender-a-postar-e-o-roteiro).
 - **Estúdio:** o visual dos cortes numa tela de celular. Arraste o vídeo, o título e a legenda para cima e para baixo (ou use as setas do teclado), escolha ou envie a moldura, o tamanho do vídeo (Menor, Inteiro com o quadro todo, Padrão de 1,25x e Maior de 1,7x, ou o valor exato), o fundo, a fonte, o tamanho e as cores do título e da legenda, a barra e o fade. "O que os apps cobrem" mostra as faixas onde ficam os botões e a descrição das redes, e "Como vai sair" mostra o quadro gerado pelo mesmo editor dos cortes.
+- **Perfis:** vários nichos na mesma instalação ([veja abaixo](#perfis-vários-nichos-de-uma-vez)), cada um com sua pasta, suas contas e seu tema. Criar, abrir, fechar, ajustar portas e excluir, com o limite de quantos trabalham ao mesmo tempo.
 - **Configurações:** abas Geral, Cortes, Vídeo (qualidade e volume), Textos dos posts, IA, Transcrição e Sistema, com exemplo do post, teste da IA, download do modelo de transcrição e iniciar com o Windows. As alterações ficam pendentes numa barra no rodapé até você salvar (Ctrl+S também salva).
 - **Registro:** mensagens ao vivo, com busca, filtro de avisos e erros e cópia.
 
 As alterações valem na hora, sem reiniciar, exceto a porta do painel e a pasta de dados: essas pedem para fechar e abrir o AutoCortes, e o painel avisa.
+
+### Perfis: vários nichos de uma vez
+
+Um **perfil** é um nicho com a pasta dele: filmes, contas das redes, tema, agenda, fila e histórico separados, e uma janela do Chrome só dele, para as contas não se misturarem. Assim dá para tocar Filmes, Motivacional e Receitas ao mesmo tempo, na mesma instalação, sem nada vazar de um para o outro.
+
+Na tela **Perfis**, "Novo perfil" cria a pasta com um `config.toml` próprio, uma pasta de filmes vazia e portas livres para o painel e para o navegador. O perfil novo começa **em simulação e sem nenhuma rede ligada**: você abre o painel dele, conecta as contas daquele nicho, escolhe o tema no Estúdio e só então desliga a simulação.
+
+```
+AutoCortes/
+  config.toml, dados/, filmes/        o perfil Principal (o que sempre existiu)
+  perfis/motivacional/config.toml, dados/, filmes/
+  perfis/receitas/config.toml, dados/, filmes/
+  ferramentas/, modelos/              compartilhados: FFmpeg e whisper servem a todos
+```
+
+Cada perfil roda no **seu próprio processo**, com o painel numa porta própria. Abrir, fechar e ver a situação de todos é pela tela Perfis, de dentro de qualquer perfil; "Abrir o painel" leva ao painel daquele nicho.
+
+- **Quantos ao mesmo tempo:** cada perfil aberto usa FFmpeg e whisper por conta própria, então o limite é do seu PC. O campo em Perfis define quantos podem trabalhar juntos (0 = sem limite); com um Ryzen 5 e 16 GB, 2 ou 3 é razoável. O limite vale para abrir à mão e para o "Abre junto".
+- **Abre junto:** marque em Ajustar e o perfil sobe quando o principal abre, respeitando o limite. O "Iniciar com o Windows" continua sendo um só: ele abre o principal, que abre os marcados.
+- **Portas:** cada perfil precisa de uma porta de painel e uma de navegador só dele. O AutoCortes escolhe portas livres ao criar e recusa salvar uma porta que já é de outro perfil. Se duas coincidirem (config editado à mão), a tela avisa em vermelho e o envio pelo navegador **para** em vez de postar com a conta do outro perfil.
+- **Login do TikTok:** a porta de retorno (8765) é registrada no app da rede, então é a mesma em todos os perfis. Conecte um perfil por vez.
+- **Excluir** apaga a pasta do perfil inteira (vídeos, cortes, histórico e acessos salvos), sem volta: o painel mostra o que será apagado e pede o nome escrito para confirmar. As contas nas redes continuam existindo.
 
 ### Moldura e modelos visuais
 

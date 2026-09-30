@@ -833,3 +833,17 @@ code.caminho { display: block; margin-top: 4px; white-space: normal; word-break:
 .ajuda-roteiro .cmd { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ajuda-roteiro .tag-copiar { flex-direction: row; font-family: Consolas, monospace; }
 .ajuda-roteiro .cmd small { color: var(--suave); font-size: 12.5px; flex: 1; min-width: 200px; }
+
+/* ------------------------------------------------------------ perfis (nichos) */
+.card-perfil { border-top: 3px solid var(--borda-2); display: flex; flex-direction: column; }
+.card-perfil.aberto { border-top-color: var(--ok); }
+.card-perfil .status-conta { align-items: flex-start; }
+.card-perfil .status-conta .ic { margin-top: 2px; }
+.card-perfil .status-conta small { color: var(--suave); }
+.card-perfil .lista-simples { margin-top: 4px; }
+.card-perfil .lista-simples li b { max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-perfil .rodape-card { margin-top: auto; padding-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: space-between; }
+.prf-limite { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.prf-limite label { color: var(--suave); font-weight: 600; font-size: 13px; }
+.prf-limite input { width: 74px; }
+.prf-limite small { flex-basis: 100%; margin: 0; }

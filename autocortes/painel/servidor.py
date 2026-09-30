@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .. import __version__, db, modelos_visuais
+from .. import __version__, db, modelos_visuais, perfis
 from ..config import Config
 from ..loop import Motor
 from ..util import Trava, log
@@ -72,6 +72,17 @@ class Painel:
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.porta}/"
+
+    @property
+    def nome_perfil(self) -> str:
+        return str(self.cfg["geral"].get("perfil") or "").strip() or "Principal"
+
+    @property
+    def perfil_principal(self) -> bool:
+        try:
+            return self.cfg.caminho.resolve() == perfis.CONFIG_PRINCIPAL.resolve()
+        except OSError:
+            return False
 
 
 class Servidor(ThreadingHTTPServer):
@@ -220,7 +231,16 @@ class Tratador(BaseHTTPRequestHandler):
                 if caminho in ("/", "/index.html"):
                     return self._index()
                 if caminho == "/saude":
-                    return self.enviar_json(200, {"app": "autocortes", "versao": __version__})
+                    # sem token: é como os outros perfis (e o AutoCortes.bat) descobrem quem está na porta.
+                    # Vai o nome e uma marca da pasta de dados, nunca o caminho.
+                    return self.enviar_json(200, {
+                        "app": "autocortes",
+                        "versao": __version__,
+                        "perfil": self.painel.nome_perfil,
+                        "id": perfis.identidade(self.painel.cfg.pasta_dados),
+                        "desde": self.painel.iniciado_em,
+                        "motor": self.painel.motor.rodando,
+                    })
                 if caminho.startswith("/static/"):
                     return self._estatico(caminho[len("/static/"):])
                 if caminho == "/favicon.ico":
@@ -291,6 +311,7 @@ def iniciar_painel(cfg: Config, abrir_navegador: bool = True, iniciar_motor: boo
                   "Feche-o antes de abrir o painel.")
         return 1
 
+    (cfg.pasta_dados / perfis.NOME_PEDIDO).unlink(missing_ok=True)  # pedido de fechar que sobrou da vez anterior
     conn = db.conectar(cfg.banco)  # cria/migra o banco uma vez
     db.recuperar_estados_pendentes(conn)
     conn.close()
@@ -305,14 +326,19 @@ def iniciar_painel(cfg: Config, abrir_navegador: bool = True, iniciar_motor: boo
         return 1
 
     threading.Thread(target=servidor.serve_forever, kwargs={"poll_interval": 0.5}, name="painel", daemon=True).start()
-    log.info("Painel do AutoCortes em %s (feche esta janela para desligar)", url)
+    log.info("Painel do AutoCortes (%s) em %s (feche esta janela para desligar)", painel.nome_perfil, url)
     if iniciar_motor:
         motor.iniciar()
     if abrir_navegador:
         threading.Timer(0.6, webbrowser.open, args=(url,)).start()
+    if painel.perfil_principal:
+        # os perfis marcados como "abrir junto" sobem em processos próprios, respeitando o limite
+        threading.Thread(target=_abrir_outros_perfis, args=(cfg,), name="perfis", daemon=True).start()
     try:
         while not painel.encerrar.wait(1):
-            pass
+            if perfis.pedido_de_encerrar(cfg.pasta_dados):
+                log.info("Outro perfil pediu para este fechar.")
+                break
     except KeyboardInterrupt:
         pass
     finally:
@@ -325,4 +351,15 @@ def iniciar_painel(cfg: Config, abrir_navegador: bool = True, iniciar_motor: boo
             gravacao.cancelar()
         motor.parar()
         trava.liberar()
+        (cfg.pasta_dados / perfis.NOME_PEDIDO).unlink(missing_ok=True)
     return 0
+
+
+def _abrir_outros_perfis(cfg: Config) -> None:
+    try:
+        abertos = perfis.autoiniciar_pendentes(cfg.caminho)
+    except Exception as e:  # noqa: BLE001 (um perfil com problema não pode derrubar o principal)
+        log.warning("Não consegui abrir os outros perfis: %s", e)
+        return
+    if abertos:
+        log.info("Perfis abertos junto: %s", ", ".join(abertos))

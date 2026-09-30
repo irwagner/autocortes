@@ -42,6 +42,10 @@ _TRAVA_DADOS = threading.RLock()
 
 PADRAO: dict = {
     "geral": {
+        # nome deste perfil (nicho) no painel; vazio = "Principal"
+        "perfil": "",
+        # abrir este perfil junto com o principal (só vale nos perfis de perfis/)
+        "autoiniciar": False,
         "simulacao": True,
         "pasta_filmes": "filmes",
         "pasta_dados": "dados",
@@ -577,6 +581,9 @@ def validar(cfg: Config) -> None:
             erros.append(f"[edicao].{fonte} não pode ter vírgula, chaves ou barra invertida")
     if not re.fullmatch(r"[^\\/:*?\"<>|\x00-\x1f]{1,60}", str(ed["modelo"]).strip()):
         erros.append("[edicao].modelo deve ter de 1 a 60 caracteres, sem \\ / : * ? \" < > |")
+    if str(cfg["geral"]["perfil"]).strip() and not re.fullmatch(
+            r"[^\\/:*?\"<>|\x00-\x1f]{1,60}", str(cfg["geral"]["perfil"]).strip()):
+        erros.append("[geral].perfil deve ter de 1 a 60 caracteres, sem \\ / : * ? \" < > |")
     if not re.fullmatch(r"[A-Za-z0-9._-]+", str(cfg["transcricao"]["modelo"])):
         erros.append("[transcricao].modelo inválido")
 

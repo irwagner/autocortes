@@ -15,6 +15,11 @@
 # =====================================================================
 
 [geral]
+# Nome deste perfil (nicho) no painel. Vazio = "Principal".
+# Cada perfil tem sua pasta, suas contas, seu tema e sua agenda: crie em Perfis, no painel.
+perfil = ""
+# Abrir este perfil junto com o principal (vale só nos perfis dentro de perfis/)
+autoiniciar = false
 simulacao = true
 pasta_filmes = "filmes"
 pasta_dados = "dados"

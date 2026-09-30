@@ -28,10 +28,12 @@ from urllib.parse import urlparse
 import requests
 
 from .config import Config
-from .util import log
+from .util import ler_json, log, salvar_json
 
 # uma aba por vez: as redes dividem a mesma janela do navegador
 TRAVA = threading.Lock()
+# anotação de qual janela do Chrome é deste perfil (dentro da pasta do perfil do Chrome)
+ARQUIVO_JANELA = ".autocortes-janela.json"
 GUID_WS = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"  # constante do protocolo WebSocket
 PROGRAMAS = (
     Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Google/Chrome/Application/chrome.exe",
@@ -529,10 +531,63 @@ class Navegador:
         except (requests.RequestException, ValueError):
             return False
 
+    def _alvo_atual(self) -> str:
+        """Identificador da janela que está respondendo nesta porta (único por processo do Chrome)."""
+        try:
+            url = str(requests.get(f"{self.base}/json/version", timeout=3).json().get("webSocketDebuggerUrl") or "")
+        except (requests.RequestException, ValueError):
+            return ""
+        return urlparse(url).path if url else ""
+
+    def _anotar_janela(self) -> None:
+        alvo = self._alvo_atual()
+        if alvo:
+            salvar_json(self.perfil / ARQUIVO_JANELA, {"porta": self.porta, "alvo": alvo, "quando": time.time()})
+
+    def _porta_so_nossa(self) -> bool:
+        """Nenhum outro perfil desta instalação usa esta porta do navegador."""
+        try:
+            from . import perfis  # aqui dentro para não amarrar os módulos na importação
+
+            nossa = self.cfg.pasta_dados.resolve()
+            return not any(
+                p.porta_navegador == self.porta and p.pasta_dados.resolve() != nossa for p in perfis.listar()
+            )
+        except Exception:  # noqa: BLE001 (sem saber, fica como era antes: aproveita a janela)
+            return True
+
+    def nosso(self) -> bool:
+        """Quem responde nesta porta é a janela deste perfil?
+
+        Com vários perfis, dois configs com a mesma porta fariam o segundo postar com a conta do
+        primeiro, sem erro nenhum. O Chrome de hoje não grava mais o DevToolsActivePort, e a linha
+        de comando pelo CDP só vem com --enable-automation (que entrega a automação para as redes).
+        Então eu anoto, na pasta do perfil, qual janela eu abri: o alvo é único por processo.
+        """
+        alvo = self._alvo_atual()
+        if not alvo:
+            return False
+        marca = ler_json(self.perfil / ARQUIVO_JANELA, {}) or {}
+        if marca.get("porta") == self.porta and marca.get("alvo") == alvo:
+            return True
+        if not marca and self._porta_so_nossa():
+            # instalação de um perfil só nesta porta (ou primeira vez depois da atualização):
+            # não há como ser de outro perfil, então adoto a janela e passo a anotar
+            self._anotar_janela()
+            return True
+        return False
+
     def abrir(self, esperar_seg: float = 40) -> None:
         """Sobe a janela se ela não estiver aberta (a sessão fica no perfil, em dados/chrome)."""
         if self.responde():
-            return
+            if self.nosso():
+                return
+            raise ErroNavegador(
+                f"a porta {self.porta} já está ocupada por outro navegador (outro perfil do AutoCortes, ou o "
+                "Chrome aberto com depuração). Não uso essa janela para não postar na conta errada: troque a "
+                "porta em Redes sociais > Postagem pelo navegador.",
+                "bloqueio",
+            )
         programa = caminho_programa(self.cfg)
         self.perfil.mkdir(parents=True, exist_ok=True)
         argumentos = [
@@ -561,6 +616,7 @@ class Navegador:
             if self.parar is not None and self.parar.is_set():
                 raise ErroNavegador("interrompido pelo usuário")
             if self.responde():
+                self._anotar_janela()  # esta janela é deste perfil, para não confundir com a de outro
                 return
             time.sleep(0.5)
         raise ErroNavegador(
