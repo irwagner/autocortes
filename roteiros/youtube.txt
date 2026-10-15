@@ -1,0 +1,25 @@
+# Roteiro padrão do YouTube (YouTube Studio em português). É o roteiro que postou os Shorts do
+# AutoCortes em outubro de 2026. Ele vale enquanto você não tiver o seu: gravar em "Aprender a
+# postar", ou mudar e salvar em "Ver o roteiro", cria o seu em dados/roteiros/youtube.txt.
+# Título, descrição e tags recebem os textos de cada corte. A linha com PUBLIC publica como
+# público: troque por UNLISTED (não listado) ou PRIVATE (privado) se preferir.
+
+abrir https://studio.youtube.com/
+clicar #upload-icon ou "Enviar vídeos"
+video em input[name="Filedata"] ou input[type="file"]
+escrever titulo em #title-textarea #textbox
+esperar 5
+escrever descricao em #description-textarea #textbox
+clicar tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"] #radioLabel ytcp-ve ou "Não é conteúdo para crianças"
+esperar tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"][aria-checked="true"]
+opcional clicar "Mostrar mais"
+opcional tags em #tags-container input
+esperar 5
+clicar #next-button
+clicar #next-button
+clicar #next-button
+esperar 5
+clicar tp-yt-paper-radio-button[name="PUBLIC"]
+esperar 30
+publicar #done-button
+esperar 5

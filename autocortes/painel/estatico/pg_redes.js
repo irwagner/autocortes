@@ -148,7 +148,7 @@ function statusContaHtml(r, envio) {
     else if (r.roteiro && r.roteiro.tem) {
       const erros = (r.roteiro.erros || []).length;
       const avisos = (r.roteiro.avisos || []).length;
-      sub += ` · roteiro de ${plural(r.roteiro.linhas, "ação", "ações")}`;
+      sub += ` · ${r.roteiro.origem === "padrao" ? "roteiro padrão" : "roteiro"} de ${plural(r.roteiro.linhas, "ação", "ações")}`;
       if (erros) { classe = "erro"; icone = "erro"; sub += ` · ${plural(erros, "linha com problema", "linhas com problema")}`; }
       else if (avisos) { classe = "pendente"; icone = "alerta"; sub += ` · ${plural(avisos, "ponto arriscado", "pontos arriscados")} (veja o roteiro)`; }
     } else if (r.pronta) sub += " · sem roteiro gravado: uso os passos que eu escrevi";
@@ -232,9 +232,12 @@ function botoesRede(rede, r, envio) {
     b.push(h`<button class="btn ${r.pronta ? "" : "primario"}" data-acao="rede-conectar" data-rede="${rede}">${ic("externo")}${r.pronta ? "Abrir o navegador" : "Conectar"}</button>`);
     b.push(h`<button class="btn" data-acao="rede-testar" data-rede="${rede}">${ic("ok")}Testar a sessão</button>`);
     const tem = r.roteiro && r.roteiro.tem;
-    b.push(h`<button class="btn ${r.pronta && !tem ? "primario" : ""}" data-acao="rede-gravar" data-rede="${rede}">${ic("microfone")}${tem ? "Gravar de novo" : "Aprender a postar"}</button>`);
+    // o roteiro padrão vem com a instalação: o seu (gravado ou editado) passa a valer no lugar dele
+    const meu = tem && r.roteiro.origem === "perfil";
+    const gravar = meu ? "Gravar de novo" : tem ? "Gravar o meu" : "Aprender a postar";
+    b.push(h`<button class="btn ${r.pronta && !tem ? "primario" : ""}" data-acao="rede-gravar" data-rede="${rede}">${ic("microfone")}${gravar}</button>`);
     b.push(h`<button class="btn" data-acao="rede-roteiro" data-rede="${rede}">${ic("terminal")}Ver o roteiro</button>`);
-    if (tem) b.push(h`<button class="btn fantasma" data-acao="rede-roteiro-apagar" data-rede="${rede}">Apagar o roteiro</button>`);
+    if (meu) b.push(h`<button class="btn fantasma" data-acao="rede-roteiro-apagar" data-rede="${rede}" data-padrao="${r.roteiro.tem_padrao ? "1" : ""}">${r.roteiro.tem_padrao ? "Voltar ao roteiro padrão" : "Apagar o roteiro"}</button>`);
     if (r.conta) b.push(h`<button class="btn fantasma" data-acao="rede-desconectar" data-rede="${rede}">Esquecer a conta</button>`);
   } else if (envio === "upload_post") {
     b.push(h`<button class="btn" data-acao="rede-testar" data-rede="${rede}">${ic("ok")}Testar conexão</button>`);
@@ -718,12 +721,14 @@ function problemasRoteiroHtml(r) {
 function roteiroHtml(rede, d) {
   const r = d.resumo;
   const linhas = Math.max(14, Math.min(30, (d.texto || "").split("\n").length + 2));
+  const padrao = d.origem === "padrao";
   return h`<div class="editor-roteiro">
+    ${padrao ? h`<div class="aviso-rede">${ic("info")}<span>Este é o <b>roteiro padrão</b> do AutoCortes, que vem com a instalação e é atualizado junto com ela. Se você mudar e salvar, ele vira o seu roteiro e passa a valer no lugar do padrão. O seu fica em: <code class="caminho">${d.arquivo}</code></span></div>` : ""}
     <p class="nota">Uma ação por linha, na ordem em que eu faço. Linha que começa com <code>#</code> é comentário e não faz nada, então dá para desligar um passo sem apagar. Precisa de um tempo em algum ponto? Ponha <code>esperar 5</code> ali. Ctrl+S salva.</p>
     ${ajudaRoteiroHtml(d.comandos)}
     <label class="campo"><span>Roteiro do ${REDES[rede].rotulo}</span><textarea id="roteiro-texto" rows="${linhas}" spellcheck="false" placeholder="Nenhum roteiro ainda. Grave um em Aprender a postar, ou escreva aqui.">${d.texto || ""}</textarea></label>
     <div id="roteiro-erros">${problemasRoteiroHtml(r)}</div>
-    <p class="nota">${r ? h`${plural(r.linhas, "ação", "ações")}${r.papeis && r.papeis.length ? ` · escreve ${r.papeis.join(", ")}` : ""}` : "vazio"} · arquivo: <code class="caminho">${d.arquivo}</code></p>
+    <p class="nota">${r ? h`${plural(r.linhas, "ação", "ações")}${r.papeis && r.papeis.length ? ` · escreve ${r.papeis.join(", ")}` : ""}` : "vazio"} · arquivo: <code class="caminho">${padrao ? d.arquivo_padrao : d.arquivo}</code></p>
     <div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Fechar</button><button class="btn primario" data-acao="roteiro-salvar" data-rede="${rede}">${ic("check")}Salvar o roteiro</button></div>
   </div>`;
 }
@@ -778,10 +783,18 @@ App.acoes["roteiro-salvar"] = (el) => salvarRoteiroAberto(el.dataset.rede, el);
 
 App.acoes["rede-roteiro-apagar"] = async (el) => {
   const rede = el.dataset.rede;
-  const ok = await confirmar({ titulo: `Apagar o roteiro do ${REDES[rede].rotulo}?`, texto: "Sem o roteiro gravado, volto a usar os passos que eu escrevi, que podem não bater com a página.", botao: "Apagar", perigo: true });
+  const padrao = Boolean(el.dataset.padrao);
+  const ok = await confirmar({
+    titulo: padrao ? `Voltar ao roteiro padrão do ${REDES[rede].rotulo}?` : `Apagar o roteiro do ${REDES[rede].rotulo}?`,
+    texto: padrao
+      ? "Apago o roteiro que você gravou ou editou e volto a usar o roteiro padrão do AutoCortes, que vem com a instalação."
+      : "Sem o roteiro gravado, volto a usar os passos que eu escrevi, que podem não bater com a página.",
+    botao: padrao ? "Voltar ao padrão" : "Apagar",
+    perigo: true,
+  });
   if (!ok) return;
-  await ocupado(el, () => post(`/redes/${rede}/roteiro/apagar`));
-  toast("Roteiro apagado", "info");
+  const r = await ocupado(el, () => post(`/redes/${rede}/roteiro/apagar`));
+  toast(r.volta === "padrao" ? "Voltei ao roteiro padrão" : "Roteiro apagado", "info");
   await App.paginas.redes.recarregar();
 };
 

@@ -1,0 +1,16 @@
+# Roteiro padrão do TikTok (TikTok Studio em português), tirado do roteiro que postou os vídeos
+# do AutoCortes em outubro de 2026. Ele vale enquanto você não tiver o seu: gravar em "Aprender a
+# postar", ou mudar e salvar em "Ver o roteiro", cria o seu em dados/roteiros/tiktok.txt.
+# A legenda leva o título, a descrição e as hashtags do corte. O botão de publicar só libera
+# quando o vídeo termina de subir, e a linha "publicar" espera ele liberar.
+
+abrir https://www.tiktok.com/tiktokstudio/upload
+opcional clicar button[data-e2e="select_video_button"] ou "Selecionar vídeo"
+video em input[type="file"]
+esperar 5
+escrever legenda em .public-DraftEditor-content ou div[role="combobox"] ou div[contenteditable="true"]
+# clique fora do campo da legenda, como na gravação original
+opcional clicar "Descrição"
+esperar 30
+publicar button[data-e2e="post_video_button"] ou "Publicar"
+esperar 5

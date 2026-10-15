@@ -1,0 +1,23 @@
+# Roteiro padrão do Instagram (instagram.com em português). É o roteiro que postou os Reels do
+# AutoCortes em outubro de 2026. Ele vale enquanto você não tiver o seu: gravar em "Aprender a
+# postar", ou mudar e salvar em "Ver o roteiro", cria o seu em dados/roteiros/instagram.txt.
+# O Reel sai em 9:16, com a legenda do corte. "Novo post" também funciona no menu compacto, em
+# que "Criar" fica escondido.
+
+abrir https://www.instagram.com/
+esperar 5
+clicar a:has(svg[aria-label="Novo post"]) ou "Criar"
+clicar "Postar"
+esperar 5
+video em input[type="file"]
+clicar "Selecionar corte"
+esperar 5
+clicar "9:16"
+esperar 5
+clicar "Avançar"
+clicar "Avançar"
+esperar 5
+escrever legenda em div[aria-label="Adicione uma legenda..."]
+esperar 5
+publicar "Compartilhar"
+esperar 20

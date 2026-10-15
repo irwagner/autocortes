@@ -284,8 +284,14 @@ def _resumo_redes(ctx: Contexto) -> dict:
                 "pagina": plataforma.pagina() if hasattr(plataforma, "pagina") else None,
             }
         if cfg[rede]["envio"] == "navegador":
-            texto = gravador.carregar(cfg, rede)
-            saida[rede]["roteiro"] = {"tem": bool(texto), **(roteiro.resumo(texto, rede) if texto else {})}
+            texto, origem = gravador.carregar_com_origem(cfg, rede)
+            saida[rede]["roteiro"] = {
+                "tem": bool(texto),
+                # "perfil" = o seu (dados/roteiros); "padrao" = o que vem com a instalação
+                "origem": origem,
+                "tem_padrao": gravador.arquivo_padrao(rede).is_file(),
+                **(roteiro.resumo(texto, rede) if texto else {}),
+            }
             saida[rede]["gravando"] = rede in ctx.painel.gravacoes
     return saida
 
@@ -1955,24 +1961,31 @@ def recomecar_gravacao(ctx: Contexto, rede):
 
 @rota("POST", r"/redes/(\w+)/roteiro/apagar")
 def apagar_roteiro(ctx: Contexto, rede):
+    """Apaga o roteiro do perfil. O padrão da instalação nunca é apagado: com ele, é para lá que se volta."""
     rede = _rede(rede)
     gravador.arquivo_roteiro(ctx.cfg, rede).unlink(missing_ok=True)
-    log.info("%s: roteiro aprendido apagado pelo painel", ROTULOS[rede])
-    return {"ok": True}
+    volta = "padrao" if gravador.arquivo_padrao(rede).is_file() else "passos"
+    log.info("%s: roteiro do perfil apagado pelo painel (volta a valer: %s)", ROTULOS[rede],
+             "o roteiro padrão" if volta == "padrao" else "os passos fixos")
+    return {"ok": True, "volta": volta}
 
 
 @rota("GET", r"/redes/(\w+)/roteiro")
 def ler_roteiro(ctx: Contexto, rede):
-    """O texto do roteiro, para você ver e editar."""
+    """O texto do roteiro que vale, para você ver e editar. Salvar sempre grava no perfil."""
     rede = _rede(rede)
-    texto = gravador.carregar(ctx.cfg, rede) or ""
+    texto, origem = gravador.carregar_com_origem(ctx.cfg, rede)
+    texto = texto or ""
     return {
         "rede": rede,
         "texto": texto,
+        "origem": origem,
         "resumo": roteiro.resumo(texto, rede) if texto else None,
         "comandos": roteiro.AJUDA,
         "papeis": sorted(roteiro.PAPEIS_DA_REDE.get(rede, ())),
         "arquivo": str(gravador.arquivo_roteiro(ctx.cfg, rede)),
+        "arquivo_padrao": str(gravador.arquivo_padrao(rede)),
+        "tem_padrao": gravador.arquivo_padrao(rede).is_file(),
     }
 
 

@@ -17,12 +17,18 @@ import re
 from pathlib import Path
 
 from . import roteiro
-from .config import Config
+from .config import RAIZ, Config
 from .roteiro import MARCAS, NOMES, PAPEIS_DA_REDE, Alvo, fraco, gerar, parece_publicar
 from .util import escrever_atomico, log, sem_acentos
 
-__all__ = ["SCRIPT", "analisar", "arquivo_roteiro", "carregar", "gravar_roteiro", "lista_passos", "papeis",
-           "salvar"]
+__all__ = ["PASTA_PADRAO", "SCRIPT", "analisar", "arquivo_padrao", "arquivo_roteiro", "carregar",
+           "carregar_com_origem", "gravar_roteiro", "lista_passos", "papeis", "salvar"]
+
+# Roteiros que vêm com a instalação (ficam no repositório). Valem enquanto o perfil não tem o
+# seu em dados/roteiros: assim quem instala posta sem gravar primeiro, e quando a página de uma
+# rede muda, a correção chega a todos pela atualização. O do perfil continua sendo a fonte única
+# dele: editar ou gravar sempre escreve em dados/roteiros, nunca aqui.
+PASTA_PADRAO = RAIZ / "roteiros"
 
 _MARCA = re.compile(r"@@\s*([^@\s]{2,20})\s*@@")
 
@@ -506,14 +512,33 @@ def salvar(cfg: Config, rede: str, passos: list[dict], url_inicial: str, confirm
             **a, "arquivo": str(destino), "texto": texto, "resumo": roteiro.resumo(texto, rede)}
 
 
-def carregar(cfg: Config, rede: str) -> str | None:
-    """O texto do roteiro salvo ("" não conta)."""
-    arquivo = arquivo_roteiro(cfg, rede)
+def arquivo_padrao(rede: str) -> Path:
+    return PASTA_PADRAO / f"{rede}.txt"
+
+
+def _ler_roteiro(arquivo: Path, rede: str) -> str | None:
     if not arquivo.is_file():
         return None
     try:
-        texto = arquivo.read_text(encoding="utf-8")
-    except OSError as e:
-        log.warning("%s: não consegui ler o roteiro (%s)", rede, e)
+        texto = arquivo.read_text(encoding="utf-8-sig")  # um BOM viraria a linha 1 "\ufeff#..."
+    except (OSError, UnicodeDecodeError) as e:
+        log.warning("%s: não consegui ler o roteiro %s (%s)", rede, arquivo, e)
         return None
     return texto if texto.strip() else None
+
+
+def carregar_com_origem(cfg: Config, rede: str) -> tuple[str | None, str | None]:
+    """O roteiro que vale e de onde ele vem: "perfil" (o seu, em dados/roteiros) ou "padrao"
+    (o que vem com a instalação). (None, None) quando não há nenhum: o envio usa os passos fixos."""
+    texto = _ler_roteiro(arquivo_roteiro(cfg, rede), rede)
+    if texto is not None:
+        return texto, "perfil"
+    texto = _ler_roteiro(arquivo_padrao(rede), rede)
+    if texto is not None:
+        return texto, "padrao"
+    return None, None
+
+
+def carregar(cfg: Config, rede: str) -> str | None:
+    """O texto do roteiro que vale: o do perfil ou, sem ele, o padrão ("" não conta)."""
+    return carregar_com_origem(cfg, rede)[0]

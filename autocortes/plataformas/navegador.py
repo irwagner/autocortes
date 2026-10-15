@@ -283,10 +283,11 @@ class ViaNavegador(Plataforma):
                  entrega: Entrega | None = None) -> Resultado:
         entrega = entrega if entrega is not None else Entrega()
         ensaio = bool(self.nav["ensaio"])
-        aprendido = gravador.carregar(self.cfg, self.nome)
+        # o seu roteiro (dados/roteiros) ou, sem ele, o padrão que vem com a instalação
+        aprendido, origem = gravador.carregar_com_origem(self.cfg, self.nome)
         if aprendido:
             def passo_a_passo(aba, arq, t, ens, ent):
-                return self._repetir(aba, aprendido, arq, t, ens, ent)
+                return self._repetir(aba, aprendido, arq, t, ens, ent, origem or "perfil")
         else:
             passo_a_passo = {"youtube": self._youtube, "tiktok": self._tiktok,
                              "instagram": self._instagram, "bilibili": self._bilibili}[self.nome]
@@ -359,13 +360,19 @@ class ViaNavegador(Plataforma):
 
     # ---- roteiro que você gravou (e pode editar no painel)
     def _repetir(self, aba: Aba, texto_roteiro: str, arquivo: Path, t: dict, ensaio: bool,
-                 entrega: Entrega) -> Resultado:
+                 entrega: Entrega, origem: str = "perfil") -> Resultado:
+        padrao = origem == "padrao"
+        nome_roteiro = "o roteiro padrão do AutoCortes" if padrao else "o roteiro"
+        # o padrão não é seu para ajustar: o caminho é gravar o seu (ou esperar a atualização)
+        conserto = ("Grave o seu em Redes sociais > Aprender a postar" if padrao
+                    else "Ajuste ou grave de novo em Redes sociais > Ver o roteiro")
         try:
             instrucoes = roteiro.validar(texto_roteiro, self.nome)
         except roteiro.ErroRoteiro as e:
             raise ErroNavegador(
-                f"o roteiro tem linha com problema: {'; '.join(e.erros[:3])}. Corrija em Redes sociais > "
-                "Ver o roteiro", "bloqueio",
+                f"{nome_roteiro} tem linha com problema: {'; '.join(e.erros[:3])}. "
+                + ("Grave o seu em Redes sociais > Aprender a postar" if padrao
+                   else "Corrija em Redes sociais > Ver o roteiro"), "bloqueio",
             ) from e
         aba.js("__ac.travarArquivo()")  # o clique em "selecionar vídeo" não pode abrir a janela do Windows
         depois_do_video = publicou = False
@@ -409,8 +416,8 @@ class ViaNavegador(Plataforma):
                     # e "ajuste o roteiro" mandaria você mexer no lugar errado
                     raise
                 raise ErroNavegador(
-                    f"a linha {ins.linha} do roteiro não funcionou (\u201c{ins.descricao}\u201d): {e}. "
-                    "Ajuste ou grave de novo em Redes sociais > Ver o roteiro", e.tipo, e.conexao, e.persistente,
+                    f"a linha {ins.linha} d{nome_roteiro} não funcionou (\u201c{ins.descricao}\u201d): {e}. "
+                    f"{conserto}", e.tipo, e.conexao, e.persistente,
                 ) from e
             if ins.comando == "video":
                 depois_do_video = True
@@ -418,12 +425,13 @@ class ViaNavegador(Plataforma):
             raise ErroNavegador("o roteiro terminou sem passar pelo clique de publicar", "bloqueio")
         link = self._link_novo(aba, links_antes)
         if confirmado is None:
-            return self._fim("publicado pelo roteiro; ele não tem linha conferir, então não vi a confirmação "
-                             "na tela", link)
+            return self._fim(f"publicado pel{nome_roteiro}; ele não tem linha conferir, então não vi a "
+                             "confirmação na tela", link)
         if not confirmado:
-            return self._fim("o roteiro chegou ao fim, mas " + "; ".join(sem_confirmacao)
+            return self._fim(f"{nome_roteiro} chegou ao fim, mas " + "; ".join(sem_confirmacao)
                              + ". Confira na rede se o vídeo saiu", link, confirmado=False)
-        return self._fim("publicado pelo roteiro que você gravou", link)
+        return self._fim("publicado pelo roteiro padrão do AutoCortes" if padrao
+                         else "publicado pelo roteiro que você gravou", link)
 
     def _rodar(self, aba: Aba, ins: roteiro.Instrucao, arquivo: Path, t: dict) -> None:
         segundos = ESPERA_PUBLICAR if ins.comando in ("publicar", "conferir") else 90
