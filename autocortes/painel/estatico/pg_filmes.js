@@ -1,7 +1,8 @@
 /* AutoCortes - painel: Filmes (envio por arrastar e soltar, análise e dados de cada filme) */
 "use strict";
 
-const PgFilmes = { dados: null, ultimaAssinatura: "", enviando: 0 };
+// aba: "pasta" (os filmes) ou "canais" (os canais do YouTube que baixam sozinhos)
+const PgFilmes = { dados: null, ultimaAssinatura: "", enviando: 0, aba: "pasta", canais: null, assinaturaCanais: "" };
 
 function descricaoLegenda(f) {
   const fonte = String(f.legenda || "");
@@ -276,24 +277,271 @@ App.acoes["filme-dados-salvar"] = (el) => salvarDadosFilme(el.dataset.filme, el)
 
 /* ------------------------------------------------------------ página */
 
+/* ------------------------------------------------------------ canais do YouTube */
+
+const CAN_ESTADO = {
+  baixando: ["Baixando", "acento"], baixado: ["Baixado", "ok"], erro: ["Vai tentar de novo", "aviso"],
+  pulado: ["Pulado", "neutro"],
+};
+const canMinutos = (m) => (m >= 60 && m % 60 === 0 ? `${m / 60} h` : `${m} min`);
+
+function canRegras(c) {
+  const g = c.regras;
+  const partes = [g.max_idade_dias ? `dos últimos ${plural(g.max_idade_dias, "dia", "dias")}` : "de qualquer data"];
+  partes.push(g.minutos_max ? `de ${canMinutos(g.minutos_min)} a ${canMinutos(g.minutos_max)}` : `com ${canMinutos(g.minutos_min)} ou mais`);
+  partes.push(`até ${g.resolucao}p`);
+  partes.push(`${plural(g.max_por_canal, "vídeo", "vídeos")} de cada canal a cada ${plural(g.verificar_a_cada_horas, "hora", "horas")}`);
+  if (g.incluir_ao_vivo) partes.push("com as lives que já terminaram");
+  return `Vídeos ${partes.join(", ")}.`;
+}
+
+/** O download em andamento (do motor ou do "Olhar agora"), para a barra de progresso. */
+function canAtividade() {
+  const atividades = (App.estado && App.estado.atividades) || [];
+  return atividades.find((a) => (a.chave === "canais" || a.chave === "canais-agora") && !a.ocioso) || null;
+}
+
+function canSituacaoHtml(c) {
+  const linhas = [];
+  const atividade = canAtividade();
+  if (c.rodando || atividade) {
+    const pct = atividade && atividade.pct !== null ? atividade.pct : null;
+    linhas.push(h`<div class="filme-progresso"><span class="giro"></span><span>${atividade ? atividade.texto : "Olhando os canais..."}</span>${pct !== null ? h`<div class="barra"><i style="width:${pct}%"></i></div><b>${Math.round(pct)}%</b>` : ""}</div>`);
+  }
+  const itens = [];
+  if (!c.ativo) itens.push("Desligado: nada é baixado sozinho, mas o Olhar agora funciona");
+  else if (!c.motor) itens.push("O motor está desligado: os canais só são olhados sozinhos com ele ligado");
+  else if (c.proxima) itens.push(c.proxima * 1000 <= Date.now() ? "Próxima olhada em instantes" : `Próxima olhada ${fmtRelativo(c.proxima)}`);
+  if (c.verificado_em) itens.push(`última ${fmtRelativo(c.verificado_em)}`);
+  itens.push(`${plural(c.na_fila, "vídeo baixado esperando", "vídeos baixados esperando")} a análise (no máximo ${c.regras.max_na_fila})`);
+  linhas.push(h`<p class="nota">${itens.join(" · ")}</p>`);
+  if (c.pausa) linhas.push(h`<p class="aviso-inline">${ic("alerta")}Pausado até ${fmtQuando(c.pausa.ate)}: ${c.pausa.motivo}</p>`);
+  const f = c.ferramenta || {};
+  if (!f.ytdlp) {
+    linhas.push(h`<p class="nota">Na primeira olhada eu baixo o yt-dlp (18 MB, conferido pelo SHA-256)${f.js ? "" : " e o Deno (43 MB), que ele usa para falar com o YouTube"}.</p>`);
+  }
+  return linhas;
+}
+
+function canCanalHtml(k) {
+  const meta = [plural(k.baixados, "vídeo baixado", "vídeos baixados")];
+  if (k.erros) meta.push(plural(k.erros, "com erro", "com erro"));
+  meta.push(k.verificado_em ? `olhado ${fmtRelativo(k.verificado_em)}` : "ainda não olhado");
+  return h`<div class="canal${k.ativo ? "" : " pausado"}">
+    <div class="canal-info">
+      <div class="filme-titulo"><b>${k.nome}</b>${k.ativo ? "" : badge(["Pausado", "neutro"], true)}</div>
+      <a class="arquivo" href="${k.url}" target="_blank" rel="noopener noreferrer">${k.url}</a>
+      <small class="texto-suave">${meta.join(" · ")}</small>
+      ${k.erro ? h`<p class="erro-texto">${k.erro}</p>` : ""}
+    </div>
+    <div class="grupo-botoes">
+      <button class="btn pequeno" data-acao="can-verificar" data-canal="${k.id}" ${k.ativo ? "" : raw("disabled")}>${ic("busca")}Olhar agora</button>
+      <button class="btn pequeno" data-acao="can-canal" data-tipo="${k.ativo ? "pausar" : "ativar"}" data-canal="${k.id}">${ic(k.ativo ? "pausa" : "play")}${k.ativo ? "Pausar" : "Ativar"}</button>
+      <button class="btn pequeno fantasma" data-acao="can-canal" data-tipo="remover" data-canal="${k.id}">${ic("lixo")}Remover</button>
+    </div>
+  </div>`;
+}
+
+function canDownloadHtml(d) {
+  // baixado: o que importa daí em diante é a situação do filme (esperando análise, analisado...)
+  const estado = d.status === "baixado" && d.filme_status ? ESTADO_FILME[d.filme_status] || CAN_ESTADO.baixado : CAN_ESTADO[d.status] || [d.status, "neutro"];
+  const meta = [d.canal, d.duracao ? fmtTempo(d.duracao) : "", d.tamanho ? fmtBytes(d.tamanho) : "", d.quando ? fmtRelativo(d.quando) : ""].filter(Boolean);
+  const botoes = [];
+  if (d.status === "erro" || d.status === "pulado") botoes.push(h`<button class="btn pequeno" data-acao="can-download" data-tipo="tentar" data-download="${d.id}">${ic("refazer")}Tentar de novo</button>`);
+  if (d.filme_id) botoes.push(h`<a class="btn pequeno" href="#/cortes?filme=${d.filme_id}">${ic("tesoura")}Ver cortes</a>`);
+  botoes.push(h`<a class="btn pequeno icone fantasma" href="${d.url}" target="_blank" rel="noopener noreferrer" title="Abrir no YouTube" aria-label="Abrir no YouTube">${ic("externo")}</a>`);
+  return h`<div class="canal">
+    <div class="canal-info">
+      <div class="filme-titulo"><b title="${d.titulo || ""}">${d.titulo || d.video_id}</b>${badge(estado, true)}</div>
+      <small class="texto-suave">${meta.join(" · ")}</small>
+      ${d.erro ? h`<p class="${d.status === "erro" ? "erro-texto" : "nota"}">${d.erro}</p>` : ""}
+    </div>
+    <div class="grupo-botoes">${botoes}</div>
+  </div>`;
+}
+
+const canBotaoTodos = (c) => h`<button class="btn" data-acao="can-verificar" ${c.canais.some((k) => k.ativo) && !c.rodando ? "" : raw("disabled")}>${ic("busca")}Olhar todos agora</button>`;
+const canListaHtml = (c) => (c.canais.length ? c.canais.map(canCanalHtml)
+  : vazioBloco("video", "Nenhum canal ainda", "Cole o endereço de um canal do YouTube acima, como https://www.youtube.com/@canal."));
+const canDownloadsHtml = (c) => (c.downloads.length ? c.downloads.map(canDownloadHtml)
+  : vazioBloco("baixar", "Nada baixado ainda", "Os vídeos aparecem aqui quando os canais são olhados."));
+
+function canCorpoHtml(c) {
+  if (!c) return vazioBloco("baixar", "Carregando os canais...");
+  return h`<div class="card">
+      <div class="card-topo"><h3>${ic("baixar")}Baixar sozinho os vídeos novos</h3>${CONTROLES.switch({ chave: "canais.ativo", rotulo: "Baixar sozinho os vídeos novos dos canais" })}</div>
+      <p class="nota" id="can-regras">${canRegras(c)}</p>
+      <div id="can-situacao">${canSituacaoHtml(c)}</div>
+      <div class="linha-botoes">
+        <span id="can-todos">${canBotaoTodos(c)}</span>
+        <a class="btn" href="#/config?aba=canais">${ic("ajustes")}Regras do download</a>
+        <button class="btn fantasma" data-acao="abrir-pasta" data-alvo="canais">${ic("pasta")}Abrir a pasta</button>
+      </div>
+    </div>
+    <div class="aviso-rede">${ic("alerta")}<span>Baixe só de canais <b>seus ou que autorizam cortes</b>, e dê o crédito nos posts ({canal} e {link_original} nos textos). Baixar vídeo de terceiros sem permissão viola os termos do YouTube e os direitos de quem fez, e os cortes podem levar reivindicação ou derrubar a conta.</span></div>
+    <div class="card">
+      <div class="card-topo"><h3>${ic("video")}Canais</h3></div>
+      <p class="nota">Cada canal ganha uma pasta, e os vídeos entram na análise como qualquer filme. Ficam em: <code class="caminho">${c.pasta}</code></p>
+      <div class="linha-adicionar"><input type="url" id="can-url" placeholder="https://www.youtube.com/@canal" aria-label="Endereço do canal no YouTube" spellcheck="false" autocomplete="off"><button class="btn primario" data-acao="can-adicionar">${ic("mais")}Adicionar</button></div>
+      <div class="lista-canais" id="can-lista">${canListaHtml(c)}</div>
+    </div>
+    <div class="card">
+      <div class="card-topo"><h3>${ic("baixar")}Downloads</h3></div>
+      <p class="nota">Os mais recentes primeiro. Um vídeo nunca é baixado duas vezes.</p>
+      <div class="lista-canais" id="can-downloads">${canDownloadsHtml(c)}</div>
+    </div>`;
+}
+
+/** Busca e atualiza a aba por partes: o endereço que você está digitando no campo fica. */
+async function canCarregar(desenhar = true) {
+  const c = await api("/canais");
+  PgFilmes.canais = c;
+  if (!desenhar || App.nomePagina !== "filmes" || PgFilmes.aba !== "canais") return c;
+  if (!$("#can-situacao")) {
+    filmesDesenharAba();
+    return c;
+  }
+  montarSeMudou($("#filmes-abas"), filmesAbasHtml());
+  montarSeMudou($("#can-regras"), canRegras(c));
+  montarSeMudou($("#can-situacao"), canSituacaoHtml(c));
+  montarSeMudou($("#can-todos"), canBotaoTodos(c));
+  montarSeMudou($("#can-lista"), canListaHtml(c));
+  montarSeMudou($("#can-downloads"), canDownloadsHtml(c));
+  return c;
+}
+
+function canPrepararCampo() {
+  const campo = $("#can-url");
+  if (!campo || campo.dataset.pronto) return;
+  campo.dataset.pronto = "1";
+  campo.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      const botao = $("[data-acao=can-adicionar]");
+      if (botao) botao.click();
+    }
+  });
+}
+
+App.acoes["can-adicionar"] = async (el) => {
+  const campo = $("#can-url");
+  const url = campo ? campo.value.trim() : "";
+  if (!url) { toast("Cole o endereço do canal no YouTube", "info"); if (campo) campo.focus(); return; }
+  const ok = await confirmar({
+    titulo: "Este canal é seu ou autoriza cortes?",
+    texto: "O AutoCortes vai baixar os vídeos novos dele e postar cortes nas suas redes. Sem a permissão de quem fez, isso viola os termos do YouTube e os direitos autorais, e a sua conta pode cair.",
+    botao: "É meu ou tenho permissão",
+  });
+  if (!ok) return;
+  PgFilmes.canais = await ocupado(el, () => post("/canais/novo", { url }));
+  if (campo) campo.value = "";
+  await canCarregar();
+  toast(valor("canais.ativo") ? "Canal adicionado. Ele é olhado na próxima volta, ou use Olhar agora." : "Canal adicionado. Ligue \"Baixar sozinho\" para ele ser olhado de tempos em tempos.", "ok", 6000);
+};
+
+App.acoes["can-verificar"] = async (el) => {
+  const corpo = el.dataset.canal ? { canal: Number(el.dataset.canal) } : {};
+  await ocupado(el, () => post("/canais/verificar", corpo));
+  toast("Olhando os canais em segundo plano. O que for baixado aparece aqui e na aba Na pasta.", "info", 6000);
+  await canCarregar();
+  atualizarEstado();
+};
+
+App.acoes["can-canal"] = async (el) => {
+  const tipo = el.dataset.tipo;
+  const k = PgFilmes.canais && PgFilmes.canais.canais.find((x) => String(x.id) === el.dataset.canal);
+  if (tipo === "remover") {
+    const ok = await confirmar({ titulo: `Remover ${k ? k.nome : "o canal"}?`, texto: "Ele deixa de ser olhado. Os vídeos que já foram baixados continuam na pasta de filmes, com os cortes deles.", botao: "Remover", perigo: true });
+    if (!ok) return;
+  }
+  await ocupado(el, () => post(`/canais/${el.dataset.canal}/acao`, { acao: tipo }));
+  await canCarregar();
+  toast(tipo === "remover" ? "Canal removido" : tipo === "pausar" ? "Canal pausado" : "Canal ativado");
+};
+
+App.acoes["can-download"] = async (el) => {
+  const d = PgFilmes.canais && PgFilmes.canais.downloads.find((x) => String(x.id) === el.dataset.download);
+  await ocupado(el, () => post(`/downloads/${el.dataset.download}/acao`, { acao: el.dataset.tipo }));
+  await canCarregar();
+  // o pulado volta a passar pelas regras: só é baixado se servir nelas agora (você pode ter mudado a duração)
+  toast(d && d.status === "pulado" ? "Ele volta a ser olhado na próxima vez, com as regras de agora" : "Ele volta a ser baixado na próxima olhada do canal", "info", 6000);
+};
+
+/* ------------------------------------------------------------ página */
+
+function filmesAbasHtml() {
+  const r = PgFilmes.dados;
+  const c = PgFilmes.canais;
+  const aba = (id, rotulo, n, icone) => h`<button type="button" role="tab" class="aba ${PgFilmes.aba === id ? "ativa" : ""}" aria-selected="${PgFilmes.aba === id}" data-acao="filmes-aba" data-aba="${id}">${icone ? ic(icone) : ""}${rotulo}${n !== null ? h`<span class="n">${n}</span>` : ""}</button>`;
+  return h`<div class="barra-ferramentas"><div class="abas" role="tablist">${aba("pasta", "Na pasta", r ? r.filmes.length : null, "")}${aba("canais", "Canais do YouTube", c ? c.canais.length : null, "baixar")}</div></div>`;
+}
+
+function filmesPastaHtml(r) {
+  return h`${zonaEnvioHtml(r)}
+    <div class="barra-ferramentas">
+      <p class="nota">Pasta: ${r.pasta}</p>
+      <div class="grupo-botoes"><button class="btn pequeno" data-acao="varrer-filmes">${ic("busca")}Procurar filmes novos</button><button class="btn pequeno" data-acao="abrir-pasta" data-alvo="filmes">${ic("pasta")}Abrir a pasta</button></div>
+    </div>
+    <div id="lista-filmes"></div>
+    <p class="nota rodape-card">Use filmes que você tem direito de publicar: domínio público, Creative Commons, próprios ou licenciados. Cortes de filmes protegidos geram bloqueios e podem derrubar a conta.</p>`;
+}
+
+/** Desenha só o conteúdo da aba aberta (as abas ficam). */
+function filmesDesenharAba() {
+  const alvo = $("#filmes-aba");
+  if (!alvo) return;
+  const abas = $("#filmes-abas");
+  if (abas) montar(abas, filmesAbasHtml());
+  if (PgFilmes.aba === "canais") {
+    montar(alvo, canCorpoHtml(PgFilmes.canais));
+    canPrepararCampo();
+  } else {
+    montar(alvo, filmesPastaHtml(PgFilmes.dados));
+    montarSeMudou($("#lista-filmes"), listaFilmesHtml(PgFilmes.dados));
+    prepararZonaEnvio();
+  }
+}
+
+App.acoes["filmes-aba"] = async (el) => {
+  PgFilmes.aba = el.dataset.aba === "canais" ? "canais" : "pasta";
+  history.replaceState(null, "", PgFilmes.aba === "canais" ? "#/filmes?aba=canais" : "#/filmes");
+  App.hashAtual = location.hash;
+  filmesDesenharAba();
+  if (PgFilmes.aba === "canais") await canCarregar();
+  else await carregarFilmes();
+};
+
 App.paginas.filmes = {
   titulo: "Filmes",
-  subtitulo: "Os filmes de onde saem os cortes",
+  subtitulo: "Os filmes de onde saem os cortes, e os canais do YouTube que mandam vídeos novos",
   async render(el, token) {
-    const r = await api("/filmes");
+    const aba = consultaDaRota().get("aba");
+    if (aba === "canais" || aba === "pasta") PgFilmes.aba = aba;
+    await garantirConfig(); // a chave "Baixar sozinho" mostra o valor salvo
+    const [r, c] = await Promise.all([api("/filmes"), api("/canais")]);
     if (!App.ativa(token)) return;
     PgFilmes.dados = r;
-    montar(el, h`${zonaEnvioHtml(r)}
-      <div class="barra-ferramentas">
-        <p class="nota">Pasta: ${r.pasta}</p>
-        <div class="grupo-botoes"><button class="btn pequeno" data-acao="varrer-filmes">${ic("busca")}Procurar filmes novos</button><button class="btn pequeno" data-acao="abrir-pasta" data-alvo="filmes">${ic("pasta")}Abrir a pasta</button></div>
-      </div>
-      <div id="lista-filmes"></div>
-      <p class="nota rodape-card">Use filmes que você tem direito de publicar: domínio público, Creative Commons, próprios ou licenciados. Cortes de filmes protegidos geram bloqueios e podem derrubar a conta.</p>`);
-    montarSeMudou($("#lista-filmes"), listaFilmesHtml(r));
-    prepararZonaEnvio();
+    PgFilmes.canais = c;
+    montar(el, h`<div id="filmes-abas">${filmesAbasHtml()}</div><div id="filmes-aba"></div>`);
+    filmesDesenharAba();
+  },
+  aoMudar(caminho) {
+    // a chave liga e desliga na hora, sem esperar o Salvar das Configurações
+    if (caminho === "canais.ativo") {
+      salvarConfig(["canais.ativo"]).then(() => canCarregar()).catch(erroToast);
+    }
   },
   aoEstado(e) {
+    if (PgFilmes.aba === "canais") {
+      if (!PgFilmes.canais || !$("#can-situacao")) return;
+      const assinatura = JSON.stringify([e.motor.rodando, e.numeros.filmes, e.numeros.filmes_na_fila,
+        e.atividades.filter((a) => a.chave === "canais" || a.chave === "canais-agora").map((a) => [a.texto, a.ocioso, a.pct === null ? null : Math.floor(a.pct / 5)])]);
+      if (assinatura !== PgFilmes.assinaturaCanais) {
+        PgFilmes.assinaturaCanais = assinatura;
+        canCarregar().catch(() => {});
+      }
+      return;
+    }
     if (!PgFilmes.dados || !$("#lista-filmes")) return;
     const assinatura = JSON.stringify([e.numeros.filmes, e.numeros.filmes_na_fila, e.numeros.filmes_erro, e.numeros.candidatos,
       e.atividades.map((a) => [a.texto, a.pct === null ? null : Math.floor(a.pct / 5)])]);
@@ -303,6 +551,7 @@ App.paginas.filmes = {
     }
   },
   async recarregar() {
-    await carregarFilmes();
+    if (PgFilmes.aba === "canais") await canCarregar();
+    else await carregarFilmes();
   },
 };

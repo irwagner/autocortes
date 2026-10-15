@@ -4,6 +4,7 @@
 const ABAS_CONFIG = [
   ["geral", "Geral", "ajustes", "Como o AutoCortes trabalha: simulação, aprovação, reserva de cortes e pastas."],
   ["cortes", "Cortes", "tesoura", "Duração dos cortes e como os melhores trechos de cada filme são escolhidos."],
+  ["canais", "Canais", "baixar", "Vídeos baixados dos canais do YouTube cadastrados em Filmes: quais, de quando, em que qualidade e quanto disco usar."],
   ["video", "Vídeo", "video", "Qualidade da edição e volume do som. O visual (moldura, legenda, título) fica no Estúdio."],
   ["criacao", "Criação", "varinha", "Vídeos montados do zero: imagens de fundo, narração e música. As pautas ficam na aba Criação."],
   ["textos", "Textos dos posts", "lapis", "Título, descrição e hashtags de cada postagem."],
@@ -41,7 +42,7 @@ const CFG_PESOS = [
   ["abertura", "Abertura da fala", "Começa no início de uma frase, e não no meio."],
   ["silencio", "Penalidade por silêncio", "Tira pontos de trechos parados e sem som."],
 ];
-const CFG_VARS_TEXTO = ["{filme}", "{parte}", "{frase}", "{ano}", "{ano_parenteses}", "{hashtags}"];
+const CFG_VARS_TEXTO = ["{filme}", "{parte}", "{frase}", "{ano}", "{ano_parenteses}", "{hashtags}", "{canal}", "{link_original}"];
 const CFG_COMANDO_OLLAMA = "ollama pull qwen3:4b-instruct-2507-q4_K_M";
 // mudanças que mostram ou escondem outros campos
 // (estoque.fonte troca o campo da pasta pelo das chaves: sem redesenhar, o campo das chaves não aparecia)
@@ -219,6 +220,35 @@ function cfgAbaCriacao() {
   return itens;
 }
 
+const CFG_IDADE_CANAIS = [[7, "1 semana"], [30, "1 mês"], [90, "3 meses"], [180, "6 meses"], [365, "1 ano"],
+  [730, "2 anos"], [0, "Qualquer data"]];
+const CFG_RESOLUCOES = [[480, "480p"], [720, "720p"], [1080, "1080p (recomendado)"], [1440, "1440p"], [2160, "4K (2160p)"]];
+
+function cfgAbaCanais() {
+  return [
+    h`<div class="aviso-rede">${ic("alerta")}<span>Use só canais <b>seus ou que autorizam cortes</b>. Os canais ficam em <a href="#/filmes?aba=canais">Filmes &gt; Canais do YouTube</a>, onde também dá para olhar um canal na hora.</span></div>`,
+    campo({ chave: "canais.ativo", tipo: "switch", rotulo: "Baixar sozinho", ajuda: "Com o motor ligado, os canais ativos são olhados de tempos em tempos e os vídeos novos vão para a pasta de filmes." }),
+    campo({ chave: "canais.verificar_a_cada_horas", tipo: "numero", min: 1, max: 168, sufixo: "h", rotulo: "Olhar os canais a cada" }),
+    secao("Quais vídeos"),
+    campo({ chave: "canais.max_idade_dias", tipo: "select", numero: true, rotulo: "Publicados há no máximo", opcoes: CFG_IDADE_CANAIS, ajuda: "Os mais novos saem primeiro. Com um período longo, os antigos vêm aos poucos, a cada olhada." }),
+    campo({ chave: "canais.minutos_min", tipo: "numero", min: 0, max: 600, sufixo: "min", rotulo: "Duração mínima", ajuda: "Vídeo curto rende poucos cortes. Os Shorts do canal nunca entram." }),
+    campo({ chave: "canais.minutos_max", tipo: "numero", min: 0, max: 1440, sufixo: "min", rotulo: "Duração máxima", ajuda: "0 = sem limite. Vídeo de várias horas pesa no disco e demora na análise." }),
+    campo({ chave: "canais.incluir_ao_vivo", tipo: "switch", rotulo: "Lives que já terminaram", ajuda: "A aba Ao vivo do canal. Muitos podcasts ficam lá." }),
+    campo({ chave: "canais.ignorar_palavras", tipo: "chips", larga: true, rotulo: "Pular vídeos com", placeholder: "Digite e tecle Enter", ajuda: "Palavras no título, como trailer ou react (maiúscula e acento não importam)." }),
+    secao("Quanto baixar"),
+    campo({ chave: "canais.max_por_canal", tipo: "numero", min: 1, max: 20, rotulo: "Vídeos de cada canal por vez" }),
+    campo({ chave: "canais.max_na_fila", tipo: "numero", min: 1, max: 50, rotulo: "Baixados esperando a análise", ajuda: "Com esse tanto de vídeos baixados e ainda não analisados, eu espero a fila andar antes de baixar mais. Assim o disco não enche à toa." }),
+    campo({ chave: "canais.resolucao", tipo: "select", numero: true, rotulo: "Qualidade máxima", opcoes: CFG_RESOLUCOES, ajuda: "O corte sai em 1080x1920. Acima de 1080p o arquivo fica bem maior; só vale com zoom alto no Estúdio." }),
+    campo({ chave: "canais.legendas", tipo: "switch", rotulo: "Legendas do canal", ajuda: "Quando o canal publicou legendas em português (as automáticas não contam), elas vêm junto e poupam a transcrição." }),
+    campo({ chave: "canais.espaco_minimo_gb", tipo: "numero", min: 0, max: 10000, sufixo: "GB", rotulo: "Espaço livre mínimo", ajuda: "Com menos que isso livre no disco da pasta de filmes, os downloads param." }),
+    campo({ chave: "canais.pasta", tipo: "texto", rotulo: "Subpasta dos vídeos", placeholder: "YouTube", ajuda: "Dentro da pasta de filmes, com uma pasta para cada canal." }),
+    secao("Programa de download"),
+    campo({ chave: "ferramentas.ytdlp_atualizar", tipo: "switch", rotulo: "Atualizar o yt-dlp sozinho", ajuda: "O YouTube muda e versões antigas param de baixar. A cada 3 dias, e depois de um erro de versão velha, o yt-dlp oficial confere se há versão nova." }),
+    campo({ chave: "ferramentas.ytdlp", tipo: "texto", rotulo: "yt-dlp próprio", placeholder: "vazio = o oficial, baixado sozinho", ajuda: "Caminho do seu yt-dlp.exe. Com ele, quem atualiza é você." }),
+    h`<p class="nota rodape-card">O yt-dlp precisa de um JavaScript para falar com o YouTube: uso o Node.js 22 ou mais novo, se estiver instalado, ou baixo o Deno (43 MB) na pasta dele. Não uso login, cookies nem proxy: se o YouTube pedir para confirmar que não é um robô, os downloads param por 12 h.</p>`,
+  ];
+}
+
 function cfgAbaTranscricao() {
   const modelos = (App.meta && App.meta.modelos) || {};
   const opcoesModelo = Object.entries(modelos).map(([nome, m]) => [nome, `${nome} · ${m.descricao}${m.baixado ? " · baixado" : ""}`]);
@@ -272,7 +302,7 @@ function cfgAbaSistema() {
 }
 
 const CFG_ABAS_FN = {
-  geral: cfgAbaGeral, cortes: cfgAbaCortes, video: cfgAbaVideo, criacao: cfgAbaCriacao,
+  geral: cfgAbaGeral, cortes: cfgAbaCortes, canais: cfgAbaCanais, video: cfgAbaVideo, criacao: cfgAbaCriacao,
   textos: cfgAbaTextos, ia: cfgAbaIa, transcricao: cfgAbaTranscricao, sistema: cfgAbaSistema,
 };
 
@@ -293,6 +323,8 @@ function cfgVariaveisExemplo(comIa) {
       frase: "Eles estão vindo te pegar, Bárbara!", hashtags: lista.join(" "),
       titulo_ia: "Ninguém acreditou nela até ser tarde demais",
       descricao_ia: "O cemitério parecia tranquilo, até que ele apareceu.",
+      // só os vídeos baixados de um canal têm estes (nos filmes da pasta ficam vazios)
+      canal: "", link_original: "",
     },
     total: lista.length,
   };

@@ -1,4 +1,5 @@
-"""Motor contínuo: uma thread produz cortes e outra cuida da agenda de postagens.
+"""Motor contínuo: uma thread produz cortes, outra cuida da agenda de postagens e a terceira
+olha os canais do YouTube (quando ligados) e baixa os vídeos novos.
 
 O mesmo motor roda no terminal (python -m autocortes rodar) e dentro do painel,
 que pode ligar, desligar e trocar a configuração com ele em funcionamento.
@@ -10,7 +11,7 @@ import threading
 import time
 from datetime import datetime
 
-from . import agenda, db
+from . import agenda, canais, db
 from .config import Config
 from .midia import Interrompido
 from .produtor import TRAVA_ANALISE, TRAVA_EDICAO, Produtor
@@ -26,6 +27,7 @@ def recuperar_pendentes(cfg: Config) -> None:
         db.recuperar_estados_pendentes(
             conn, redes_ocupadas=[rede for rede, trava in TRAVAS_REDE.items() if trava.locked()],
             editando=TRAVA_EDICAO.locked() or TRAVA_ANALISE.locked(),
+            baixando=canais.TRAVA.locked(),
         )
     finally:
         conn.close()
@@ -84,6 +86,7 @@ class Motor:
             self._threads = [
                 threading.Thread(target=self._loop_produtor, name="produtor", daemon=True),
                 threading.Thread(target=self._loop_publicador, name="publicador", daemon=True),
+                threading.Thread(target=self._loop_canais, name="canais", daemon=True),
             ]
             for t in self._threads:
                 t.start()
@@ -180,6 +183,29 @@ class Motor:
         finally:
             impedir_suspensao(False)
             ATIVIDADES.limpar("publicador")
+            conn.close()
+
+    def _loop_canais(self) -> None:
+        """Olha os canais do YouTube de N em N horas (com [canais].ativo) e baixa os vídeos novos."""
+        parar = self._parar
+        conn = db.conectar(self.cfg.banco)
+        try:
+            while not parar.is_set():
+                try:
+                    # o "Verificar agora" do painel pode estar baixando: este ciclo espera a vez
+                    if canais.na_hora(self.cfg, conn) and canais.TRAVA.acquire(blocking=False):
+                        try:
+                            canais.verificar(self.cfg, conn, parar, ao_baixar=self.pedir_varredura)
+                        finally:
+                            canais.TRAVA.release()
+                except Interrompido:
+                    break
+                except Exception:
+                    # a hora da verificação já foi anotada: a próxima tentativa é na hora marcada
+                    log.exception("Erro ao olhar os canais do YouTube")
+                _dormir(parar, 60)
+        finally:
+            ATIVIDADES.limpar("canais")
             conn.close()
 
 

@@ -15,7 +15,7 @@ from datetime import date, datetime, time as dtime
 from pathlib import Path
 from typing import Any, Callable
 
-from .. import (__version__, agenda, analise, config, criacao, edicao, ferramentas, gravador, ia, metricas,
+from .. import (__version__, agenda, analise, canais, config, criacao, edicao, ferramentas, gravador, ia, metricas,
                 modelos_visuais, perfis, planejador, roteiro, voz)
 from ..config import ENVIOS, PLATAFORMAS, ROTULOS, ErroConfig
 from ..midia import ErroMidia, Interrompido, base_ffmpeg, executar
@@ -455,6 +455,12 @@ def _alertas(ctx: Contexto, filmes: dict, cortes: dict, cobertura: dict, redes: 
     problema = edicao.problema_moldura(cfg)
     if problema:
         add("erro", f"{problema}: os cortes estão saindo sem ela. Escolha outra no Estúdio.", "estudio")
+    if cfg["canais"]["ativo"]:
+        pausa_canais = canais.pausa(ctx.conn)
+        if pausa_canais:
+            ate = datetime.fromtimestamp(float(pausa_canais["ate"])).strftime("%d/%m %H:%M")
+            add("aviso", f"Os downloads dos canais do YouTube estão pausados até {ate}: {pausa_canais.get('motivo')}",
+                "filmes?aba=canais")
     return alertas
 
 
@@ -1738,6 +1744,117 @@ def varrer(ctx: Contexto):
     return {"novos": novos}
 
 
+# ---------------------------------------------------------------- canais do YouTube (Filmes)
+
+_REGRAS_CANAIS = ("verificar_a_cada_horas", "max_idade_dias", "minutos_min", "minutos_max", "incluir_ao_vivo",
+                  "max_por_canal", "max_na_fila", "resolucao", "legendas", "espaco_minimo_gb", "pasta")
+
+
+def _canais_json(ctx: Contexto) -> dict:
+    cfg, conn = ctx.cfg, ctx.conn
+    return {
+        "ativo": bool(cfg["canais"]["ativo"]),
+        "canais": canais.listar(conn),
+        "downloads": canais.downloads_recentes(conn),
+        "regras": {k: cfg["canais"][k] for k in _REGRAS_CANAIS},
+        "verificado_em": canais.ultima_verificacao(conn),
+        "proxima": canais.proxima_verificacao(cfg, conn),
+        "pausa": canais.pausa(conn),
+        "rodando": canais.TRAVA.locked(),
+        "motor": ctx.painel.motor.rodando,
+        "na_fila": canais.na_fila(conn),
+        "pasta": str(canais.pasta_canais(cfg)),
+        "ferramenta": ferramentas.situacao_ytdlp(cfg),
+    }
+
+
+def _canal(conn: sqlite3.Connection, canal_id) -> sqlite3.Row:
+    linha = conn.execute("SELECT * FROM canais WHERE id=?", (int(canal_id),)).fetchone()
+    _exigir(linha is not None, "Canal não encontrado", 404)
+    return linha
+
+
+@rota("GET", r"/canais")
+def listar_canais(ctx: Contexto):
+    return _canais_json(ctx)
+
+
+@rota("POST", r"/canais/novo")
+def novo_canal(ctx: Contexto):
+    try:
+        canais.adicionar(ctx.conn, str(ctx.corpo.get("url") or ""))
+    except ValueError as e:
+        raise ErroHttp(400, str(e)) from e
+    return _canais_json(ctx)
+
+
+@rota("POST", r"/canais/(\d+)/acao")
+def acao_canal(ctx: Contexto, canal_id):
+    conn = ctx.conn
+    c = _canal(conn, canal_id)
+    acao = ctx.corpo.get("acao")
+    if acao in ("pausar", "ativar"):
+        conn.execute("UPDATE canais SET ativo=? WHERE id=?", (1 if acao == "ativar" else 0, c["id"]))
+    elif acao == "remover":
+        # os vídeos já baixados ficam na pasta de filmes (já são filmes como os outros), e o
+        # histórico de downloads fica sem canal: adicionar o canal de novo não baixa tudo outra vez
+        conn.execute("DELETE FROM canais WHERE id=?", (c["id"],))
+        log.info("Canal do YouTube removido pelo painel: %s", c["url"])
+    else:
+        raise ErroHttp(400, "Ação desconhecida")
+    return _canais_json(ctx)
+
+
+@rota("POST", r"/canais/verificar")
+def verificar_canais(ctx: Contexto):
+    """Olha os canais agora (todos os ativos, ou um), em segundo plano. Passa por cima da pausa."""
+    _exigir(not canais.TRAVA.locked(), "Os canais já estão sendo olhados agora", 409)
+    so_canal = _int(ctx.corpo.get("canal")) if ctx.corpo.get("canal") not in (None, "") else None
+    if so_canal is not None:
+        _exigir(bool(_canal(ctx.conn, so_canal)["ativo"]), "Este canal está pausado: ative antes de olhar")
+    else:
+        _exigir(ctx.conn.execute("SELECT 1 FROM canais WHERE ativo=1 LIMIT 1").fetchone() is not None,
+                "Nenhum canal ativo para olhar")
+    painel = ctx.painel
+
+    def trabalho():
+        if not canais.TRAVA.acquire(blocking=False):
+            return
+        conn = painel.conectar()
+        try:
+            resumo = canais.verificar(painel.cfg, conn, painel.encerrar, so_canal=so_canal, forcar=True,
+                                      ao_baixar=painel.motor.pedir_varredura)
+            if resumo["baixados"] and not painel.motor.rodando:
+                # com o motor desligado ninguém varre a pasta: o vídeo já aparece na lista de filmes
+                try:
+                    varrer_biblioteca(painel.cfg, conn)
+                except sqlite3.IntegrityError:
+                    pass  # outra varredura acabou de inserir o mesmo arquivo
+        except canais.ErroCanal as e:
+            log.warning("Canais: %s", e)
+        finally:
+            conn.close()
+            canais.TRAVA.release()
+
+    _em_segundo_plano("canais-agora", trabalho)
+    return {"ok": True}
+
+
+@rota("POST", r"/downloads/(\d+)/acao")
+def acao_download(ctx: Contexto, download_id):
+    conn = ctx.conn
+    d = conn.execute("SELECT * FROM downloads WHERE id=?", (int(download_id),)).fetchone()
+    _exigir(d is not None, "Download não encontrado", 404)
+    acao = ctx.corpo.get("acao")
+    if acao == "tentar":
+        _exigir(d["status"] in ("erro", "pulado"), "Este vídeo não está com erro nem foi pulado")
+        # sem o registro, ele volta a ser um vídeo novo na próxima olhada (se ainda servir nas regras)
+        conn.execute("DELETE FROM downloads WHERE id=?", (d["id"],))
+    else:
+        raise ErroHttp(400, "Ação desconhecida")
+    return _canais_json(ctx)
+
+
 # ---------------------------------------------------------------- redes sociais
 
 class SessaoLogin:
@@ -2040,11 +2157,13 @@ def logs(ctx: Contexto):
 def abrir(ctx: Contexto):
     cfg = ctx.cfg
     alvo = ctx.corpo.get("alvo")
-    pastas = {"filmes": cfg.pasta_filmes, "cortes": cfg.pasta_cortes, "logs": cfg.pasta_logs, "dados": cfg.pasta_dados}
+    pastas = {"filmes": cfg.pasta_filmes, "cortes": cfg.pasta_cortes, "logs": cfg.pasta_logs, "dados": cfg.pasta_dados,
+              "canais": canais.pasta_canais(cfg)}
     try:
         if alvo == "config":
             sistema.mostrar_arquivo(cfg.caminho)
         elif alvo in pastas:
+            pastas[alvo].mkdir(parents=True, exist_ok=True)  # a dos canais só existe depois do primeiro download
             sistema.abrir_pasta(pastas[alvo])
         else:
             raise ErroHttp(400, "Pasta desconhecida")

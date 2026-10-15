@@ -78,12 +78,44 @@ CREATE TABLE IF NOT EXISTS estado (
     atualizado_em REAL NOT NULL
 );
 
+-- canais do YouTube que o AutoCortes olha para baixar os vídeos novos (tela Filmes)
+CREATE TABLE IF NOT EXISTS canais (
+    id            INTEGER PRIMARY KEY,
+    -- endereço do canal, normalizado (https://www.youtube.com/@nome ou .../channel/UC...)
+    url           TEXT NOT NULL UNIQUE,
+    nome          TEXT,
+    ativo         INTEGER NOT NULL DEFAULT 1,
+    erro          TEXT,
+    verificado_em REAL,
+    criado_em     REAL NOT NULL
+);
+
+-- cada vídeo de canal que foi baixado ou tentado (é o que impede baixar o mesmo vídeo duas vezes)
+CREATE TABLE IF NOT EXISTS downloads (
+    id            INTEGER PRIMARY KEY,
+    canal_id      INTEGER REFERENCES canais(id) ON DELETE SET NULL,
+    video_id      TEXT NOT NULL UNIQUE,
+    titulo        TEXT,
+    publicado_em  REAL,
+    duracao       REAL,
+    -- baixando | baixado | erro (tenta de novo, até 3 vezes) | pulado (não serve, ou você pulou)
+    status        TEXT NOT NULL,
+    erro          TEXT,
+    -- caminho do vídeo na pasta de filmes (o mesmo de filmes.caminho)
+    arquivo       TEXT,
+    tamanho       INTEGER,
+    tentativas    INTEGER NOT NULL DEFAULT 0,
+    criado_em     REAL NOT NULL,
+    atualizado_em REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_cortes_filme ON cortes(filme_id, status);
 CREATE INDEX IF NOT EXISTS idx_cortes_status ON cortes(status);
 CREATE INDEX IF NOT EXISTS idx_postagens_corte ON postagens(corte_id, plataforma);
 CREATE INDEX IF NOT EXISTS idx_postagens_plataforma ON postagens(plataforma, criado_em);
 -- tarefas à mão, posts a conferir e envios em andamento são procurados pelo status a cada ciclo
 CREATE INDEX IF NOT EXISTS idx_postagens_status ON postagens(status, plataforma);
+CREATE INDEX IF NOT EXISTS idx_downloads_status ON downloads(status, canal_id);
 """
 
 
@@ -201,14 +233,20 @@ def apagar_estado(conn: sqlite3.Connection, chave: str) -> None:
     conn.execute("DELETE FROM estado WHERE chave=?", (chave,))
 
 
-def recuperar_estados_pendentes(conn: sqlite3.Connection, redes_ocupadas=(), editando: bool = False) -> None:
+def recuperar_estados_pendentes(conn: sqlite3.Connection, redes_ocupadas=(), editando: bool = False,
+                                baixando: bool = False) -> None:
     """Depois de um travamento/desligamento, devolve itens 'em andamento' para a fila.
 
     redes_ocupadas: redes com um envio de verdade acontecendo agora (o "Postar agora" do painel
     segue rodando quando o motor é desligado); as postagens delas ficam como estão.
     editando: uma edição está rodando agora, então os cortes em 'renderizando' ficam.
+    baixando: um download dos canais está rodando agora ("Verificar agora" do painel).
     """
     t = agora()
+    if not baixando:
+        # a tentativa interrompida não conta: o vídeo volta a ser baixado na próxima verificação
+        conn.execute("UPDATE downloads SET status='erro', erro='o AutoCortes fechou no meio do download', "
+                     "atualizado_em=? WHERE status='baixando'", (t,))
     if not editando:
         # 'criando' é a pauta reservada para virar vídeo (criacao.criar_do_banco)
         conn.execute("UPDATE filmes SET status='novo', atualizado_em=? WHERE status IN ('analisando', 'criando')", (t,))

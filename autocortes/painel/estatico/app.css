@@ -479,6 +479,21 @@ input[type=range] { accent-color: var(--acento); }
 .envio.feito small { color: var(--ok); }
 .envio.falhou small { color: var(--erro); }
 .lista-filmes { display: flex; flex-direction: column; gap: 12px; }
+/* canais do YouTube (Filmes > Canais do YouTube): a lista de canais e a de downloads */
+.lista-canais { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.canal { display: flex; gap: 14px; align-items: flex-start; justify-content: space-between; padding: 12px 14px; border: 1px solid var(--borda); border-radius: var(--raio-m); background: var(--bg-2); }
+.canal.pausado { opacity: .72; }
+.canal-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.canal-info .filme-titulo b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.canal-info .arquivo { color: var(--fraco); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.canal-info .erro-texto, .canal-info .nota { margin: 4px 0 0; }
+.canal .grupo-botoes { flex: none; }
+.linha-adicionar { display: flex; gap: 8px; margin-top: 4px; }
+.linha-adicionar input { flex: 1; min-width: 0; }
+@media (max-width: 760px) {
+  .canal { flex-direction: column; }
+  .canal .grupo-botoes { flex-wrap: wrap; }
+}
 .filme { display: flex; gap: 16px; align-items: center; padding: 14px 16px; }
 .filme-capa { width: 54px; height: 88px; border-radius: 10px; background: #04060a; border: 1px solid var(--borda); overflow: hidden; display: grid; place-items: center; color: var(--fraco); flex: none; }
 .filme-capa img { width: 100%; height: 100%; object-fit: cover; }

@@ -120,6 +120,8 @@ def ler_metadados(caminho_filme: Path) -> dict:
 
     Chaves aceitas: titulo, ano, hashtags (lista), idioma (fala, para o Whisper),
     legenda (caminho de um .srt), fonte (de onde vêm as legendas deste filme), ignorar (true/false).
+    Os vídeos baixados dos canais trazem também canal, url, video_id, titulo_original, publicado_em
+    e baixado_em ({canal} e {link_original} nos modelos de texto).
     """
     for candidato in _arquivos_meta(caminho_filme):
         if candidato.exists():
@@ -229,6 +231,9 @@ def montar_conteudo(cfg: Config, filme: dict, corte: dict, usar_ia: bool = True)
         "hashtags": " ".join(tags),
         "titulo_ia": ia.get("titulo", ""),
         "descricao_ia": ia.get("descricao", ""),
+        # vídeo baixado de um canal do YouTube (o .json do download): o crédito do original
+        "canal": str(meta.get("canal") or ""),
+        "link_original": str(meta.get("url") or ""),
     }
     # ordem: texto escrito à mão no painel > texto da IA > modelos do [textos]
     chaves = set(corte.keys())

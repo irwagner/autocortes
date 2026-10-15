@@ -73,6 +73,38 @@ PADRAO: dict = {
         "whisper_versao": "b5130",
         "threads": 0,
         "hwaccel": "auto",
+        # programa que baixa os vídeos dos canais ("" = o yt-dlp oficial, baixado em ferramentas/yt-dlp)
+        "ytdlp": "",
+        # o yt-dlp oficial se atualiza sozinho (o YouTube muda e versões antigas param de baixar)
+        "ytdlp_atualizar": True,
+    },
+    "canais": {
+        # baixa sozinho os vídeos novos dos canais do YouTube cadastrados na tela Filmes.
+        # Só canais seus ou que autorizam cortes: vídeo de terceiros sem permissão viola os termos
+        # do YouTube e os direitos de quem fez.
+        "ativo": False,
+        # de quantas em quantas horas os canais são olhados
+        "verificar_a_cada_horas": 6,
+        # só vídeos publicados nos últimos N dias (0 = qualquer data)
+        "max_idade_dias": 30,
+        # duração do vídeo, em minutos (0 no máximo = sem limite)
+        "minutos_min": 5,
+        "minutos_max": 240,
+        # transmissões ao vivo que já terminaram (a aba "Ao vivo" do canal)
+        "incluir_ao_vivo": False,
+        # vídeos novos de cada canal por vez
+        "max_por_canal": 2,
+        # não baixa mais enquanto houver estes vídeos baixados esperando a análise
+        "max_na_fila": 3,
+        "resolucao": 1080,
+        # pula vídeos com estas palavras no título (maiúscula e acento não importam)
+        "ignorar_palavras": [],
+        # legendas que o canal publicou (as automáticas não entram): poupam a transcrição
+        "legendas": True,
+        # espaço livre mínimo no disco da pasta de filmes, em GB
+        "espaco_minimo_gb": 20,
+        # subpasta da pasta de filmes que recebe os vídeos (uma pasta por canal)
+        "pasta": "YouTube",
     },
     "analise": {
         "ignorar_inicio_seg": 90,
@@ -633,6 +665,26 @@ def validar(cfg: Config) -> None:
             erros.append(f"[ferramentas].{chave} tem caracteres que não valem num caminho do Windows")
     if not re.fullmatch(r"[a-z0-9_]{0,20}", str(f["hwaccel"]).strip().lower()):
         erros.append("[ferramentas].hwaccel deve ser auto, none ou o nome de um acelerador do FFmpeg (ex.: d3d11va)")
+    if re.search(r"[\x00-\x1f*?\"<>|]", str(f["ytdlp"])):
+        erros.append("[ferramentas].ytdlp tem caracteres que não valem num caminho do Windows")
+    numero("canais", "verificar_a_cada_horas", 1, 168)
+    numero("canais", "max_idade_dias", 0, 3650)
+    numero("canais", "minutos_min", 0, 600)
+    numero("canais", "minutos_max", 0, 1440)
+    if cfg["canais"]["minutos_max"] and cfg["canais"]["minutos_min"] > cfg["canais"]["minutos_max"]:
+        erros.append("[canais].minutos_min não pode ser maior que minutos_max")
+    numero("canais", "max_por_canal", 1, 20)
+    numero("canais", "max_na_fila", 1, 50)
+    opcao("canais", "resolucao", (480, 720, 1080, 1440, 2160))
+    numero("canais", "espaco_minimo_gb", 0, 10000)
+    if any(len(str(p).strip()) > 60 for p in cfg["canais"]["ignorar_palavras"]):
+        erros.append("[canais].ignorar_palavras tem uma palavra com mais de 60 letras")
+    # um nome de pasta só, dentro da pasta de filmes; começando com ponto ela seria pulada na varredura
+    pasta_canais = str(cfg["canais"]["pasta"]).strip()
+    if (not re.fullmatch(r"[^\\/:*?\"<>|\x00-\x1f]{1,60}", pasta_canais) or pasta_canais.startswith(".")
+            or pasta_canais.endswith((" ", "."))):
+        erros.append("[canais].pasta deve ser o nome de uma pasta (até 60 letras, sem \\ / : * ? \" < > | e sem "
+                     "começar com ponto), que fica dentro da pasta de filmes")
     if not (str(f["whisper_cli"]).strip() and str(f["whisper_vad"]).strip()):
         from .ferramentas import SHA256_WHISPER  # aqui dentro: ferramentas importa este módulo
 

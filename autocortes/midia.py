@@ -144,6 +144,15 @@ def _anexar_ao_job(proc: subprocess.Popen) -> None:
 
 
 def _encerrar(proc: subprocess.Popen) -> None:
+    if os.name == "nt" and proc.poll() is None:
+        # a árvore inteira: o yt-dlp.exe é um lançador que roda o programa num processo filho, e
+        # matar só o lançador deixava o download continuando sozinho
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.SubprocessError):
+            pass
     try:
         proc.terminate()
         proc.wait(timeout=5)

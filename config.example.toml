@@ -56,6 +56,46 @@ whisper_versao = "b5130"
 threads = 0
 # Decodificação por hardware na detecção de cenas: "auto" ou "none"
 hwaccel = "auto"
+# Programa que baixa os vídeos dos canais do YouTube. Vazio = baixa o yt-dlp
+# oficial (conferido pelo SHA-256) em ferramentas/yt-dlp
+ytdlp = ""
+# O yt-dlp oficial se atualiza sozinho a cada 3 dias: o YouTube muda e versões
+# antigas param de baixar. Com o seu yt-dlp (ytdlp acima), quem atualiza é você.
+ytdlp_atualizar = true
+
+# ---------------------------------------------------------------------
+# Canais do YouTube (opcional): o AutoCortes olha os canais que você
+# cadastrar na tela Filmes e baixa os vídeos novos para a pasta de filmes,
+# onde eles são analisados e cortados como qualquer filme.
+#  Só use canais seus ou que autorizam cortes, com crédito: baixar vídeo
+#  de terceiros sem permissão viola os termos do YouTube e os direitos de
+#  quem fez, e os cortes podem levar reivindicação ou derrubar a conta.
+# ---------------------------------------------------------------------
+[canais]
+ativo = false
+# De quantas em quantas horas os canais são olhados
+verificar_a_cada_horas = 6
+# Só vídeos publicados nos últimos N dias (0 = qualquer data)
+max_idade_dias = 30
+# Duração do vídeo, em minutos (0 no máximo = sem limite)
+minutos_min = 5
+minutos_max = 240
+# Transmissões ao vivo que já terminaram (a aba "Ao vivo" do canal)
+incluir_ao_vivo = false
+# Vídeos novos de cada canal por vez
+max_por_canal = 2
+# Não baixa mais enquanto houver estes vídeos baixados esperando a análise
+max_na_fila = 3
+# Resolução máxima: 480, 720, 1080, 1440 ou 2160
+resolucao = 1080
+# Pula vídeos com estas palavras no título (maiúscula e acento não importam)
+ignorar_palavras = []
+# Legendas que o canal publicou (as automáticas não entram): poupam a transcrição
+legendas = true
+# Espaço livre mínimo no disco da pasta de filmes, em GB
+espaco_minimo_gb = 20
+# Subpasta da pasta de filmes que recebe os vídeos, com uma pasta por canal
+pasta = "YouTube"
 
 [analise]
 # Pula abertura e créditos finais (limitado a 5% e 10% da duração)
@@ -163,6 +203,7 @@ crf = 20
 
 [textos]
 # Variáveis: {filme} {ano} {ano_parenteses} {parte} {frase} {hashtags}
+# Nos vídeos baixados de um canal do YouTube, também {canal} e {link_original} (o crédito)
 # Texto escrito à mão no painel vale mais; depois o da IA (se ligada); depois estes.
 titulo = "{filme} - Parte {parte}"
 descricao = """{frase}

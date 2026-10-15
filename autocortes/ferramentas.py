@@ -1,17 +1,20 @@
-"""Download e localização do whisper.cpp e dos modelos de transcrição."""
+"""Download e localização das ferramentas: whisper.cpp e modelos de transcrição, yt-dlp e Deno."""
 
 from __future__ import annotations
 
 import hashlib
 import os
 import platform
+import re
+import shutil
+import subprocess
 import time
 import zipfile
 from pathlib import Path
 
 from .config import Config
-from .midia import ErroMidia
-from .util import ATIVIDADES, log
+from .midia import ErroMidia, executar
+from .util import ATIVIDADES, Trava, escrever_atomico, log
 
 # modelos oferecidos no painel (tamanho aproximado do download)
 MODELOS = {
@@ -200,3 +203,174 @@ def threads(cfg: Config) -> int:
     if n > 0:
         return n
     return max(1, min(8, (os.cpu_count() or 4) // 2))
+
+
+# ---------------------------------------------------------------- yt-dlp (canais do YouTube)
+
+# O primeiro download é desta versão, conferida pelo SHA2-256SUMS da própria versão no GitHub.
+# O YouTube muda e versões antigas param de baixar em semanas: depois do primeiro download, o
+# próprio yt-dlp se atualiza (`yt-dlp -U`, que confere a versão nova pelo SHA2-256SUMS dela), a não
+# ser que [ferramentas].ytdlp_atualizar esteja desligado ou o yt-dlp seja o seu ([ferramentas].ytdlp).
+VERSAO_YTDLP = "2026.08.19"
+URL_YTDLP = f"https://github.com/yt-dlp/yt-dlp/releases/download/{VERSAO_YTDLP}/yt-dlp.exe"
+ARQUIVO_YTDLP = ("66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a", 17840399)
+# O yt-dlp precisa de um JavaScript para resolver os desafios do YouTube: o Node.js 22 ou mais novo,
+# se já estiver instalado, ou o Deno (o recomendado pelo yt-dlp, que roda o script sem acesso a
+# disco nem rede), baixado na pasta do yt-dlp.
+VERSAO_DENO = "v2.9.7"
+URL_DENO = f"https://github.com/denoland/deno/releases/download/{VERSAO_DENO}/deno-x86_64-pc-windows-msvc.zip"
+SHA256_DENO = "a0c3101b4158d1dfb7d6a78a7bf0f3de80c96bb423c152beec8beb22786f2238"
+NODE_MINIMO = 22
+ATUALIZAR_YTDLP_A_CADA = 3 * 86400
+
+
+def pasta_ytdlp(cfg: Config) -> Path:
+    return cfg.pasta_ferramentas / "yt-dlp"
+
+
+def caminho_ytdlp(cfg: Config) -> Path:
+    manual = str(cfg["ferramentas"]["ytdlp"]).strip()
+    if manual:
+        return cfg.caminho_de(manual)
+    return pasta_ytdlp(cfg) / ("yt-dlp.exe" if os.name == "nt" else "yt-dlp")
+
+
+def _so_windows_x64(o_que: str) -> None:
+    if os.name != "nt" or platform.machine().lower() not in ("amd64", "x86_64"):
+        raise ErroMidia(f"O download automático do {o_que} só existe para Windows x64. Instale à mão e "
+                        "informe o caminho em [ferramentas].")
+
+
+def _trava_ytdlp(cfg: Config) -> Trava:
+    # a pasta é da instalação inteira: dois perfis (dois processos) não baixam nem trocam o mesmo arquivo juntos
+    return Trava(pasta_ytdlp(cfg) / ".trava")
+
+
+def garantir_ytdlp(cfg: Config) -> Path:
+    """O yt-dlp no disco: o seu ([ferramentas].ytdlp) ou o oficial, baixado e conferido na primeira vez."""
+    exe = caminho_ytdlp(cfg)
+    if exe.is_file():
+        return exe
+    if str(cfg["ferramentas"]["ytdlp"]).strip():
+        raise ErroMidia(f"yt-dlp não encontrado em {exe} (confira [ferramentas].ytdlp)")
+    _so_windows_x64("yt-dlp")
+    trava = _trava_ytdlp(cfg)
+    if not trava.adquirir(espera=600):
+        raise ErroDownload("outro perfil está baixando o yt-dlp agora; tento de novo depois")
+    try:
+        if exe.is_file():  # o outro perfil terminou enquanto eu esperava
+            return exe
+        temporario = exe.with_name(f"yt-dlp.{os.getpid()}.baixando")
+        baixar(URL_YTDLP, temporario, f"yt-dlp {VERSAO_YTDLP}")
+        sha, tamanho = ARQUIVO_YTDLP
+        if temporario.stat().st_size != tamanho or _sha256(temporario) != sha:
+            temporario.unlink(missing_ok=True)
+            raise ErroDownload("O yt-dlp baixado não confere com o SHA-256 oficial; descartei o download")
+        os.replace(temporario, exe)
+        return exe
+    finally:
+        trava.liberar()
+
+
+def _versao_node(caminho: str) -> int:
+    try:
+        r = subprocess.run([caminho, "--version"], capture_output=True, text=True, timeout=20,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    achado = re.match(r"v(\d+)", (r.stdout or "").strip())
+    return int(achado.group(1)) if achado else 0
+
+
+def garantir_deno(cfg: Config) -> Path:
+    """O Deno na pasta do yt-dlp, baixado e conferido na primeira vez (uns 40 MB)."""
+    pasta = pasta_ytdlp(cfg)
+    deno = pasta / "deno.exe"
+    if deno.is_file():
+        return deno
+    _so_windows_x64("Deno")
+    trava = _trava_ytdlp(cfg)
+    if not trava.adquirir(espera=600):
+        raise ErroDownload("outro perfil está baixando o Deno agora; tento de novo depois")
+    try:
+        if deno.is_file():
+            return deno
+        pacote = pasta / f"deno.{os.getpid()}.zip"
+        baixar(URL_DENO, pacote, f"Deno {VERSAO_DENO}")
+        try:
+            if _sha256(pacote) != SHA256_DENO:
+                raise ErroDownload("O Deno baixado não confere com o SHA-256 oficial; descartei o download")
+            temporario = pasta / f"deno.{os.getpid()}.exe.baixando"
+            with zipfile.ZipFile(pacote) as z:
+                item = next((i for i in z.infolist() if Path(i.filename).name.lower() == "deno.exe"), None)
+                if item is None:
+                    raise ErroMidia("O pacote do Deno não tem o deno.exe")
+                with z.open(item) as origem, open(temporario, "wb") as destino:
+                    shutil.copyfileobj(origem, destino, 1024 * 1024)
+            os.replace(temporario, deno)
+        finally:
+            pacote.unlink(missing_ok=True)
+        return deno
+    finally:
+        trava.liberar()
+
+
+def runtime_js(cfg: Config) -> list[str]:
+    """Os argumentos que dizem ao yt-dlp qual JavaScript usar: o Deno da pasta dele ou do PATH,
+    o Node.js 22+ do PATH, ou o Deno baixado agora."""
+    deno = pasta_ytdlp(cfg) / "deno.exe"
+    if deno.is_file():
+        return ["--js-runtimes", f"deno:{deno}"]
+    no_path = shutil.which("deno")
+    if no_path:
+        return ["--js-runtimes", f"deno:{no_path}"]
+    node = shutil.which("node")
+    if node and _versao_node(node) >= NODE_MINIMO:
+        return ["--js-runtimes", f"node:{node}"]
+    return ["--js-runtimes", f"deno:{garantir_deno(cfg)}"]
+
+
+def situacao_ytdlp(cfg: Config) -> dict:
+    """Para o painel: se o yt-dlp e um JavaScript já estão prontos (sem baixar nada nem rodar processo)."""
+    exe = caminho_ytdlp(cfg)
+    js = None
+    if (pasta_ytdlp(cfg) / "deno.exe").is_file() or shutil.which("deno"):
+        js = "Deno"
+    elif shutil.which("node"):
+        js = "Node.js"
+    return {"ytdlp": exe.is_file(), "caminho": str(exe), "manual": bool(str(cfg["ferramentas"]["ytdlp"]).strip()),
+            "js": js}
+
+
+def atualizar_ytdlp(cfg: Config, forcar: bool = False) -> bool:
+    """Pede ao yt-dlp oficial para se atualizar: no máximo a cada 3 dias, ou na hora com `forcar`
+    (depois de um erro de quem está desatualizado). Devolve True se ele rodou sem erro."""
+    if not cfg["ferramentas"]["ytdlp_atualizar"] or str(cfg["ferramentas"]["ytdlp"]).strip():
+        return False  # o yt-dlp é seu: quem atualiza é você
+    exe = caminho_ytdlp(cfg)
+    if not exe.is_file():
+        return False
+    marca = exe.parent / "ultima-atualizacao.txt"
+    try:
+        ultima = float(marca.read_text(encoding="utf-8").strip() or 0)
+    except (OSError, ValueError):
+        ultima = 0.0
+    if not forcar and time.time() - ultima < ATUALIZAR_YTDLP_A_CADA:
+        return False
+    trava = _trava_ytdlp(cfg)
+    if not trava.adquirir(espera=120):
+        return False
+    try:
+        r = executar([str(exe), "--ignore-config", "-U"], capturar_saida=True, timeout=300, baixa_prioridade=False)
+        escrever_atomico(marca, str(time.time()))
+        linhas = [x.strip() for x in (r.saida.splitlines() + r.erros) if x.strip()]
+        if r.codigo != 0:
+            log.warning("yt-dlp: não consegui atualizar (%s)", " | ".join(linhas[-3:]) or f"código {r.codigo}")
+            return False
+        log.info("yt-dlp: %s", linhas[-1] if linhas else "atualizado")
+        return True
+    except ErroMidia as e:
+        log.warning("yt-dlp: não consegui atualizar (%s)", e)
+        return False
+    finally:
+        trava.liberar()

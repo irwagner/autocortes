@@ -260,7 +260,7 @@ function textosDetalheHtml(d) {
   return h`<div class="linha-botoes">${badge(fonte, true)}${iaBotoes}</div>
     <label class="campo"><span>Título</span><input type="text" id="det-titulo" maxlength="300" value="${t.titulo_custom}" placeholder="${t.titulo_padrao}"></label>
     <label class="campo"><span>Descrição</span><textarea id="det-descricao" rows="5" maxlength="5000" placeholder="${t.descricao_padrao}">${t.descricao_custom}</textarea></label>
-    <p class="nota">Em branco, usa ${vazioUsa}. Aceita {filme}, {ano}, {ano_parenteses}, {parte}, {frase}, {hashtags}, {titulo_ia} e {descricao_ia}. Ctrl+S salva.</p>
+    <p class="nota">Em branco, usa ${vazioUsa}. Aceita {filme}, {ano}, {ano_parenteses}, {parte}, {frase}, {hashtags}, {titulo_ia}, {descricao_ia}, {canal} e {link_original}. Ctrl+S salva.</p>
     <div class="linha-botoes"><button class="btn pequeno primario" data-acao="corte-textos">${ic("check")}Salvar os textos</button>${t.titulo_custom || t.descricao_custom ? h`<button class="btn pequeno fantasma" data-acao="corte-textos-limpar">Voltar ao automático</button>` : ""}</div>
     <details class="guia"><summary>${ic("olho")}Como o post vai sair</summary><div class="amostra-post"><b>${t.titulo}</b>${t.descricao}</div></details>`;
 }

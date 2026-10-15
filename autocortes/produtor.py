@@ -43,6 +43,9 @@ def _videos_da_pasta(cfg: Config, pasta: Path):
         if "autocortes.db" in arquivos or "autocortes.lock" in arquivos or _resolvido(atual) in pular:
             subpastas[:] = []
             continue
+        # pasta escondida (como a ".baixando" dos canais do YouTube): os pedaços de um download
+        # em andamento têm extensão de vídeo e não podem virar filme
+        subpastas[:] = [s for s in subpastas if not s.startswith(".")]
         for nome in arquivos:
             if os.path.splitext(nome)[1].lower() in EXTENSOES:
                 yield atual / nome
