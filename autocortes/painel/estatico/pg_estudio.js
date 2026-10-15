@@ -461,7 +461,7 @@ function estCardAcabamento() {
   return h`<div class="card"><div class="card-topo"><h3>${ic("ajustes")}Acabamento</h3></div>${formulario([
     campo({ chave: "edicao.barra_progresso", tipo: "switch", rotulo: "Barra de progresso", ajuda: "Uma linha que cresce embaixo do vídeo enquanto o corte passa." }),
     ...(valor("edicao.barra_progresso") ? [campo({ chave: "edicao.cor_barra", tipo: "cor", rotulo: "Cor da barra" })] : []),
-    campo({ chave: "edicao.fade", tipo: "switch", rotulo: "Entrada e saída suaves", ajuda: "O vídeo aparece e some aos poucos." }),
+    campo({ chave: "edicao.fade", tipo: "switch", rotulo: "Final suave", ajuda: "O vídeo escurece no fim, e o som entra e sai aos poucos. O começo não escurece: o primeiro quadro vira a capa do post." }),
   ])}</div>`;
 }
 

@@ -1153,14 +1153,18 @@ def _editar_em_segundo_plano(painel, corte_id: int) -> None:
     _em_segundo_plano(f"edicao-{corte_id}", trabalho)
 
 
-def _resolver_tarefas_do_corte(ctx: Contexto, corte_id: int, pular: str | None = None) -> None:
+def _resolver_tarefas(cfg, conn: sqlite3.Connection, corte_id: int, pular: str | None = None) -> None:
     """Apaga as cópias das tarefas à mão do corte na pasta sincronizada (e pula as tarefas, se pedido)."""
-    for t in ctx.conn.execute("SELECT id, plataforma FROM postagens WHERE corte_id=? AND status='aguardando'",
-                              (corte_id,)).fetchall():
-        tarefas_manual.apagar_copias(ctx.cfg, t["plataforma"], t["id"])
+    for t in conn.execute("SELECT id, plataforma FROM postagens WHERE corte_id=? AND status='aguardando'",
+                          (corte_id,)).fetchall():
+        tarefas_manual.apagar_copias(cfg, t["plataforma"], t["id"])
         if pular:
-            ctx.conn.execute("UPDATE postagens SET status='pulado', erro=?, atualizado_em=? WHERE id=?",
-                             (pular, time.time(), t["id"]))
+            conn.execute("UPDATE postagens SET status='pulado', erro=?, atualizado_em=? WHERE id=?",
+                         (pular, time.time(), t["id"]))
+
+
+def _resolver_tarefas_do_corte(ctx: Contexto, corte_id: int, pular: str | None = None) -> None:
+    _resolver_tarefas(ctx.cfg, ctx.conn, corte_id, pular)
 
 
 @rota("POST", r"/cortes/(\d+)/acao")
@@ -1240,6 +1244,76 @@ def aprovar_todos(ctx: Contexto):
     n = ctx.conn.execute("UPDATE cortes SET status='pronto' WHERE status='revisao'").rowcount
     log.info("%d corte(s) aprovados pelo painel", n)
     return {"aprovados": n}
+
+
+def _soltar_para_reeditar(cfg, conn: sqlite3.Connection, corte_id: int, parar: threading.Event,
+                          prazo: float = 900) -> bool:
+    """Tira um corte da fila para editar de novo, sem disputar com um envio em andamento.
+
+    Com as travas de todas as redes na mão nenhum post começa no meio da troca: o publicador não
+    acha o arquivo apagado (o corte virava "arquivo editado não encontrado") nem sobe o vídeo velho.
+    """
+    pegas: list[threading.Lock] = []
+    limite = time.monotonic() + prazo
+    try:
+        for trava in TRAVAS_REDE.values():
+            while not trava.acquire(timeout=1):
+                if parar.is_set() or time.monotonic() > limite:
+                    return False
+            pegas.append(trava)
+        c = conn.execute("SELECT arquivo, status FROM cortes WHERE id=?", (corte_id,)).fetchone()
+        if c is None or c["status"] not in ("revisao", "pronto"):
+            return False
+        if conn.execute("SELECT 1 FROM postagens WHERE corte_id=? AND status='enviando' LIMIT 1",
+                        (corte_id,)).fetchone():
+            return False
+        _apagar_arquivos(c["arquivo"])
+        _resolver_tarefas(cfg, conn, corte_id)  # a cópia na pasta sincronizada ficaria com o vídeo antigo
+        # fila_em fica: o corte volta para o mesmo lugar da fila
+        conn.execute("UPDATE cortes SET status='candidato', arquivo=NULL, erro=NULL, tentativas=0 WHERE id=?",
+                     (corte_id,))
+        return True
+    finally:
+        for trava in pegas:
+            trava.release()
+
+
+@rota("POST", r"/cortes/refazer-fila")
+def refazer_fila(ctx: Contexto):
+    """Edita de novo, com o visual em uso, os cortes que esperam na fila (e em revisão).
+
+    Um de cada vez: só o corte que está sendo editado sai da fila, e ele volta para o mesmo lugar.
+    Vídeo criado de pauta fica de fora (quem gera outro é a Criação).
+    """
+    _exigir(not any(t.name == "refazer-fila" and t.is_alive() for t in threading.enumerate()),
+            "A fila já está sendo refeita", 409)
+    ids = [r["id"] for r in ctx.conn.execute(
+        "SELECT c.id FROM cortes c JOIN filmes f ON f.id = c.filme_id "
+        "WHERE c.status IN ('revisao', 'pronto') AND f.tipo = 'filme' AND c.arquivo IS NOT NULL "
+        "ORDER BY c.prioridade DESC, c.fila_em, c.id")]
+    _exigir(bool(ids), "Não há cortes na fila para refazer")
+    painel = ctx.painel
+
+    def trabalho():
+        conn = painel.conectar()
+        feitos = 0
+        try:
+            for n, corte_id in enumerate(ids, 1):
+                if painel.encerrar.is_set():
+                    break
+                ATIVIDADES.definir(f"Refazendo a fila com o visual atual: corte {n} de {len(ids)}")
+                if not _soltar_para_reeditar(painel.cfg, conn, corte_id, painel.encerrar):
+                    continue  # saiu da fila, foi postado ou está subindo agora
+                corte = conn.execute("SELECT * FROM cortes WHERE id=?", (corte_id,)).fetchone()
+                if corte is not None and Produtor(painel.cfg, painel.encerrar).renderizar(conn, corte):
+                    feitos += 1
+            log.info("Fila refeita com o visual atual: %d de %d corte(s) editados de novo", feitos, len(ids))
+        finally:
+            conn.close()
+
+    _em_segundo_plano("refazer-fila", trabalho)
+    log.info("Refazendo %d corte(s) da fila com o visual atual (pedido pelo painel)", len(ids))
+    return {"cortes": len(ids)}
 
 
 @rota("POST", r"/cortes/(\d+)/textos")

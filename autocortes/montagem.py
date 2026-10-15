@@ -231,8 +231,7 @@ def montar(cfg: Config, narracao: Path, frases: list[Frase], clipes: list[Clipe]
     partes, atual = edicao.filtro_video(cfg, g, "[vbase]null", f":r={fps_txt}:d={dur:.3f}", dur,
                                         moldura, indice_moldura)
     filtros += partes
-    fade = (f",fade=t=in:st=0:d=0.25,fade=t=out:st={max(0.0, dur - 0.45):.3f}:d=0.45" if e["fade"] else "")
-    filtros.append(f"[{atual}]{edicao.filtro_ass(ass, pasta_fontes)}{fade},format=yuv420p[vout]")
+    filtros.append(f"[{atual}]{edicao.filtro_ass(ass, pasta_fontes)}{edicao.fade_video(cfg, dur)},format=yuv420p[vout]")
     filtros += _filtro_audio(cfg, indice_narracao, indice_musica, dur)
 
     parcial = destino.with_name(destino.stem + ".parcial.mp4")

@@ -580,6 +580,17 @@ def filtro_video(cfg: Config, g: Geometria, origem: str, extra_cor: str, dur: fl
     return _filtro_video(cfg, g, origem, extra_cor, dur, moldura, entrada_moldura)
 
 
+def fade_video(cfg: Config, dur: float) -> str:
+    """O fim suave do vídeo (vazio sem `fade`). O começo não escurece de propósito.
+
+    Quando a capa não é escolhida no envio (pelo navegador, à mão e no YouTube), o TikTok e o
+    Instagram usam o primeiro quadro, e o fade de entrada deixava esse quadro todo preto.
+    """
+    if not cfg["edicao"]["fade"]:
+        return ""
+    return f",fade=t=out:st={max(0.0, dur - 0.45):.3f}:d=0.45"
+
+
 def codificar(cfg: Config, comando, fps: Fraction, dur: float, parcial: Path, destino: Path,
               parar: threading.Event | None = None, rotulo: str = "", intervalo_seg: float = 20,
               oque: str = "renderização") -> float:
@@ -660,8 +671,7 @@ def renderizar(
         f"scale={g.escala_w}:{g.escala_h}:flags=bicubic,setsar=1,fps={fps_txt}"
     )
     partes, atual = _filtro_video(cfg, g, origem, f":r={fps_txt}:d={dur:.3f}", dur, moldura, 1)
-    fade = f",fade=t=in:st=0:d=0.25,fade=t=out:st={max(0.0, dur - 0.45):.3f}:d=0.45" if e["fade"] else ""
-    partes.append(f"[{atual}]{_filtro_ass(ass, pasta_fontes)}{fade},format=yuv420p[vout]")
+    partes.append(f"[{atual}]{_filtro_ass(ass, pasta_fontes)}{fade_video(cfg, dur)},format=yuv420p[vout]")
 
     # --- áudio
     if info.get("audio"):

@@ -75,9 +75,12 @@ function cortesHtml(r) {
   const abas = ABAS_CORTES.filter(([id]) => id !== "revisao" || mostrarRevisao);
   const aba = ABAS_CORTES.find(([id]) => id === r.aba);
   const opcoesFilme = [["", "Todos os filmes"], ...r.filmes.map((f) => [String(f.id), f.titulo])];
-  const acoesAba = r.aba === "revisao" && r.itens.length
-    ? h`<button class="btn sucesso" data-acao="aprovar-todos">${ic("check")}Aprovar todos</button>`
-    : "";
+  let acoesAba = "";
+  if (r.aba === "revisao" && r.itens.length) {
+    acoesAba = h`<button class="btn sucesso" data-acao="aprovar-todos">${ic("check")}Aprovar todos</button>`;
+  } else if (r.aba === "fila" && r.itens.some((c) => !c.criado)) {
+    acoesAba = h`<button class="btn" data-acao="refazer-fila" title="Edita de novo os cortes da fila com o modelo visual em uso">${ic("refazer")}Refazer a fila</button>`;
+  }
   let lista;
   if (r.itens.length) {
     lista = h`<div class="grade-cortes">${r.itens.map((c) => cardCorteHtml(c, r.ativas, r.facebook))}</div>`;
@@ -133,6 +136,18 @@ App.acoes["aprovar-todos"] = async (el) => {
     toast(`${plural(r.aprovados, "corte aprovado", "cortes aprovados")}`);
   });
   await carregarCortes();
+  atualizarEstado();
+};
+
+App.acoes["refazer-fila"] = async (el) => {
+  const ok = await confirmar({
+    titulo: "Refazer a fila com o visual atual?",
+    texto: "Edito de novo, um de cada vez, os cortes da fila e os que esperam aprovação, com o modelo visual em uso. Cada um volta para o mesmo lugar da fila. Onde o corte já saiu, nada muda; as redes que faltam recebem o vídeo novo. Vídeos criados de pauta ficam como estão.",
+    botao: "Refazer a fila",
+  });
+  if (!ok) return;
+  const r = await ocupado(el, () => post("/cortes/refazer-fila"));
+  toast(`Refazendo ${plural(r.cortes, "corte", "cortes")} em segundo plano. Acompanhe no Início.`, "info", 6000);
   atualizarEstado();
 };
 
