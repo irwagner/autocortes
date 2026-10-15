@@ -174,7 +174,8 @@ def _baixar_zip(sha: str) -> Path:
     for antigo in PASTA_TRABALHO.glob("*.zip") if PASTA_TRABALHO.is_dir() else []:
         antigo.unlink(missing_ok=True)  # o de uma versão que já passou
     try:
-        baixar(f"https://codeload.github.com/{REPOSITORIO}/zip/{sha}", destino, "a versão nova do AutoCortes")
+        # o registro diz "Baixando <rótulo> ..." e "<rótulo> pronto": masculino
+        baixar(f"https://codeload.github.com/{REPOSITORIO}/zip/{sha}", destino, "o ZIP da versão nova do AutoCortes")
     except ErroDownload as e:
         raise ErroAtualizacao(str(e)) from e
     finally:

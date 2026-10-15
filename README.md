@@ -150,7 +150,7 @@ Atualizado em outubro de 2026.
 | Agenda por rede, fila e planejador | ✅ Pronto e testado de ponta a ponta em simulação |
 | Painel no navegador (10 telas, API local com 76 rotas) | ✅ Pronto e testado no Edge |
 | Canais do YouTube: baixa sozinho os vídeos novos para a pasta de filmes | ✅ Pronto e testado (o yt-dlp de verdade num canal público; as regras e a fila, com um yt-dlp falso) |
-| Atualização pelo GitHub a cada 2 dias, com tudo parado | 🧪 Pronta; testada de ponta a ponta com um repositório local no lugar do GitHub (fecha, troca, abre de novo com os perfis e volta sozinha se a versão nova não abrir) |
+| Atualização pelo GitHub a cada 2 dias, com tudo parado | ✅ Pronta e testada: o ciclo inteiro com um repositório local (fecha, troca, abre de novo com os perfis e volta sozinha se a versão nova não abrir), e o clone e o ZIP contra o GitHub de verdade |
 | Perfis de nicho: vários nichos na mesma instalação, cada um com suas contas | ✅ Pronto e testado (dois perfis abertos ao mesmo tempo, de verdade) |
 | Vídeos criados do zero: narração, imagens de fundo e legenda no tempo da voz | ✅ Pronto e testado de ponta a ponta (narração no serviço real) |
 | Pauta escrita à mão (`pautas/*.txt`) | ✅ Pronta e testada |
@@ -161,7 +161,7 @@ Atualizado em outubro de 2026.
 | Métricas dos posts (YouTube e Instagram) | 🧪 Prontas; testadas contra um servidor simulado |
 | `AutoCortes.bat`, `AutoCortes.pyw` e "Iniciar com o Windows" | ✅ Prontos e testados |
 
-✅ pronto e testado · 🧪 pronto, testado só contra um servidor (ou repositório) simulado
+✅ pronto e testado · 🧪 pronto, testado só contra um servidor simulado
 
 Falta a primeira postagem real em cada rede: tudo foi testado em modo simulação ou contra servidores simulados.
 
@@ -841,7 +841,7 @@ Não há framework de testes: cada rodada usa scripts temporários numa pasta pr
   - Capa: o primeiro quadro do corte tinha brilho 0 (o fade de entrada), e as redes usam esse quadro como capa. Sem o fade de entrada, ele sai com o filme, sem moldura e com ela; o fim continua escurecendo.
   - Canais com um yt-dlp falso (endereços aceitos e recusados; regras de data, duração, membros, agendado e palavras; limite por canal; nunca baixar duas vezes; erro com nova tentativa; yt-dlp velho que se atualiza e tenta de novo; fila cheia; pausa de 12 h; download que caiu no meio) e com o yt-dlp de verdade num canal público: listou, baixou em H.264 e AAC e o vídeo entrou na pasta com o `.json`.
   - Roteiros padrão: vale o padrão sem roteiro no perfil, o do perfil vale no lugar dele, e apagar o seu volta ao padrão.
-  - Atualização (58 checagens): clone do git em dia, atrás, com arquivo mudado, com commit local e em outro ramo; ZIP sem tocar no que é seu, sem gravar fora da pasta, apagando só o que saiu do repositório, e desfazer; bibliotecas instaladas só quando o `requirements.txt` muda, e a versão anterior de volta quando elas falham. De ponta a ponta (25 checagens), com o painel e o atualizador de verdade e um repositório local no lugar do GitHub: o principal e um segundo perfil fecharam, a versão trocou e os dois abriram de novo com o motor como estavam; uma versão quebrada de propósito voltou sozinha para a anterior.
+  - Atualização (58 checagens): clone do git em dia, atrás, com arquivo mudado, com commit local e em outro ramo; ZIP sem tocar no que é seu, sem gravar fora da pasta, apagando só o que saiu do repositório, e desfazer; bibliotecas instaladas só quando o `requirements.txt` muda, e a versão anterior de volta quando elas falham. De ponta a ponta (25 checagens), com o painel e o atualizador de verdade e um repositório local no lugar do GitHub: o principal e um segundo perfil fecharam, a versão trocou e os dois abriram de novo com o motor como estavam; uma versão quebrada de propósito voltou sozinha para a anterior. Contra o GitHub de verdade: um clone 2 commits atrás avançou e ficou em dia, e uma pasta vazia recebeu o ZIP (2 MB) com os 81 arquivos iguais aos do repositório, o `.bat` em CRLF.
   - `AutoCortes.bat` trocado com ele aberto: o fim antigo executava linhas do arquivo novo; o fim em uma linha, não.
   - Painel no Edge sem janela: Filmes > Canais do YouTube, Configurações > Canais e > Sistema, o roteiro padrão em Redes sociais, Refazer a fila, a faixa de atualização e a recarga sozinha (que espera quando há algo por salvar), sem erros no console.
 
