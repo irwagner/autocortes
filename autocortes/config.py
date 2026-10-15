@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import copy
-import os
 import re
 import shutil
 import threading
 import tomllib
 from pathlib import Path
 
-from .util import log
+from .util import escrever_atomico, log
 
 RAIZ = Path(__file__).resolve().parent.parent
 PLATAFORMAS = ("youtube", "tiktok", "instagram", "kwai", "bilibili")
@@ -35,7 +34,12 @@ DIAS_SEMANA = ("seg", "ter", "qua", "qui", "sex", "sab", "dom")
 SEGREDOS = (
     ("youtube", "client_secret"), ("tiktok", "client_secret"), ("instagram", "app_secret"),
     ("upload_post", "api_key"), ("ia", "api_key"),
+    # listas de chaves: também nunca voltam para o painel
+    ("estoque", "pexels_chaves"), ("estoque", "pixabay_chaves"),
 )
+# codificadores de vídeo que o painel oferece (o da placa cai para o libx264 quando falha)
+CODECS = ("libx264", "h264_amf", "h264_nvenc", "h264_qsv")
+PRESETS_X264 = ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow")
 LIMPAR = "__limpar__"
 # atualizar_de (painel salvando) e copia (edição começando) não se misturam
 _TRAVA_DADOS = threading.RLock()
@@ -408,7 +412,10 @@ class Config:
         return list(self[plataforma].get("dias") or self["agenda"]["dias"])
 
     def segredo_definido(self, secao: str, chave: str) -> bool:
-        return bool(str(self[secao].get(chave) or "").strip())
+        valor = self[secao].get(chave)
+        if isinstance(valor, list):
+            return any(str(v).strip() for v in valor)
+        return bool(str(valor or "").strip())
 
     def atualizar_de(self, outro: "Config") -> None:
         """Copia os valores de outro Config para dentro dos mesmos dicionários.
@@ -437,7 +444,7 @@ class Config:
         dados["_segredos"] = {}
         for secao, chave in SEGREDOS:
             dados["_segredos"][f"{secao}.{chave}"] = self.segredo_definido(secao, chave)
-            dados[secao][chave] = ""
+            dados[secao][chave] = [] if isinstance(dados[secao][chave], list) else ""
         return dados
 
 
@@ -533,11 +540,49 @@ def _checar_tipos(padrao: dict, dados: dict, prefixo: str, erros: list[str]) -> 
                 erros.append(f"{nome} deve ser uma lista")
 
 
+def _resolvido(caminho: Path) -> Path:
+    try:
+        return caminho.resolve()
+    except OSError:
+        return caminho.absolute()
+
+
+def _dentro_de(caminho: Path, pasta: Path) -> bool:
+    try:
+        return caminho.is_relative_to(pasta)
+    except ValueError:
+        return False
+
+
+def _validar_pastas(cfg: Config, erros: list[str]) -> None:
+    """Vazia, a pasta vira a da instalação; uma dentro da outra, a varredura dos filmes entra nos
+    próprios cortes (dados/cortes) e o AutoCortes recorta o que ele mesmo editou."""
+    pastas: dict[str, Path] = {}
+    for chave in ("pasta_filmes", "pasta_dados"):
+        bruto = str(cfg["geral"][chave]).strip()
+        if not bruto:
+            erros.append(f"[geral].{chave} não pode ficar vazio")
+        elif re.search(r"[\x00-\x1f*?\"<>|]", bruto):
+            erros.append(f"[geral].{chave} tem caracteres que não valem num caminho do Windows")
+        else:
+            pastas[chave] = _resolvido(cfg.caminho_de(bruto))
+    if len(pastas) < 2:
+        return
+    filmes, dados = pastas["pasta_filmes"], pastas["pasta_dados"]
+    if filmes == dados or _dentro_de(dados, filmes) or _dentro_de(filmes, dados):
+        erros.append("[geral].pasta_filmes e pasta_dados não podem ser a mesma pasta, nem uma dentro da outra")
+    instalacao = _resolvido(RAIZ)
+    if filmes == instalacao or _dentro_de(instalacao, filmes):
+        erros.append("[geral].pasta_filmes não pode ser a pasta do AutoCortes (nem uma pasta acima dela): "
+                     "a varredura entraria nos cortes de todos os perfis")
+
+
 def validar(cfg: Config) -> None:
     erros: list[str] = []
     _checar_tipos(PADRAO, cfg.dados, "", erros)
     if erros:
         raise ErroConfig("Problemas no config:\n  - " + "\n  - ".join(erros), erros)
+    _validar_pastas(cfg, erros)
 
     def numero(secao: str, chave: str, minimo: float, maximo: float) -> None:
         valor = cfg[secao][chave]
@@ -573,6 +618,37 @@ def validar(cfg: Config) -> None:
     numero("agenda", "max_tentativas", 1, 20)
     numero("agenda", "espera_erro_min", 1, 1440)
     opcao("transcricao", "fonte", ("auto", "whisper", "arquivo", "nenhuma"))
+    opcao("edicao", "codec", CODECS)
+    opcao("edicao", "preset", PRESETS_X264)
+    numero("analise", "limiar_cena", 1, 100)
+    numero("analise", "ignorar_inicio_seg", 0, 3600)
+    numero("analise", "ignorar_fim_seg", 0, 3600)
+    numero("ferramentas", "threads", 0, 64)
+    f = cfg["ferramentas"]
+    for chave in ("ffmpeg", "ffprobe"):
+        if not str(f[chave]).strip() or re.search(r"[\x00-\x1f*?\"<>|]", str(f[chave])):
+            erros.append(f"[ferramentas].{chave} deve ser o caminho do programa (ou só \"{chave}\", se estiver no PATH)")
+    for chave in ("whisper_cli", "whisper_vad"):
+        if re.search(r"[\x00-\x1f*?\"<>|]", str(f[chave])):
+            erros.append(f"[ferramentas].{chave} tem caracteres que não valem num caminho do Windows")
+    if not re.fullmatch(r"[a-z0-9_]{0,20}", str(f["hwaccel"]).strip().lower()):
+        erros.append("[ferramentas].hwaccel deve ser auto, none ou o nome de um acelerador do FFmpeg (ex.: d3d11va)")
+    if not (str(f["whisper_cli"]).strip() and str(f["whisper_vad"]).strip()):
+        from .ferramentas import SHA256_WHISPER  # aqui dentro: ferramentas importa este módulo
+
+        if str(f["whisper_versao"]) not in SHA256_WHISPER:
+            erros.append(f"[ferramentas].whisper_versao deve ser {', '.join(SHA256_WHISPER)} (a versão com o "
+                         "download conferido), ou instale o whisper.cpp à mão e informe whisper_cli e whisper_vad")
+    if not re.fullmatch(r"\d{1,3}", str(cfg["youtube"]["categoria"]).strip()):
+        erros.append("[youtube].categoria deve ser o número da categoria do YouTube (ex.: 1 = Filmes e animação)")
+    if not re.fullmatch(r"v\d{1,3}\.\d", str(cfg["instagram"]["versao_api"]).strip()):
+        erros.append("[instagram].versao_api deve ser como v26.0")
+    porta_yt = cfg["youtube"]["porta_redirect"]
+    if porta_yt != 0 and not 1024 <= porta_yt <= 65535:
+        erros.append("[youtube].porta_redirect deve ser 0 (automática) ou de 1024 a 65535")
+    numero("tiktok", "porta_redirect", 1024, 65535)
+    numero("tiktok", "capa_ms", 0, 600000)
+    numero("instagram", "capa_ms", 0, 600000)
     opcao("cortes", "ordem_filmes", ("intercalar", "sequencial"))
     opcao("cortes", "ordem_cortes", ("melhores", "cronologica"))
     opcao("edicao", "layout", ("desfocado", "preto", "preencher"))
@@ -725,7 +801,7 @@ def _filtrar(padrao: dict, alteracoes: dict, prefixo: tuple = ()) -> dict:
                     saida[chave] = sub
             continue
         if caminho in SEGREDOS:
-            if valor in (None, ""):
+            if valor in (None, "") or valor == []:
                 continue  # vazio = manter o segredo que já está salvo
             if valor == LIMPAR:
                 valor = ""
@@ -786,10 +862,22 @@ def salvar(cfg: Config, alteracoes: dict) -> Config:
     if not limpo:
         return novo
 
-    texto = cfg.caminho.read_text(encoding="utf-8-sig") if cfg.caminho.exists() else ""
-    doc = tomlkit.parse(texto)
+    # o arquivo é relido para manter os comentários e o que foi escrito à mão nele
+    try:
+        texto = cfg.caminho.read_text(encoding="utf-8-sig") if cfg.caminho.exists() else ""
+    except (OSError, UnicodeDecodeError) as e:
+        raise ErroConfig(f"Não consegui ler o {cfg.caminho.name} para salvar ({e}). Feche o programa que estiver "
+                         "com ele aberto e tente de novo.") from e
+    from tomlkit.exceptions import ParseError
+
+    try:
+        doc = tomlkit.parse(texto)
+    except ParseError as e:
+        raise ErroConfig(f"O {cfg.caminho.name} tem um erro de sintaxe (foi editado à mão?): {e}. Corrija o arquivo "
+                         "ou desfaça a edição; nada foi salvo.") from e
     _gravar_doc(doc, limpo)
-    temporario = cfg.caminho.with_name(cfg.caminho.name + ".tmp")
-    temporario.write_text(tomlkit.dumps(doc), encoding="utf-8")
-    os.replace(temporario, cfg.caminho)
+    try:
+        escrever_atomico(cfg.caminho, tomlkit.dumps(doc))
+    except OSError as e:
+        raise ErroConfig(f"Não consegui gravar o {cfg.caminho.name} ({e}). Nada foi salvo.") from e
     return novo

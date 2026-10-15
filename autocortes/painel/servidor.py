@@ -42,6 +42,40 @@ CSP = (
     "base-uri 'none'; form-action 'none'"
 )
 LIMITE_JSON = 2 * 1024 * 1024
+# resposta parcial de vídeo: o player pede o pedaço seguinte quando precisa
+PEDACO_VIDEO = 8 * 1024 * 1024
+# quanto o encerramento espera as tarefas do painel (um envio do "Postar agora" no meio, por exemplo)
+ESPERA_TAREFAS_SEG = 60
+
+
+def _abrir_compartilhado(caminho: Path):
+    """Abre para leitura deixando o arquivo ser trocado ou apagado enquanto é lido.
+
+    O open() do Python no Windows não compartilha a exclusão: com o vídeo tocando no painel, a
+    edição não conseguia pôr o arquivo novo no lugar e o "descartar" não conseguia apagar.
+    """
+    if os.name != "nt":
+        return open(caminho, "rb")
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    criar = k32.CreateFileW
+    criar.restype = wintypes.HANDLE
+    criar.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+                      wintypes.DWORD, wintypes.HANDLE]
+    leitura, compartilhar_tudo, existente = 0x80000000, 0x1 | 0x2 | 0x4, 3
+    atributos = 0x80 | 0x08000000  # normal + leitura em sequência
+    alca = criar(str(caminho), leitura, compartilhar_tudo, None, existente, atributos, None)
+    if alca is None or alca == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        fd = msvcrt.open_osfhandle(alca, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    except OSError:
+        k32.CloseHandle(wintypes.HANDLE(alca))
+        raise
+    return os.fdopen(fd, "rb")
 
 
 def _mesmo_token(recebido: str, token: str) -> bool:
@@ -65,6 +99,9 @@ class Painel:
         self.hosts = {f"127.0.0.1:{porta}", f"localhost:{porta}"}
         self.origens = {f"http://{h}" for h in self.hosts}
         self.iniciado_em = time.time()
+        # o que o /estado guarda por alguns segundos (api._em_cache); cada POST troca a versão
+        self.cache_estado: dict = {}
+        self.versao_cache = 0
 
     def conectar(self):
         return db.conectar(self.cfg.banco, preparar=False)
@@ -133,41 +170,52 @@ class Tratador(BaseHTTPRequestHandler):
         self.enviar(status, corpo, "application/json; charset=utf-8")
 
     def enviar_arquivo(self, caminho: Path, tipo: str) -> None:
-        """Arquivo com suporte a Range (o player de vídeo do navegador pula para qualquer ponto)."""
-        tamanho = caminho.stat().st_size
-        inicio, fim, status = 0, tamanho - 1, 200
-        faixa = self.headers.get("Range")
-        if faixa:
-            achado = re.fullmatch(r"\s*bytes=(\d*)-(\d*)\s*", faixa)
-            if achado and (achado.group(1) or achado.group(2)):
-                if achado.group(1):
-                    inicio = int(achado.group(1))
-                    fim = int(achado.group(2)) if achado.group(2) else tamanho - 1
-                else:
-                    inicio = max(0, tamanho - int(achado.group(2)))
-                fim = min(fim, tamanho - 1)
-                if inicio > fim or inicio >= tamanho:
-                    self.send_response(416)
-                    self.send_header("Content-Range", f"bytes */{tamanho}")
-                    self.send_header("Content-Length", "0")
-                    self._cabecalhos_seguranca()
-                    self.end_headers()
-                    self._respondido = True
-                    return
-                status = 206
-        self.send_response(status)
-        self.send_header("Content-Type", tipo)
-        self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Content-Length", str(fim - inicio + 1))
-        if status == 206:
-            self.send_header("Content-Range", f"bytes {inicio}-{fim}/{tamanho}")
-        self.send_header("Cache-Control", "private, max-age=3600")
-        self._cabecalhos_seguranca()
-        self.end_headers()
-        self._respondido = True
-        if self.command == "HEAD":
-            return
-        with open(caminho, "rb") as arquivo:
+        """Arquivo com suporte a Range (o player de vídeo do navegador pula para qualquer ponto).
+
+        O arquivo é aberto deixando que ele seja trocado ou apagado durante o envio, e cada
+        resposta parcial de vídeo leva no máximo PEDACO_VIDEO: o player segura a conexão enquanto
+        toca, e com o arquivo preso a reedição e o "descartar" falhavam no Windows.
+        """
+        try:
+            arquivo = _abrir_compartilhado(caminho)
+        except FileNotFoundError as e:
+            raise ErroHttp(404, "Arquivo não encontrado") from e
+        with arquivo:
+            tamanho = os.fstat(arquivo.fileno()).st_size
+            inicio, fim, status = 0, tamanho - 1, 200
+            faixa = self.headers.get("Range")
+            if faixa:
+                achado = re.fullmatch(r"\s*bytes=(\d*)-(\d*)\s*", faixa)
+                if achado and (achado.group(1) or achado.group(2)):
+                    if achado.group(1):
+                        inicio = int(achado.group(1))
+                        fim = int(achado.group(2)) if achado.group(2) else tamanho - 1
+                    else:
+                        inicio = max(0, tamanho - int(achado.group(2)))
+                    fim = min(fim, tamanho - 1)
+                    if inicio > fim or inicio >= tamanho:
+                        self.send_response(416)
+                        self.send_header("Content-Range", f"bytes */{tamanho}")
+                        self.send_header("Content-Length", "0")
+                        self._cabecalhos_seguranca()
+                        self.end_headers()
+                        self._respondido = True
+                        return
+                    if tipo.startswith("video/"):
+                        fim = min(fim, inicio + PEDACO_VIDEO - 1)  # o player pede o resto quando precisar
+                    status = 206
+            self.send_response(status)
+            self.send_header("Content-Type", tipo)
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(fim - inicio + 1))
+            if status == 206:
+                self.send_header("Content-Range", f"bytes {inicio}-{fim}/{tamanho}")
+            self.send_header("Cache-Control", "private, max-age=3600")
+            self._cabecalhos_seguranca()
+            self.end_headers()
+            self._respondido = True
+            if self.command == "HEAD":
+                return
             arquivo.seek(inicio)
             restante = fim - inicio + 1
             while restante > 0:
@@ -176,12 +224,44 @@ class Tratador(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(bloco)
                 restante -= len(bloco)
+            if restante > 0:  # o arquivo encolheu no meio (foi trocado): a resposta não fecha a conta
+                self.close_connection = True
+
+    def descartar_corpo(self, maximo: int = 256 * 1024**2, prazo: float = 30.0) -> None:
+        """Lê e joga fora o corpo que a rota não leu, antes de responder com erro.
+
+        No Windows, fechar a conexão com dados ainda chegando derruba tudo (WinError 10053), e o
+        navegador mostra "falha na rede" em vez da mensagem de erro.
+        """
+        if self.command != "POST" or getattr(self, "_corpo_lido", True):
+            return
+        self._corpo_lido = True
+        try:
+            tamanho = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return
+        if tamanho <= 0 or tamanho > maximo:
+            return
+        limite = time.monotonic() + prazo
+        restante = tamanho
+        try:
+            while restante > 0 and time.monotonic() < limite:
+                bloco = self.rfile.read(min(1024 * 1024, restante))
+                if not bloco:
+                    break
+                restante -= len(bloco)
+        except OSError:
+            pass
 
     def ler_json(self) -> dict:
-        tamanho = int(self.headers.get("Content-Length") or 0)
+        try:
+            tamanho = int(self.headers.get("Content-Length") or 0)
+        except ValueError as e:
+            raise ErroHttp(400, "Tamanho da requisição inválido") from e
         if tamanho > LIMITE_JSON:
             raise ErroHttp(413, "Requisição grande demais")
-        bruto = self.rfile.read(tamanho) if tamanho else b""
+        bruto = self.rfile.read(tamanho) if tamanho > 0 else b""
+        self._corpo_lido = True
         if not bruto:
             return {}
         try:
@@ -219,6 +299,7 @@ class Tratador(BaseHTTPRequestHandler):
 
     def _tratar(self) -> None:
         self._respondido = False
+        self._corpo_lido = self.command != "POST"  # ler_json (ou a rota de envio) marca quando ler
         metodo = "GET" if self.command == "HEAD" else self.command
         try:
             if self.headers.get("Host", "") not in self.painel.hosts:
@@ -263,12 +344,17 @@ class Tratador(BaseHTTPRequestHandler):
                 if encontrado is None:
                     raise ErroHttp(404, "Rota não encontrada")
                 funcao, grupos, bruto = encontrado
+                if bruto:
+                    self._corpo_lido = False  # a rota lê o corpo (envio de arquivo) e marca quando terminar
                 corpo = {} if (bruto or metodo == "GET") else self.ler_json()
                 ctx = api.Contexto(self.painel, corpo, consulta, self)
                 try:
                     resultado = funcao(ctx, *grupos)
                 finally:
                     ctx.fechar()
+                    if metodo == "POST":
+                        # o que o POST mudou aparece já no próximo /estado
+                        api.invalidar_cache(self.painel)
                 if not self._respondido:
                     self.enviar_json(200, {"ok": True} if resultado is None else resultado)
                 return
@@ -276,6 +362,7 @@ class Tratador(BaseHTTPRequestHandler):
         except ErroHttp as e:
             self.close_connection = True
             if not self._respondido:
+                self.descartar_corpo()
                 self.enviar_json(e.status, {"erro": str(e), **e.extra})
         except (ConnectionError, TimeoutError):
             self.close_connection = True
@@ -283,6 +370,7 @@ class Tratador(BaseHTTPRequestHandler):
             log.exception("Erro no painel (%s %s)", self.command, self.path.split("?")[0])
             self.close_connection = True
             if not self._respondido:
+                self.descartar_corpo()
                 self.enviar_json(500, {"erro": f"Erro interno: {e}"})
 
 
@@ -301,7 +389,7 @@ def iniciar_painel(cfg: Config, abrir_navegador: bool = True, iniciar_motor: boo
     porta = int(porta or cfg["painel"]["porta"])
     url = f"http://127.0.0.1:{porta}/"
     trava = Trava(cfg.pasta_dados / "autocortes.lock")
-    if not trava.adquirir():
+    if not trava.adquirir(espera=2):
         if painel_responde(porta):
             log.info("O AutoCortes já está aberto em %s", url)
             if abrir_navegador:
@@ -325,6 +413,8 @@ def iniciar_painel(cfg: Config, abrir_navegador: bool = True, iniciar_motor: boo
         trava.liberar()
         return 1
 
+    # a tela de perfis procura este painel também na porta anotada (a do config pode ter mudado)
+    perfis.marcar_porta(cfg.pasta_dados, porta)
     threading.Thread(target=servidor.serve_forever, kwargs={"poll_interval": 0.5}, name="painel", daemon=True).start()
     log.info("Painel do AutoCortes (%s) em %s (feche esta janela para desligar)", painel.nome_perfil, url)
     if iniciar_motor:
@@ -343,6 +433,9 @@ def iniciar_painel(cfg: Config, abrir_navegador: bool = True, iniciar_motor: boo
         pass
     finally:
         log.info("Encerrando o AutoCortes...")
+        # as tarefas do painel (postar agora, criar, editar) usam este aviso para parar no próximo
+        # ponto seguro; sem ele, o pedido de outro perfil e o Ctrl+C fechavam sem avisá-las
+        painel.encerrar.set()
         servidor.shutdown()
         servidor.server_close()
         for sessao in list(painel.logins.values()):
@@ -350,6 +443,12 @@ def iniciar_painel(cfg: Config, abrir_navegador: bool = True, iniciar_motor: boo
         for gravacao in list(painel.gravacoes.values()):
             gravacao.cancelar()
         motor.parar()
+        restantes = api.esperar_tarefas(ESPERA_TAREFAS_SEG)
+        if restantes:
+            log.warning("Fechei com tarefas do painel ainda rodando (%s). O que estava sendo enviado volta para "
+                        "a fila na próxima abertura, ou fica \"a conferir\" se a rede já tinha recebido.",
+                        ", ".join(restantes))
+        perfis.marcar_porta(cfg.pasta_dados, None)
         trava.liberar()
         (cfg.pasta_dados / perfis.NOME_PEDIDO).unlink(missing_ok=True)
     return 0

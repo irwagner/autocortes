@@ -40,21 +40,54 @@ _ALUCINACAO = re.compile(
 _FIM_FRASE = re.compile(r"[.!?…]['\"”»]?$")
 
 
+_PONTUADO = re.compile(r"[.!?…,;:]['\"”»)]?$")
+
+
+def _nova_frase(anterior: str, linha: str, dialogo: bool) -> bool:
+    """A linha seguinte começa outra frase? Então a anterior ganha um ponto ao juntar as duas.
+
+    Sem isso, "Senhor está cansado" + "Posso lhe acompanhar" virava uma frase só, e assim ia
+    para a descrição do post. Travessão de diálogo é troca de pessoa; maiúscula depois de uma
+    linha sem pontuação também, a não ser que a linha acabe numa palavra de ligação ("com Maria").
+    """
+    if _PONTUADO.search(anterior):
+        return False
+    if dialogo:
+        return True
+    if not linha[:1].isupper():
+        return False
+    palavras = anterior.split()
+    return bool(palavras) and _chave(palavras[-1]) not in PALAVRAS_LIGACAO
+
+
 def limpar_texto(texto: str) -> str:
     texto = _TAG_HTML.sub("", texto)
     texto = _TAG_ASS.sub("", texto)
-    texto = texto.replace("\\N", " ").replace("\\n", " ")
-    linhas = []
-    for linha in texto.splitlines():
-        linha = _ANOTACAO.sub(" ", linha)
+    texto = texto.replace("\\N", "\n").replace("\\n", "\n")  # quebra de linha do ASS é quebra de linha
+    linhas: list[str] = []
+    for bruta in texto.splitlines():
+        dialogo = bool(re.match(r"^\s*[-–—]+\s*", bruta))
+        linha = _ANOTACAO.sub(" ", bruta)
         linha = re.sub(r"^\s*[-–—]+\s*", "", linha)  # travessão de diálogo
-        if linha.strip():
-            linhas.append(linha.strip())
-    return re.sub(r"\s+", " ", " ".join(linhas)).strip()
+        linha = re.sub(r"\s+", " ", linha).strip()
+        if not linha:
+            continue
+        if linhas and _nova_frase(linhas[-1], linha, dialogo):
+            linhas[-1] += "."
+        linhas.append(linha)
+    return " ".join(linhas).strip()
 
 
 def _ler_texto(caminho: Path) -> str:
+    """O texto da legenda em qualquer codificação comum: UTF-8, UTF-16 (com ou sem BOM) e Windows-1252."""
     bruto = caminho.read_bytes()
+    if bruto.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return bruto.decode("utf-16", errors="replace")
+    amostra = bruto[:4000]
+    if amostra and amostra.count(0) > len(amostra) // 4:
+        # UTF-16 sem BOM: os bytes zero ficam nas posições ímpares (little endian) ou pares (big endian)
+        little = amostra[1::2].count(0) >= amostra[0::2].count(0)
+        return bruto.decode("utf-16-le" if little else "utf-16-be", errors="replace")
     try:
         return bruto.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -89,21 +122,57 @@ def _seg(h: str, m: str, s: str, ms: str) -> float:
 
 
 def ler_srt(caminho: Path) -> list[Frase]:
-    texto = _ler_texto(caminho).replace("\r\n", "\n")
+    """As falas do SRT, uma por linha de tempo.
+
+    A leitura vai pelas linhas de tempo, e não pelos blocos separados por linha em branco: há
+    legenda sem a linha em branco entre as falas, e aí todas as seguintes viravam uma fala só.
+    O número da fala (a linha só com dígitos logo antes do tempo) fica fora do texto.
+    """
+    linhas = _ler_texto(caminho).replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    falas: list[tuple[float, float, list[str]]] = []
+    for linha in linhas:
+        m = _TEMPO_SRT.search(linha)
+        if m:
+            if falas and falas[-1][2] and falas[-1][2][-1].strip().isdigit():
+                falas[-1][2].pop()  # era o número desta fala, não o texto da anterior
+            falas.append((_seg(*m.groups()[:4]), _seg(*m.groups()[4:]), []))
+        elif falas:
+            falas[-1][2].append(linha)
     frases: list[Frase] = []
-    for bloco in re.split(r"\n\s*\n", texto):
-        linhas = bloco.strip().split("\n")
-        for i, linha in enumerate(linhas):
-            m = _TEMPO_SRT.search(linha)
-            if not m:
-                continue
-            ini, fim = _seg(*m.groups()[:4]), _seg(*m.groups()[4:])
-            conteudo = limpar_texto("\n".join(linhas[i + 1 :]))
-            if conteudo and fim > ini and not _ALUCINACAO.search(conteudo):
-                frases.append(Frase(ini, fim, conteudo, palavras_estimadas(ini, fim, conteudo)))
-            break
-    frases.sort(key=lambda f: f.ini)
-    return frases
+    for ini, fim, texto in falas:
+        conteudo = limpar_texto("\n".join(texto).strip())
+        if conteudo and fim > ini and not _ALUCINACAO.search(conteudo):
+            frases.append(Frase(ini, fim, conteudo, palavras_estimadas(ini, fim, conteudo)))
+    return sem_sobreposicao(frases)
+
+
+def sem_sobreposicao(frases: list[Frase], minimo: float = 0.3) -> list[Frase]:
+    """Falas em ordem e sem sobrepor uma à outra.
+
+    Legenda com duas pessoas falando juntas, SDH ou letreiros (comum em ASS convertido) tem falas
+    que se cruzam no tempo. A legenda queimada palavra por palavra precisa das palavras em ordem:
+    com o cruzamento, palavras sumiam ou apareciam uma em cima da outra. A fala repetida sai; a
+    que começa antes da outra terminar encurta (ou, se ficaria curta demais, as duas viram uma).
+    """
+    saida: list[Frase] = []
+    for f in sorted(frases, key=lambda x: (x.ini, x.fim)):
+        anterior = saida[-1] if saida else None
+        if anterior is None or f.ini >= anterior.fim:
+            saida.append(f)
+            continue
+        if _chave(f.txt) == _chave(anterior.txt):
+            if f.fim > anterior.fim:  # a mesma fala repetida: fica uma, cobrindo as duas
+                saida[-1] = Frase(anterior.ini, f.fim, anterior.txt,
+                                  palavras_estimadas(anterior.ini, f.fim, anterior.txt))
+            continue
+        if f.ini - anterior.ini >= minimo:
+            saida[-1] = Frase(anterior.ini, f.ini, anterior.txt, palavras_estimadas(anterior.ini, f.ini, anterior.txt))
+            saida.append(f)
+        else:
+            fim = max(anterior.fim, f.fim)
+            texto = f"{anterior.txt} {f.txt}"
+            saida[-1] = Frase(anterior.ini, fim, texto, palavras_estimadas(anterior.ini, fim, texto))
+    return saida
 
 
 # ---------------------------------------------------------------- Whisper
@@ -212,7 +281,11 @@ def carregar_transcricao(caminho: Path) -> tuple[list[Frase], dict]:
 
 
 def palavras_no_intervalo(frases: list[Frase], ini: float, fim: float) -> list[Palavra]:
-    """Palavras dentro do corte, com o tempo relativo ao início do corte."""
+    """Palavras dentro do corte, com o tempo relativo ao início do corte, em ordem e sem se cruzar.
+
+    A ordem vale mesmo para uma transcrição antiga, gravada antes de as falas sobrepostas serem
+    corrigidas na leitura: a legenda queimada mostra uma palavra de cada vez.
+    """
     saida = []
     for frase in frases:
         if frase.fim < ini or frase.ini > fim:
@@ -221,6 +294,10 @@ def palavras_no_intervalo(frases: list[Frase], ini: float, fim: float) -> list[P
             centro = (p.ini + p.fim) / 2
             if ini <= centro <= fim:
                 saida.append(Palavra(max(0.0, p.ini - ini), min(fim - ini, p.fim - ini), p.txt))
+    saida.sort(key=lambda p: (p.ini, p.fim))
+    for anterior, atual in zip(saida, saida[1:]):
+        if atual.ini < anterior.fim:
+            anterior.fim = max(anterior.ini + 0.05, atual.ini)
     return saida
 
 

@@ -51,11 +51,21 @@ class ServidorRetorno:
         class Tratador(BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802 (nome exigido pela biblioteca)
                 url = urlparse(self.path)
-                if url.path.rstrip("/") != servidor.caminho.rstrip("/"):
+                parametros = {k: v[0] for k, v in parse_qs(url.query).items()}
+                # só a volta da autorização conta: o favicon, uma pré-busca do navegador ou outra
+                # aba abrindo o endereço sem os parâmetros não podem encerrar o login
+                if url.path.rstrip("/") != servidor.caminho.rstrip("/") or not (
+                        {"state", "code", "error"} & set(parametros)):
                     self.send_response(404)
+                    self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
-                servidor.parametros = {k: v[0] for k, v in parse_qs(url.query).items()}
+                if servidor._recebido.is_set():  # a resposta já chegou: uma segunda não troca a primeira
+                    self.send_response(409)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                servidor.parametros = parametros
                 corpo = _PAGINA_OK.encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")

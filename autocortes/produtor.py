@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -10,7 +11,7 @@ import time
 from pathlib import Path
 
 from . import analise, criacao, edicao, ferramentas, ia, modelos_visuais, selecao
-from .config import Config
+from .config import RAIZ, Config
 from .db import agora, transacao
 from .midia import Interrompido
 from .planejador import fila, sem_cortes_possiveis, status_ocupam_horario
@@ -22,12 +23,37 @@ EXTENSOES = {
 }
 
 
+def _resolvido(caminho: Path) -> Path:
+    try:
+        return caminho.resolve()
+    except OSError:
+        return caminho.absolute()
+
+
+def _videos_da_pasta(cfg: Config, pasta: Path):
+    """Os vídeos da pasta de filmes, sem entrar numa pasta de dados (deste ou de outro perfil).
+
+    A validação do config já recusa uma pasta dentro da outra; isto cobre o resto (a pasta de
+    dados de outro perfil dentro da pasta de filmes deste), senão o AutoCortes recortava os
+    próprios cortes.
+    """
+    pular = {_resolvido(cfg.pasta_dados), _resolvido(RAIZ / "dados")}
+    for raiz, subpastas, arquivos in os.walk(pasta):
+        atual = Path(raiz)
+        if "autocortes.db" in arquivos or "autocortes.lock" in arquivos or _resolvido(atual) in pular:
+            subpastas[:] = []
+            continue
+        for nome in arquivos:
+            if os.path.splitext(nome)[1].lower() in EXTENSOES:
+                yield atual / nome
+
+
 def varrer_biblioteca(cfg: Config, conn: sqlite3.Connection) -> int:
     pasta = cfg.pasta_filmes
     pasta.mkdir(parents=True, exist_ok=True)
     encontrados: dict[str, Path] = {}
-    for p in pasta.rglob("*"):
-        if p.suffix.lower() not in EXTENSOES or not p.is_file():
+    for p in _videos_da_pasta(cfg, pasta):
+        if not p.is_file():
             continue
         try:
             st = p.stat()
@@ -210,7 +236,7 @@ class Produtor:
         if falta_estoque:
             criando = self.cfg["criacao"]["ativo"]
             ATIVIDADES.definir("Sem trechos novos: adicione filmes na pasta"
-                               + (" ou temas em pautas/temas.txt" if criando else ""))
+                               + (" ou temas em pautas/temas.txt" if criando else ""), ocioso=True)
             if time.time() - self._aviso_sem_conteudo > 6 * 3600:
                 self._aviso_sem_conteudo = time.time()
                 extra = f" (nem pautas em {criacao.pasta_pautas(self.cfg)})" if criando else ""
@@ -219,7 +245,7 @@ class Produtor:
                     "postando.", extra, self.cfg.pasta_filmes,
                 )
         else:
-            ATIVIDADES.definir(f"Estoque completo: {estoque} corte(s) editado(s) aguardando postagem")
+            ATIVIDADES.definir(f"Estoque completo: {estoque} corte(s) editado(s) aguardando postagem", ocioso=True)
         return False
 
     def _falha_ia(self, corte_id: int, erro: ia.ErroIA) -> None:
@@ -274,19 +300,18 @@ class Produtor:
             pauta = criacao.proxima_pauta(self.cfg, conn)
             if pauta is None:
                 return False
-        with TRAVA_EDICAO:  # uma produção de vídeo por vez, como a edição dos cortes
+        with TRAVA_EDICAO:  # uma produção de vídeo por vez, como a edição dos cortes (e o "Criar agora")
             ATIVIDADES.definir(f"Criando o vídeo '{pauta['titulo']}'")
             try:
-                if criacao.criar_do_banco(self.cfg, conn, pauta, self.parar) is None:
+                # retrato do config: salvar o visual no meio da criação não mistura dois modelos
+                if criacao.criar_do_banco(self.cfg.copia(), conn, pauta, self.parar) is None:
                     self._criacao_pausa_ate = time.time() + 300
             except Interrompido:
-                conn.execute("UPDATE filmes SET status='novo', atualizado_em=? WHERE id=?",
-                             (agora(), pauta["id"]))
-                raise
+                raise  # a pauta já voltou para 'novo'
             except Exception as e:  # noqa: BLE001 (uma pauta ruim não pode derrubar o motor)
+                # a pauta já ficou com o erro gravado (criacao.criar_do_banco)
                 log.error("Falha ao criar o vídeo de '%s': %s", pauta["titulo"], e, exc_info=True)
-                conn.execute("UPDATE filmes SET status='erro', erro=?, atualizado_em=? WHERE id=?",
-                             (str(e)[:500], agora(), pauta["id"]))
+                self._criacao_pausa_ate = time.time() + 300
         return True
 
     def minerar_mais(self, conn: sqlite3.Connection):
@@ -320,9 +345,15 @@ class Produtor:
                     (filme["id"],),
                 )
             ]
+            # o máximo é do filme inteiro: a mineração de mais trechos não passa dele
+            editados = conn.execute(
+                "SELECT COUNT(*) FROM cortes WHERE filme_id=? AND status IN ('renderizando', 'revisao', 'pronto', "
+                "'concluido')", (filme["id"],),
+            ).fetchone()[0]
+            vagas = max(0, int(self.cfg["cortes"]["max_por_filme"]) - editados)
             candidatos = selecao.gerar_candidatos(
-                self.cfg, a.info["duracao"], a.cenas, a.volume, a.falas, a.frases, ocupados=usados
-            )
+                self.cfg, a.info["duracao"], a.cenas, a.volume, a.falas, a.frases, ocupados=usados, limite=vagas
+            ) if vagas else []
             t = agora()
             with transacao(conn):
                 conn.execute("DELETE FROM cortes WHERE filme_id=? AND status='candidato'", (filme["id"],))
@@ -349,7 +380,8 @@ class Produtor:
         except Interrompido:
             conn.execute("UPDATE filmes SET status='novo', atualizado_em=? WHERE id=?", (agora(), filme["id"]))
             raise
-        except ferramentas.ErroDownload as e:
+        except (ferramentas.ErroDownload, analise.ErroTranscricao) as e:
+            # sem internet para baixar o modelo, ou a transcrição falhou: volta para a fila e tenta mais tarde
             tentativas = int(filme["tentativas"] or 0) + 1
             status = "novo" if tentativas < MAX_TENTATIVAS_ANALISE else "erro"
             log.warning("'%s': %s (tentativa %d de %d)", filme["titulo"], e, tentativas, MAX_TENTATIVAS_ANALISE)

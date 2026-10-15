@@ -6,10 +6,10 @@ const MENU = [
   ["agenda", "Agenda", "calendario"],
   ["cortes", "Cortes", "tesoura"],
   ["filmes", "Filmes", "filme"],
-  ["estudio", "Estúdio", "varinha"],
+  ["estudio", "Estúdio", "paleta"],
   ["criacao", "Criação", "varinha"],
   ["redes", "Redes sociais", "rede"],
-  ["perfis", "Perfis", "caixa"],
+  ["perfis", "Perfis", "pessoas"],
   ["config", "Configurações", "ajustes"],
   ["registro", "Registro", "terminal"],
 ];
@@ -23,15 +23,22 @@ let inicioClique = null;
 function contadorMenu(id, e) {
   if (!e) return null;
   const n = e.numeros;
-  if (id === "inicio" && n.tarefas) {
-    return { n: n.tarefas, titulo: `${plural(n.tarefas, "postagem", "postagens")} à mão esperando você` };
+  if (id === "inicio" && (n.tarefas || n.conferir)) {
+    const partes = [];
+    if (n.tarefas) partes.push(`${plural(n.tarefas, "postagem", "postagens")} à mão esperando você`);
+    if (n.conferir) partes.push(`${plural(n.conferir, "post", "posts")} a conferir`);
+    return { n: (n.tarefas || 0) + (n.conferir || 0), titulo: partes.join(" e ") };
+  }
+  if (id === "criacao") {
+    if (n.pautas_erro) return { n: n.pautas_erro, erro: true, titulo: `${plural(n.pautas_erro, "pauta", "pautas")} com erro` };
+    if (n.pautas_na_fila) return { n: n.pautas_na_fila, titulo: `${plural(n.pautas_na_fila, "pauta esperando", "pautas esperando")} virar vídeo` };
   }
   if (id === "cortes" && n.revisao) {
     return { n: n.revisao, titulo: `${plural(n.revisao, "corte aguardando", "cortes aguardando")} aprovação` };
   }
   if (id === "filmes") {
     if (n.filmes_erro) return { n: n.filmes_erro, erro: true, titulo: `${plural(n.filmes_erro, "filme", "filmes")} com erro na análise` };
-    if (n.filmes_na_fila) return { n: n.filmes_na_fila, titulo: `${plural(n.filmes_na_fila, "filme", "filmes")} na fila de análise` };
+    if (n.filmes_na_fila) return { n: n.filmes_na_fila, titulo: `${plural(n.filmes_na_fila, "filme esperando", "filmes esperando")} a análise` };
   }
   if (id === "redes") {
     const problemas = ORDEM_REDES.filter((r) => {
@@ -135,7 +142,8 @@ function agendarEstado() {
   clearTimeout(Estado.timer);
   if (App.encerrado || Estado.sessaoInvalida) return;
   const e = App.estado;
-  const movimento = e && (e.atividades.length || e.motor.parando);
+  // o recado de quem está esperando ("Estoque completo...") não é trabalho: não precisa de 2 em 2 s
+  const movimento = e && (e.atividades.some((a) => !a.ocioso) || e.motor.parando);
   let ms = movimento ? 2000 : 5000;
   if (App.offline) ms = 4000;
   if (document.hidden) ms = 15000;
@@ -157,6 +165,7 @@ async function navegar() {
     try { App.pagina.sair(); } catch (e) { console.error(e); }
   }
   const token = ++App.navegacao;
+  App.hashAtual = location.hash;
   App.nomePagina = nome;
   App.pagina = App.paginas[nome];
   paginaFalhou = false;
@@ -253,7 +262,7 @@ document.addEventListener("click", async (ev) => {
   const alvo = ev.target.closest("[data-acao]");
   if (!alvo) {
     const fundo = ev.target.closest("[data-fundo=modal]");
-    if (fundo && ev.target === fundo && inicioClique === fundo) fecharModal();
+    if (fundo && ev.target === fundo && inicioClique === fundo) pedirFecharModal();
     const chips = ev.target.closest(".chips");
     if (chips && !ev.target.closest("input, button")) {
       const entrada = chips.querySelector("[data-chips-entrada]");
@@ -297,12 +306,22 @@ document.addEventListener("keydown", (ev) => {
   }
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "s") {
     ev.preventDefault();
+    if (document.querySelector(".modal-fundo.sobreposto")) return; // uma confirmação está aberta
+    if (modal.aberto) {
+      // com uma janela aberta, o Ctrl+S salva o que está nela (o roteiro, a pauta...), nunca as Configurações por trás
+      if (modal.aoSalvar) Promise.resolve(modal.aoSalvar()).catch(erroToast);
+      return;
+    }
     if (contarPendentes()) salvarConfig();
+    return;
+  }
+  if (ev.key === "Tab" && (modal.aberto || document.querySelector(".modal-fundo.sobreposto"))) {
+    prenderFoco(ev);
     return;
   }
   if (ev.key === "Escape" && modal.aberto) {
     ev.preventDefault();
-    fecharModal();
+    pedirFecharModal();
     return;
   }
   if ((ev.key === "Enter" || ev.key === " ") && el.matches && el.matches('[role="button"][data-acao]')) {
@@ -329,7 +348,7 @@ document.addEventListener("wheel", (ev) => {
 
 /* ------------------------------------------------------------ ações globais */
 
-App.acoes["fechar-modal"] = () => fecharModal();
+App.acoes["fechar-modal"] = () => pedirFecharModal();
 
 App.acoes.pular = () => {
   const el = $("#conteudo");
@@ -439,15 +458,27 @@ function iniciarPainel() {
   document.body.appendChild(elementoDe(h`<div class="barra-salvar" id="barra-salvar" role="region" aria-label="Alterações não salvas"><span>${ic("alerta")}<span id="barra-salvar-texto"></span></span><div class="grupo-botoes"><button type="button" class="btn fantasma" data-acao="descartar-alteracoes">Descartar</button><button type="button" class="btn primario" data-acao="salvar-alteracoes" title="Salvar (Ctrl+S)">${ic("check")}Salvar</button></div></div>`));
   atualizarBarraSalvar();
   if (!location.hash.startsWith("#/")) history.replaceState(null, "", "#/inicio");
-  window.addEventListener("hashchange", () => {
-    if (location.hash.startsWith("#/")) navegar();
+  window.addEventListener("hashchange", async () => {
+    if (!location.hash.startsWith("#/")) return;
+    let protegido = false;
+    try { protegido = modal.aberto && Boolean(modal.protegido && modal.protegido()); } catch (e) { console.error(e); }
+    if (protegido) {
+      // a janela tem algo não salvo: fica na página enquanto pergunta, e só troca se você confirmar
+      const destino = location.hash;
+      if (App.hashAtual) history.replaceState(null, "", App.hashAtual);
+      if (!(await pedirFecharModal())) return;
+      history.replaceState(null, "", destino);
+    }
+    navegar();
   });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) atualizarEstado();
   });
   window.addEventListener("beforeunload", (ev) => {
     if (App.encerrado) return;
-    if (contarPendentes() || App.enviosAtivos) {
+    let janela = false;
+    try { janela = modal.aberto && Boolean(modal.protegido && modal.protegido()); } catch (e) { janela = false; }
+    if (contarPendentes() || App.enviosAtivos || janela) {
       ev.preventDefault();
       ev.returnValue = "";
     }

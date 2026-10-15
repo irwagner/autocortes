@@ -22,6 +22,8 @@ filmes/
 
 # testes temporários (_teste_*.py, _teste_*.js e as pastas deles)
 _teste*
+# capturas de tela de sessões de automação (têm o nome das contas)
+.playwright-cli/
 
 # cópia solta da moldura CineLink (a usada fica em molduras/)
 /template.png

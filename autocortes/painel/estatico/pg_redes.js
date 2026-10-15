@@ -7,11 +7,12 @@ const PERMISSOES_IG = "instagram_basic, instagram_content_publish, instagram_man
 // para o Reel sair também na Página do Facebook
 const PERMISSAO_PAGINA = "pages_manage_posts";
 const permissoesIg = () => (valor("instagram.pagina_facebook") ? `${PERMISSOES_IG}, ${PERMISSAO_PAGINA}` : PERMISSOES_IG);
+// curtos para caber no seletor; o que cada um implica vem no aviso e no guia logo abaixo
 const NOME_ENVIO = {
-  oficial: (info) => `API oficial do ${info.rotulo}`,
-  upload_post: () => "Upload-Post (pago, publica em público)",
-  navegador: () => "Pelo seu navegador (arriscado)",
-  manual: () => "À mão (você posta pelo app ou pelo site)",
+  oficial: () => "API oficial",
+  upload_post: () => "Upload-Post (pago)",
+  navegador: () => "Navegador (arriscado)",
+  manual: () => "À mão (pelo app)",
 };
 // redes que só aceitam a postagem à mão
 const ENVIO_FIXO = { kwai: "À mão, pelo app do Kwai" };
@@ -107,6 +108,21 @@ function avisoRede(rede, envio) {
   return "";
 }
 
+// tipo da pausa que o motor pôs na rede (publicador.ler_bloqueios)
+const TITULO_PAUSA_REDE = {
+  cota: "Pausada: limite de uso da rede",
+  recusas: "Pausada: vídeos recusados em seguida",
+  rede: "Sem resposta da rede: tento de novo sozinho",
+  configuracao: "Falta configurar",
+  bloqueio: "Parada: a rede bloqueou ou pediu verificação",
+};
+
+function quandoVoltaRede(b) {
+  if (!b) return "";
+  if (b.ate === null || b.ate === undefined) return b.tipo === "configuracao" ? "" : " Volta quando você testar a conta.";
+  return ` Volta ${fmtQuando(b.ate)}.`;
+}
+
 function statusContaHtml(r, envio) {
   let classe;
   let icone;
@@ -115,7 +131,11 @@ function statusContaHtml(r, envio) {
   if (!r.ativo) {
     classe = "pendente"; icone = "pausa"; titulo = "Desativada"; sub = "Ligue a chave acima para postar nesta rede.";
   } else if (r.bloqueada) {
-    classe = "erro"; icone = "erro"; titulo = "Pausada por um erro"; sub = r.bloqueada;
+    const b = r.bloqueio || {};
+    const passa = b.tipo === "rede";
+    classe = passa ? "pendente" : "erro"; icone = passa ? "relogio" : "erro";
+    titulo = TITULO_PAUSA_REDE[b.tipo] || "Pausada por um erro";
+    sub = `${r.bloqueada}.${quandoVoltaRede(b)}`;
   } else if (r.via === "manual") {
     classe = "ok"; icone = "ok"; titulo = "Postagem à mão";
     sub = r.tarefas ? `${plural(r.tarefas, "tarefa esperando", "tarefas esperando")} você no Início` : "Os horários viram tarefas no Início";
@@ -127,8 +147,10 @@ function statusContaHtml(r, envio) {
     if (r.gravando) { classe = "pendente"; icone = "microfone"; titulo = "Gravando o roteiro"; sub = "Poste um vídeo à mão na janela que abriu"; }
     else if (r.roteiro && r.roteiro.tem) {
       const erros = (r.roteiro.erros || []).length;
+      const avisos = (r.roteiro.avisos || []).length;
       sub += ` · roteiro de ${plural(r.roteiro.linhas, "ação", "ações")}`;
       if (erros) { classe = "erro"; icone = "erro"; sub += ` · ${plural(erros, "linha com problema", "linhas com problema")}`; }
+      else if (avisos) { classe = "pendente"; icone = "alerta"; sub += ` · ${plural(avisos, "ponto arriscado", "pontos arriscados")} (veja o roteiro)`; }
     } else if (r.pronta) sub += " · sem roteiro gravado: uso os passos que eu escrevi";
   } else if (r.pronta) {
     classe = "ok"; icone = "ok"; titulo = r.conta || "Pronta para postar"; sub = ROTULO_ENVIO[r.via] || r.via;
@@ -136,6 +158,7 @@ function statusContaHtml(r, envio) {
   } else {
     classe = "pendente"; icone = "alerta"; titulo = "Não conectada"; sub = r.motivo;
   }
+  if (r.ativo && r.conferir) sub += ` · ${plural(r.conferir, "post", "posts")} a conferir no Início`;
   const trocando = envio !== r.via ? h`<small class="aviso-inline">${ic("alerta")}Salve para trocar a forma de envio.</small>` : "";
   return h`<div class="status-conta ${classe}">${ic(icone)}<div><b>${titulo}</b><small title="${sub}">${sub}</small>${trocando}</div></div>`;
 }
@@ -241,6 +264,13 @@ function notaEnvio(rede, info, envio) {
 function cardRedeHtml(rede, r) {
   const info = REDES[rede];
   const envio = valor(`${rede}.envio`);
+  if (!valor(`${rede}.ativo`)) {
+    // desligada: cartão curto, sem o formulário e os avisos (a página passava de 2.600 px)
+    const via = ROTULO_ENVIO[envio] || envio;
+    return h`<div class="card card-rede desligada" style="--cor:${info.cor}">
+      <div class="card-topo"><div class="rede-titulo">${logoRede(rede)}<div><b>${info.nome}</b><small>Desligada · ${via}${r.conta ? ` · ${r.conta}` : ""}</small></div></div>${CONTROLES.switch({ chave: `${rede}.ativo`, rotulo: `Postar no ${info.rotulo}` })}</div>
+    </div>`;
+  }
   const aviso = avisoRede(rede, envio);
   const opcoes = opcoesRede(rede);
   const rodape = [];
@@ -298,7 +328,7 @@ function navegadorHtml() {
   return h`<div class="card card-navegador"><div class="card-topo"><h3>${ic("externo")}Postagem pelo navegador</h3>${usando.length ? badge([`Usada por ${usando.map((r) => REDES[r].rotulo).join(", ")}`, "aviso"], true) : badge(["Não usada", "neutro"], true)}</div>
     <div class="aviso-rede">${ic("alerta")}<span>Contraria os termos das redes, que só autorizam as APIs oficiais, e pode custar a conta. O AutoCortes não disfarça nada: sem forjar fingerprint, sem resolver captcha e sem proxy. Se a rede pedir verificação, o envio para e avisa você.</span></div>
     <p class="nota">O AutoCortes abre o Chrome com um perfil separado, em <code>dados/chrome</code>, onde você entra na conta uma vez. Depois ele preenche a página de envio da rede como se fosse você. Funciona no YouTube, TikTok, Instagram e Bilibili; o Kwai não tem envio pelo site.</p>
-    ${ensaio ? h`<div class="aviso-rede">${ic("info")}<span>Ensaio ligado: os envios preenchem tudo e <b>não publicam</b>, guardando uma imagem da tela em <code>dados/navegador</code>. A postagem fica registrada como recusada, com o motivo.</span></div>` : ""}
+    ${ensaio ? h`<div class="aviso-rede">${ic("info")}<span>Ensaio ligado: os envios preenchem tudo e <b>não publicam</b>, guardando uma imagem da tela em <code>dados/navegador</code>. A postagem fica registrada como ensaio, e o corte continua na fila para quando você desligar o ensaio.</span></div>` : ""}
     ${formulario([
       campo({ chave: "navegador.ensaio", tipo: "switch", rotulo: "Ensaio (não publica)", ajuda: "Preenche a página e para antes de publicar. Deixe ligado no primeiro teste de cada rede." }),
       campo({ chave: "navegador.visivel", tipo: "switch", rotulo: "Mostrar a janela", ajuda: "Precisa estar ligado para você entrar na conta. Desligado, o navegador roda escondido." }),
@@ -437,12 +467,17 @@ function avisoNavegadorHtml(rede, s) {
     <div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Fechar</button><button class="btn primario" data-acao="rede-testar" data-rede="${rede}">${ic("ok")}Testar a sessão</button></div></div>`;
 }
 
+/** Antes de conectar, testar ou gravar: salva só o que é desta rede e da forma de envio dela.
+    Salvar tudo levava junto o que você ainda estava testando no Estúdio ou nas Configurações. */
+async function salvarDaRede(el, rede) {
+  const partes = [rede, "navegador", "upload_post"];
+  if (vazio(pendentesDe(partes))) return true;
+  return ocupado(el, () => salvarConfig(partes));
+}
+
 App.acoes["rede-conectar"] = async (el) => {
   const rede = el.dataset.rede;
-  if (!vazio(App.pendente)) {
-    const salvo = await ocupado(el, salvarConfig);
-    if (!salvo) return;
-  }
+  if (!(await salvarDaRede(el, rede))) return;
   if (valor(`${rede}.envio`) === "navegador") {
     const s = await ocupado(el, () => post(`/redes/${rede}/login`));
     abrirModal({ titulo: `Entrar no ${REDES[rede].rotulo} pelo navegador`, largura: 560, corpo: avisoNavegadorHtml(rede, s) });
@@ -454,10 +489,7 @@ App.acoes["rede-conectar"] = async (el) => {
 
 App.acoes["rede-testar"] = async (el) => {
   const rede = el.dataset.rede;
-  if (!vazio(App.pendente)) {
-    const salvo = await ocupado(el, salvarConfig);
-    if (!salvo) return;
-  }
+  if (!(await salvarDaRede(el, rede))) return;
   if (valor(`${rede}.envio`) === "navegador") toast("Abrindo a página da rede no navegador...", "info");
   const r = await ocupado(el, () => post(`/redes/${rede}/testar`));
   if (modal.aberto) fecharModal();
@@ -467,7 +499,9 @@ App.acoes["rede-testar"] = async (el) => {
 
 /* ------------------------------------------------------------ aprender a postar */
 
-const Gravacao = { rede: null, timer: null };
+// sessao: número da gravação aberta agora. A janela de uma gravação antiga, ao fechar, não pode
+// cancelar a gravação que acabou de começar ("Gravar de novo" abria e já cancelava a nova).
+const Gravacao = { rede: null, timer: null, sessao: 0, passos: 0 };
 
 function marcasHtml(marcas) {
   const nomes = { titulo: "Título", descricao: "Descrição", legenda: "Legenda", tags: "Tags", fonte: "Fonte (转载来源)" };
@@ -475,6 +509,14 @@ function marcasHtml(marcas) {
 }
 
 const ICONE_PASSO = { arquivo: "video", clicar: "seta-dir", digitar: "texto", tecla: "terminal" };
+
+function camposGravacaoHtml(s) {
+  const achados = new Set((s.lista || []).map((p) => p.papel).filter(Boolean));
+  return h`<div class="marcas">${Object.keys(s.marcas || {}).map((papel) => badge([
+    `${NOME_PAPEL[papel] || papel}: ${achados.has(papel) ? "reconhecido" : "aguardando"}`,
+    achados.has(papel) ? "ok" : "neutro",
+  ], true))}</div>`;
+}
 
 function logGravacaoHtml(s) {
   const lista = s.lista || [];
@@ -490,16 +532,20 @@ function gravandoHtml(rede, s) {
     <p><span class="ponto-grava"></span>Gravando. Faça a postagem na janela do Chrome que abriu, do começo até publicar.</p>
     <ol class="passos">
       <li>Escolha o vídeo normalmente (qualquer vídeo seu serve).</li>
-      ${marcas ? h`<li>Esta rede tem mais de um campo de texto, então <b>cole estas marcas em vez de escrever</b> (clique para copiar), para eu saber qual é qual:${marcasHtml(s.marcas)}</li>`
+      ${marcas ? h`<li>Você pode <b>colar estas marcas nos campos de texto</b> (clique para copiar), para eu preencher cada um com o texto do corte:${marcasHtml(s.marcas)}</li>`
     : h`<li>Escreva a legenda normalmente, como você postaria de verdade. Aqui tem um campo de texto só, então eu descubro sozinho.</li>`}
       <li>Ajuste o resto como você quiser (privacidade, capa, opções) — eu repito igual.</li>
       <li>Clique em publicar e espere a confirmação aparecer na tela.</li>
       <li>Volte aqui e clique em <b>Terminei</b>.</li>
     </ol>
+    ${rede === "youtube" ? h`<p class="nota">No YouTube, cole <code>@@TAGS@@</code> no campo <b>Tags</b>, que aparece ao clicar em <b>Mostrar mais</b>. Título e descrição recebem suas marcas nos campos correspondentes.</p>` : ""}
+    <div class="rotulo-campo">Reconhecimento dos campos</div>
+    <div id="grava-campos">${camposGravacaoHtml(s)}</div>
     <div class="rotulo-campo">O que eu anotei até agora</div>
     <div id="grava-log">${logGravacaoHtml(s)}</div>
     <div class="grava-estado">${ic("lista")}<span id="grava-contagem">${plural(s.passos || 0, "passo anotado", "passos anotados")}</span><small id="grava-url">${(s.url || "").slice(0, 60)}</small></div>
     <div id="grava-erro">${s.erro ? h`<p class="erro-texto">${s.erro}</p>` : ""}</div>
+    <p class="nota">As marcas são opcionais: o roteiro é salvo mesmo se algum campo ficar sem identificação. Textos capturados sem marca reconhecida serão repetidos como foram digitados.</p>
     <p class="nota">Se um clique não aparecer na lista, repita ele na janela. O ${ic("alerta")} marca o passo sem âncora estável, que é o que quebra mais fácil. Campo de senha nunca é gravado.</p>
     <div class="acoes-modal">
       <button class="btn fantasma" data-acao="grava-cancelar" data-rede="${rede}">Cancelar</button>
@@ -512,24 +558,26 @@ function gravandoHtml(rede, s) {
 function pararGravacao() {
   clearTimeout(Gravacao.timer);
   Gravacao.rede = null;
+  Gravacao.passos = 0;
 }
 
-async function acompanharGravacao(rede) {
-  if (Gravacao.rede !== rede) return;
+async function acompanharGravacao(rede, sessao) {
+  if (Gravacao.rede !== rede || Gravacao.sessao !== sessao) return;
   let s;
   try {
     s = await api(`/redes/${rede}/gravar`);
   } catch (e) {
-    Gravacao.timer = setTimeout(() => acompanharGravacao(rede), 3000);
+    Gravacao.timer = setTimeout(() => acompanharGravacao(rede, sessao), 3000);
     return;
   }
-  if (Gravacao.rede !== rede) return;
+  if (Gravacao.rede !== rede || Gravacao.sessao !== sessao) return;
   desenharGravacao(s);
   if (s.erro) return;
-  Gravacao.timer = setTimeout(() => acompanharGravacao(rede), 1500);
+  Gravacao.timer = setTimeout(() => acompanharGravacao(rede, sessao), 1500);
 }
 
 function desenharGravacao(s) {
+  Gravacao.passos = s.passos || 0;
   const contagem = $("#grava-contagem");
   if (contagem) contagem.textContent = plural(s.passos || 0, "passo anotado", "passos anotados");
   const url = $("#grava-url");
@@ -540,26 +588,31 @@ function desenharGravacao(s) {
     if (montarSeMudou(log, logGravacaoHtml(s)) && antes) log.scrollTop = log.scrollHeight;
   }
   montarSeMudou($("#grava-erro"), s.erro ? h`<p class="erro-texto">${s.erro}</p>` : "");
+  montarSeMudou($("#grava-campos"), camposGravacaoHtml(s));
 }
 
 App.acoes["rede-gravar"] = async (el) => {
   const rede = el.dataset.rede;
-  if (!vazio(App.pendente)) {
-    const salvo = await ocupado(el, salvarConfig);
-    if (!salvo) return;
-  }
+  if (!(await salvarDaRede(el, rede))) return;
+  // a janela anterior (o resultado de outra gravação) fecha antes de a nova começar
+  fecharModal(true);
   const s = await ocupado(el, () => post(`/redes/${rede}/gravar`));
+  const sessao = ++Gravacao.sessao;
   Gravacao.rede = rede;
+  Gravacao.passos = s.passos || 0;
   abrirModal({
     titulo: `Aprender a postar no ${REDES[rede].rotulo}`,
     largura: 660,
     corpo: gravandoHtml(rede, s),
+    // fechar sem querer (Esc, clique fora) cancelaria a gravação com tudo que já foi anotado
+    protegido: () => Gravacao.sessao === sessao && Gravacao.rede === rede && Gravacao.passos > 0,
     aoFechar: () => {
+      if (Gravacao.sessao !== sessao) return; // outra gravação já tomou o lugar desta
       if (Gravacao.rede === rede) post(`/redes/${rede}/gravar/cancelar`).catch(() => {});
       pararGravacao();
     },
   });
-  Gravacao.timer = setTimeout(() => acompanharGravacao(rede), 2000);
+  Gravacao.timer = setTimeout(() => acompanharGravacao(rede, sessao), 2000);
 };
 
 const NOME_PAPEL = { titulo: "título", descricao: "descrição", legenda: "legenda", tags: "tags", fonte: "fonte" };
@@ -576,9 +629,15 @@ App.acoes["grava-fim"] = async (el) => {
     }
     if (r.faltando && r.faltando.length) {
       motivos.push(h`<p class="erro-texto">Não achei onde vai ${nomes(r.faltando)}. Cole a marca desse campo no lugar do texto.</p>`);
+      if (rede === "youtube" && r.faltando.includes("tags")) {
+        motivos.push(h`<p class="nota">Abra <b>Mostrar mais</b> no YouTube e cole <code>@@TAGS@@</code> no campo <b>Tags</b>.</p>`);
+      }
     }
     if (!r.tem_arquivo) {
       motivos.push(h`<p class="erro-texto">Não vi você escolher o vídeo. Escolha o vídeo na janela do AutoCortes, não em outra.</p>`);
+    }
+    if (r.erros && r.erros.length) {
+      motivos.push(h`<p class="erro-texto">${r.erros.map((erro) => h`${erro}<br>`)}</p>`);
     }
     const d = r.diagnostico;
     if (d) {
@@ -599,13 +658,15 @@ App.acoes["grava-fim"] = async (el) => {
     await App.paginas.redes.recarregar();
     return;
   }
+  const incompleto = (r.faltando || []).length > 0 || (r.estranhas || []).length > 0;
   tituloModal(`Roteiro do ${REDES[rede].rotulo} gravado`);
   montar(corpoModal(), h`<div class="login-espera">${ic("ok", "grande")}
     <p><b>${plural(r.passos, "passo gravado", "passos gravados")}</b>, incluindo a escolha do vídeo.</p>
     <p class="nota">Campos identificados: ${nomes(r.papeis) || "nenhum"}.${r.inferido ? h` O campo de <b>${NOME_PAPEL[r.inferido] || r.inferido}</b> eu descobri por eliminação, por ser o único campo de texto.` : ""}</p>
+    ${incompleto ? h`<p class="nota"><b>Salvei mesmo sem reconhecer todas as marcas.</b>${(r.faltando || []).length ? h` Campos sem identificação: ${nomes(r.faltando)}.` : ""}${(r.estranhas || []).length ? h` Marcas não reconhecidas: ${r.estranhas.join(", ")}.` : ""} Textos capturados sem marca reconhecida ficam fixos no roteiro. Você pode ajustar em <b>Ver o roteiro</b>.</p>` : ""}
     <p class="nota">Agora ligue o ensaio e poste um corte: ele repete estes passos e para antes de publicar.</p>
-    <div class="acoes-modal"><button class="btn primario" data-acao="fechar-modal">Entendi</button></div></div>`);
-  toast(`Roteiro do ${REDES[rede].rotulo} gravado com ${r.passos} passos`, "ok", 7000);
+    <div class="acoes-modal">${incompleto ? h`<button class="btn" data-acao="rede-roteiro" data-rede="${rede}">Ver o roteiro</button>` : ""}<button class="btn primario" data-acao="fechar-modal">Entendi</button></div></div>`);
+  toast(`Roteiro do ${REDES[rede].rotulo} gravado com ${r.passos} passos${incompleto ? " · alguns campos sem identificação" : ""}`, incompleto ? "info" : "ok", 7000);
   await App.paginas.redes.recarregar();
 };
 
@@ -640,14 +701,28 @@ function ajudaRoteiroHtml(comandos) {
   </div></details>`;
 }
 
+// o texto do roteiro como está salvo: a janela pergunta antes de fechar com mudança por salvar
+const RoteiroAberto = { rede: null, texto: "" };
+
+function problemasRoteiroHtml(r) {
+  if (!r) return "";
+  if (r.erros && r.erros.length) {
+    return h`<div class="aviso-rede">${ic("alerta")}<span>${r.erros.map((x) => h`${x}<br>`)}</span></div>`;
+  }
+  if (r.avisos && r.avisos.length) {
+    return h`<div class="aviso-rede">${ic("info")}<span><b>Funciona, mas é arriscado:</b><br>${r.avisos.map((x) => h`${x}<br>`)}</span></div>`;
+  }
+  return "";
+}
+
 function roteiroHtml(rede, d) {
   const r = d.resumo;
   const linhas = Math.max(14, Math.min(30, (d.texto || "").split("\n").length + 2));
   return h`<div class="editor-roteiro">
-    <p class="nota">Uma ação por linha, na ordem em que eu faço. Linha que começa com <code>#</code> é comentário e não faz nada, então dá para desligar um passo sem apagar. Precisa de um tempo em algum ponto? Ponha <code>esperar 5</code> ali.</p>
+    <p class="nota">Uma ação por linha, na ordem em que eu faço. Linha que começa com <code>#</code> é comentário e não faz nada, então dá para desligar um passo sem apagar. Precisa de um tempo em algum ponto? Ponha <code>esperar 5</code> ali. Ctrl+S salva.</p>
     ${ajudaRoteiroHtml(d.comandos)}
     <label class="campo"><span>Roteiro do ${REDES[rede].rotulo}</span><textarea id="roteiro-texto" rows="${linhas}" spellcheck="false" placeholder="Nenhum roteiro ainda. Grave um em Aprender a postar, ou escreva aqui.">${d.texto || ""}</textarea></label>
-    <div id="roteiro-erros">${r && r.erros && r.erros.length ? h`<div class="aviso-rede">${ic("alerta")}<span>${r.erros.map((x) => h`${x}<br>`)}</span></div>` : ""}</div>
+    <div id="roteiro-erros">${problemasRoteiroHtml(r)}</div>
     <p class="nota">${r ? h`${plural(r.linhas, "ação", "ações")}${r.papeis && r.papeis.length ? ` · escreve ${r.papeis.join(", ")}` : ""}` : "vazio"} · arquivo: <code class="caminho">${d.arquivo}</code></p>
     <div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Fechar</button><button class="btn primario" data-acao="roteiro-salvar" data-rede="${rede}">${ic("check")}Salvar o roteiro</button></div>
   </div>`;
@@ -656,7 +731,19 @@ function roteiroHtml(rede, d) {
 App.acoes["rede-roteiro"] = async (el) => {
   const rede = el.dataset.rede;
   const d = await ocupado(el, () => api(`/redes/${rede}/roteiro`));
-  abrirModal({ titulo: `Roteiro do ${REDES[rede].rotulo}`, largura: 860, corpo: roteiroHtml(rede, d) });
+  RoteiroAberto.rede = rede;
+  RoteiroAberto.texto = d.texto || "";
+  abrirModal({
+    titulo: `Roteiro do ${REDES[rede].rotulo}`,
+    largura: 860,
+    corpo: roteiroHtml(rede, d),
+    protegido: () => {
+      const area = $("#roteiro-texto");
+      return Boolean(area) && area.value.replace(/\r\n/g, "\n") !== RoteiroAberto.texto.replace(/\r\n/g, "\n");
+    },
+    aoSalvar: () => salvarRoteiroAberto(rede),
+    aoFechar: () => { RoteiroAberto.rede = null; RoteiroAberto.texto = ""; },
+  });
 };
 
 App.acoes["roteiro-inserir"] = (el) => {
@@ -670,20 +757,24 @@ App.acoes["roteiro-inserir"] = (el) => {
   area.selectionStart = area.selectionEnd = pos + quebra.length + linha.length + 1;
 };
 
-App.acoes["roteiro-salvar"] = async (el) => {
-  const rede = el.dataset.rede;
+async function salvarRoteiroAberto(rede, el = null) {
   const texto = ($("#roteiro-texto") || {}).value || "";
   try {
     const r = await ocupado(el, () => post(`/redes/${rede}/roteiro`, { texto }));
-    montar($("#roteiro-erros"), "");
-    toast(`Roteiro salvo: ${plural(r.resumo.linhas, "ação", "ações")}`, "ok");
+    RoteiroAberto.texto = texto;
+    montar($("#roteiro-erros"), problemasRoteiroHtml(r.resumo));
+    const avisos = (r.resumo && r.resumo.avisos) || [];
+    toast(`Roteiro salvo: ${plural(r.resumo.linhas, "ação", "ações")}${avisos.length ? ` · ${plural(avisos.length, "ponto arriscado", "pontos arriscados")}` : ""}`,
+      avisos.length ? "info" : "ok");
     await App.paginas.redes.recarregar();
   } catch (e) {
     const erros = (e.dados && e.dados.erros) || [String(e.message)];
     montar($("#roteiro-erros"), h`<div class="aviso-rede">${ic("alerta")}<span>${erros.map((x) => h`${x}<br>`)}</span></div>`);
     toast("Não salvei: veja o que está errado", "erro");
   }
-};
+}
+
+App.acoes["roteiro-salvar"] = (el) => salvarRoteiroAberto(el.dataset.rede, el);
 
 App.acoes["rede-roteiro-apagar"] = async (el) => {
   const rede = el.dataset.rede;
@@ -713,12 +804,12 @@ App.acoes["modo-real"] = async () => {
   const ok = await confirmar({ titulo: "Ativar a publicação real?", texto, botao: "Ativar" });
   if (!ok) return;
   definirValor("geral.simulacao", false);
-  if (await salvarConfig()) toast("Publicação real ativada");
+  if (await salvarConfig(["geral.simulacao"])) toast("Publicação real ativada");
 };
 
 App.acoes["modo-simulacao"] = async () => {
   definirValor("geral.simulacao", true);
-  if (await salvarConfig()) toast("Modo simulação ligado: nada será publicado", "info");
+  if (await salvarConfig(["geral.simulacao"])) toast("Modo simulação ligado: nada será publicado", "info");
 };
 
 App.acoes.copiar = async (el) => {

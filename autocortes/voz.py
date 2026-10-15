@@ -26,23 +26,20 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from xml.sax.saxutils import escape, unescape
-
-import requests
+from xml.sax.saxutils import escape, quoteattr, unescape
 
 from .config import Config
 from .legendas import Frase, Palavra, agrupar_frases
-from .midia import base_ffmpeg, duracao_arquivo, executar
+from .midia import ErroMidia, base_ffmpeg, duracao_arquivo, executar
 from .util import log
 from .websocket import ErroWebsocket, Websocket
 
-__all__ = ["ErroVoz", "Narracao", "VOZES_SUGERIDAS", "falar", "vozes"]
+__all__ = ["ErroVoz", "Narracao", "VOZES_SUGERIDAS", "falar", "validar_voz"]
 
 # ---- constantes do serviço do Edge (o navegador usa exatamente estas)
 TOKEN_CONFIAVEL = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
 BASE = "speech.platform.bing.com/consumer/speech/synthesize/readaloud"
 URL_WSS = f"wss://{BASE}/edge/v1?TrustedClientToken={TOKEN_CONFIAVEL}"
-URL_VOZES = f"https://{BASE}/voices/list?trustedclienttoken={TOKEN_CONFIAVEL}"
 VERSAO_EDGE = "143.0.3650.75"
 VERSAO_GEC = f"1-{VERSAO_EDGE}"
 AGENTE = (
@@ -57,7 +54,7 @@ TICKS_POR_SEGUNDO = 10_000_000
 EPOCA_WINDOWS = 11_644_473_600
 LIMITE_PEDACO = 4096  # bytes de texto por conexão, como o serviço espera
 
-# vozes neurais de pt-BR que o serviço oferece (o painel pode listar todas com vozes())
+# vozes neurais de pt-BR que o serviço oferece
 VOZES_SUGERIDAS = (
     ("pt-BR-AntonioNeural", "Antônio (masculina)"),
     ("pt-BR-FranciscaNeural", "Francisca (feminina)"),
@@ -66,7 +63,17 @@ VOZES_SUGERIDAS = (
 
 _CONTROLE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 _ESPACOS = re.compile(r"[ \t]+")
-_PAUSA = re.compile(r"\[\s*(?:pausa|pause)\s*:\s*(\d+(?:[.,]\d+)?)\s*s?\s*\]", re.I)
+# [pausa: 2s], [pausa 1,5 s], [pausa: 500ms], [Pausa: 2 segundos], [pause]... (sem número = 1 s)
+_PAUSA = re.compile(
+    r"\[\s*(?:pausa|pause)\s*:?\s*(\d+(?:[.,]\d+)?)?\s*(ms|milissegundos?|s|seg|segs|segundos?|sec|secs|seconds?)?\s*\]",
+    re.I,
+)
+# o que sobrar com cara de pausa (escrito de um jeito que eu não li) não pode ser falado em voz alta
+_PAUSA_SOBRANDO = re.compile(r"\[\s*paus[ae][^\]]{0,30}\]", re.I)
+# nome das vozes do serviço: pt-BR-AntonioNeural, en-US-AvaMultilingualNeural, sr-Latn-RS-NicholasNeural
+_NOME_VOZ = re.compile(r"^[a-z]{2,3}(?:-[A-Za-z]{2,4}){1,2}-[A-Za-z]+Neural$")
+_PROSODIA = {"ritmo": re.compile(r"^[+-]\d{1,3}%$"), "tom": re.compile(r"^[+-]\d{1,3}Hz$"),
+             "volume": re.compile(r"^[+-]\d{1,3}%$")}
 # o relógio do PC pode estar errado; o serviço recusa com 403 e o ajuste vem do cabeçalho Date
 _desvio_relogio = 0.0
 
@@ -146,20 +153,40 @@ def limpar(texto: str) -> str:
     return "\n".join(linha for linha in linhas if linha).strip()
 
 
+def validar_voz(voz: str) -> str | None:
+    """Motivo para o nome da voz não servir (None = serve). Vem da pauta, escrito à mão."""
+    if not _NOME_VOZ.match(str(voz or "")):
+        return (f"a voz \"{voz}\" não tem o formato das vozes do serviço (ex.: pt-BR-AntonioNeural, "
+                "pt-BR-FranciscaNeural)")
+    return None
+
+
 def _para_ssml(texto: str, voz: str, ritmo: str, tom: str, volume: str) -> str:
     """Um trecho de texto em SSML.
 
     Sem `<break>`: medido em set/2026, o endpoint do Read Aloud recusa o SSML inteiro com
     "SSML is invalid" quando ele aparece. As pausas são silêncio de verdade entre trechos,
-    montado depois (`_juntar`).
+    montado depois (`_juntar`). Os atributos vão escapados: o nome da voz vem da pauta.
     """
     corpo = escape(texto.replace("\n", " ").strip())
     return (
         "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='pt-BR'>"
-        f"<voice name='{voz}'>"
-        f"<prosody pitch='{tom}' rate='{ritmo}' volume='{volume}'>{corpo}</prosody>"
+        f"<voice name={quoteattr(voz)}>"
+        f"<prosody pitch={quoteattr(tom)} rate={quoteattr(ritmo)} volume={quoteattr(volume)}>{corpo}</prosody>"
         "</voice></speak>"
     )
+
+
+def _segundos_da_pausa(numero: str | None, unidade: str | None) -> float:
+    if not numero:
+        return 1.0
+    try:
+        valor = float(numero.replace(",", "."))
+    except ValueError:
+        return 1.0
+    if unidade and unidade.lower().startswith(("ms", "mili")):
+        valor /= 1000
+    return min(10.0, max(0.0, valor))
 
 
 def _dividir_no_limite(texto: str, limite: int = LIMITE_PEDACO) -> list[str]:
@@ -190,16 +217,14 @@ def blocos(texto: str, pausa_linha: float = 0.35) -> list[tuple[str, float]]:
     """
     saida: list[tuple[str, float]] = []
     for parte in re.split(r"\n+", texto):
+        parte = _PAUSA_SOBRANDO.sub(lambda m: m.group(0) if _PAUSA.fullmatch(m.group(0)) else "[pausa]", parte)
         pedacos_pausa = _PAUSA.split(parte)
-        # split com grupo devolve [texto, valor, texto, valor, ...]
-        for i in range(0, len(pedacos_pausa), 2):
+        # split com 2 grupos devolve [texto, número, unidade, texto, número, unidade, ...]
+        for i in range(0, len(pedacos_pausa), 3):
             trecho = pedacos_pausa[i].strip()
             silencio = 0.0
-            if i + 1 < len(pedacos_pausa):
-                try:
-                    silencio = min(10.0, max(0.0, float(str(pedacos_pausa[i + 1]).replace(",", "."))))
-                except ValueError:
-                    silencio = 0.0
+            if i + 2 < len(pedacos_pausa):
+                silencio = _segundos_da_pausa(pedacos_pausa[i + 1], pedacos_pausa[i + 2])
             if not trecho:
                 if silencio and saida:  # pausa sozinha na linha: soma na anterior
                     saida[-1] = (saida[-1][0], saida[-1][1] + silencio)
@@ -220,38 +245,6 @@ def _conf(cfg: Config) -> dict:
     return cfg["voz"]
 
 
-def vozes(cfg: Config, idioma: str = "pt") -> list[dict]:
-    """As vozes que o serviço oferece (para o painel escolher)."""
-    try:
-        r = requests.get(
-            f"{URL_VOZES}&Sec-MS-GEC={_sec_ms_gec()}&Sec-MS-GEC-Version={VERSAO_GEC}",
-            headers={"User-Agent": AGENTE, "Accept": "*/*"},
-            timeout=(10, 30),
-        )
-    except requests.RequestException as e:
-        raise ErroVoz(f"não consegui falar com o serviço de voz ({e.__class__.__name__})") from e
-    if r.status_code == 403 and _acertar_relogio({k.lower(): v for k, v in r.headers.items()}):
-        return vozes(cfg, idioma)
-    if r.status_code >= 400:
-        raise ErroVoz(f"o serviço de voz respondeu HTTP {r.status_code}")
-    try:
-        lista = r.json()
-    except ValueError as e:
-        raise ErroVoz("o serviço de voz respondeu em formato inesperado") from e
-    saida = []
-    for v in lista if isinstance(lista, list) else []:
-        nome = str(v.get("ShortName") or "")
-        if idioma and not nome.lower().startswith(idioma.lower()):
-            continue
-        saida.append({
-            "nome": nome,
-            "genero": "feminina" if str(v.get("Gender")) == "Female" else "masculina",
-            "idioma": str(v.get("Locale") or ""),
-            "rotulo": str(v.get("FriendlyName") or nome),
-        })
-    return sorted(saida, key=lambda v: v["nome"])
-
-
 def _cabecalho_e_corpo(dados: bytes, tamanho: int) -> tuple[dict, bytes]:
     cabecalhos = {}
     for linha in dados[:tamanho].split(b"\r\n"):
@@ -261,9 +254,9 @@ def _cabecalho_e_corpo(dados: bytes, tamanho: int) -> tuple[dict, bytes]:
     return cabecalhos, dados[tamanho + 2:]
 
 
-def _falar_pedaco(texto: str, voz: str, ritmo: str, tom: str, volume: str, tempo_limite: float,
-                  compensacao_ticks: int) -> tuple[bytes, list[Palavra]]:
-    """Uma conexão: devolve o MP3 e as palavras com tempo (em segundos, já compensados)."""
+def _falar_pedaco(texto: str, voz: str, ritmo: str, tom: str, volume: str,
+                  tempo_limite: float) -> tuple[bytes, list[Palavra]]:
+    """Uma conexão: devolve o MP3 e as palavras com tempo (em segundos, desde o começo do trecho)."""
     url = (f"{URL_WSS}&ConnectionId={uuid.uuid4().hex}"
            f"&Sec-MS-GEC={_sec_ms_gec()}&Sec-MS-GEC-Version={VERSAO_GEC}")
     ws = Websocket(url, timeout=tempo_limite, cabecalhos=_cabecalhos_wss(), rotulo="o serviço de voz")
@@ -298,7 +291,7 @@ def _falar_pedaco(texto: str, voz: str, ritmo: str, tom: str, volume: str, tempo
                         if meta.get("Type") != "WordBoundary":
                             continue
                         d = meta.get("Data") or {}
-                        ini = (int(d.get("Offset") or 0) + compensacao_ticks) / TICKS_POR_SEGUNDO
+                        ini = int(d.get("Offset") or 0) / TICKS_POR_SEGUNDO
                         dur = int(d.get("Duration") or 0) / TICKS_POR_SEGUNDO
                         txt = unescape(str(((d.get("text") or {}).get("Text")) or "")).strip()
                         if txt:
@@ -361,10 +354,17 @@ def falar(cfg: Config, texto: str, destino: Path, voz: str | None = None,
     limpo = limpar(texto)
     if not limpo:
         raise ErroVoz("não há texto para narrar", "conteudo")
-    voz = str(voz or conf.get("voz") or VOZES_SUGERIDAS[0][0])
-    ritmo = str(ritmo if ritmo is not None else conf.get("ritmo") or "+0%")
-    tom = str(conf.get("tom") or "+0Hz")
-    volume = str(conf.get("volume") or "+0%")
+    voz = str(voz or conf.get("voz") or VOZES_SUGERIDAS[0][0]).strip()
+    ritmo = str(ritmo if ritmo is not None else conf.get("ritmo") or "+0%").strip()
+    tom = str(conf.get("tom") or "+0Hz").strip()
+    volume = str(conf.get("volume") or "+0%").strip()
+    problema = validar_voz(voz)
+    if problema:
+        raise ErroVoz(problema, "conteudo")
+    for nome, valor in (("ritmo", ritmo), ("tom", tom), ("volume", volume)):
+        if not _PROSODIA[nome].match(valor):
+            raise ErroVoz(f"[voz].{nome} = \"{valor}\" não vale (ex.: {'+0Hz' if nome == 'tom' else '+10%'})",
+                          "config")
     tempo_limite = float(conf.get("tempo_limite_seg") or 120)
     pausa_linha = float(conf.get("pausa_linha_seg") or 0.35)
 
@@ -375,27 +375,45 @@ def falar(cfg: Config, texto: str, destino: Path, voz: str | None = None,
     silencios: list[float] = []
     palavras: list[Palavra] = []
     deslocamento = 0.0
-    try:
-        for n, (trecho, silencio) in enumerate(trechos):
+    ffprobe = cfg["ferramentas"]["ffprobe"]
+
+    def pedaco(trecho: str) -> tuple[bytes, list[Palavra]]:
+        """Um trecho, com uma nova tentativa quando o relógio do PC estava fora de hora."""
+        try:
             try:
-                audio, parte_palavras = _falar_pedaco(trecho, voz, ritmo, tom, volume, tempo_limite, 0)
+                return _falar_pedaco(trecho, voz, ritmo, tom, volume, tempo_limite)
             except ErroWebsocket as e:
                 if e.status == 403 and _acertar_relogio(e.cabecalhos):
-                    audio, parte_palavras = _falar_pedaco(trecho, voz, ritmo, tom, volume, tempo_limite, 0)
-                elif e.status == 401:
-                    raise ErroVoz("o serviço de voz recusou o pedido (401). Se continuar, troque de motor.",
-                                  "config") from e
-                else:
-                    raise ErroVoz(f"falha na narração: {e}") from e
+                    return _falar_pedaco(trecho, voz, ritmo, tom, volume, tempo_limite)
+                raise
+        except ErroWebsocket as e:
+            if e.status == 401:
+                raise ErroVoz("o serviço de voz recusou o pedido (401). Se continuar, troque de motor.",
+                              "config") from e
+            raise ErroVoz(f"falha na narração: {e}") from e
+        except (ValueError, OSError) as e:  # resposta torta ou conexão caída no meio
+            raise ErroVoz(f"falha na narração ({e.__class__.__name__}: {e})") from e
+
+    def medir(arquivo: Path, reserva: float) -> float:
+        try:
+            return duracao_arquivo(ffprobe, arquivo) or reserva
+        except ErroMidia:
+            return reserva
+
+    try:
+        for n, (trecho, silencio) in enumerate(trechos):
+            audio, parte_palavras = pedaco(trecho)
             if not audio:
                 raise ErroVoz("o serviço de voz não devolveu áudio")
             parte = destino.with_name(f"{destino.stem}.parte{n:03d}.mp3")
-            parte.write_bytes(audio)
+            try:
+                parte.write_bytes(audio)
+            except OSError as e:
+                raise ErroVoz(f"não consegui gravar a narração ({e})") from e
             temporarios.append(parte)
             silencios.append(silencio)
-            duracao_parte = duracao_arquivo(cfg["ferramentas"]["ffprobe"], parte)
-            if duracao_parte <= 0:  # taxa constante: dá para estimar pelos bytes
-                duracao_parte = len(audio) * 8 / BITS_POR_SEGUNDO
+            # MP3 de taxa constante: os bytes dão o tempo quando o ffprobe não consegue
+            duracao_parte = medir(parte, len(audio) * 8 / BITS_POR_SEGUNDO)
             for p in parte_palavras:
                 palavras.append(Palavra(round(p.ini + deslocamento, 3), round(p.fim + deslocamento, 3), p.txt))
             deslocamento += duracao_parte + silencio
@@ -409,9 +427,7 @@ def falar(cfg: Config, texto: str, destino: Path, voz: str | None = None,
         for p in temporarios:
             p.unlink(missing_ok=True)
 
-    duracao = duracao_arquivo(cfg["ferramentas"]["ffprobe"], destino)
-    if duracao <= 0:
-        duracao = deslocamento
+    duracao = medir(destino, deslocamento)
     frases = agrupar_frases(palavras) if palavras else []
     log.info("Narração de %.1f s em %.0f s (%d palavras em %d trecho(s), voz %s)", duracao,
              time.monotonic() - inicio, len(palavras), len(trechos), voz)

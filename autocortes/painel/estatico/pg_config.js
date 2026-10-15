@@ -44,7 +44,8 @@ const CFG_PESOS = [
 const CFG_VARS_TEXTO = ["{filme}", "{parte}", "{frase}", "{ano}", "{ano_parenteses}", "{hashtags}"];
 const CFG_COMANDO_OLLAMA = "ollama pull qwen3:4b-instruct-2507-q4_K_M";
 // mudanças que mostram ou escondem outros campos
-const CFG_REDESENHA = new Set(["geral.simulacao", "edicao.codec", "transcricao.fonte"]);
+// (estoque.fonte troca o campo da pasta pelo das chaves: sem redesenhar, o campo das chaves não aparecia)
+const CFG_REDESENHA = new Set(["geral.simulacao", "edicao.codec", "transcricao.fonte", "estoque.fonte"]);
 
 const PgConfig = {
   aba: "geral",
@@ -195,7 +196,8 @@ function cfgAbaCriacao() {
     itens.push(campo({ chave: "estoque.pasta", tipo: "texto", rotulo: "Pasta do material", placeholder: "material", ajuda: "Vídeos e imagens seus. Vazio = a pasta \"material\" ao lado do config." }));
   } else {
     const onde = fonte === "pexels" ? "pexels.com/api" : "pixabay.com/api/docs";
-    itens.push(campo({ chave: `estoque.${fonte}_chaves`, tipo: "chips", larga: true, rotulo: "Chaves da API", ajuda: `Pegue de graça em ${onde}. Várias chaves são alternadas, porque cada uma tem limite por hora.` }));
+    // as chaves são segredo: não voltam para a tela, e o campo novo troca a lista inteira
+    itens.push(campo({ chave: `estoque.${fonte}_chaves`, tipo: "senha", larga: true, rotulo: "Chaves da API", ajuda: `Pegue de graça em ${onde}. Para alternar várias (cada uma tem limite por hora), cole todas no campo separadas por vírgula. Ao trocar, cole a lista inteira de novo.` }));
   }
   itens.push(
     campo({ chave: "estoque.duracao_min_seg", tipo: "numero", min: 0, max: 60, sufixo: "s", rotulo: "Clipe mínimo", ajuda: "Clipe mais curto que isso não entra." }),
@@ -246,6 +248,9 @@ function cfgAbaSistema() {
     secao("Inicialização"),
     linhaCampo("Iniciar com o Windows", "Liga o AutoCortes em segundo plano quando você entra no Windows, sem abrir o navegador. Para ver o painel, abra o AutoCortes.bat.",
       h`<label class="switch"><input type="checkbox" id="sis-inicializacao" ${m.inicializacao ? raw("checked") : ""} aria-label="Iniciar com o Windows"><span></span></label>`),
+    m.inicializacao_outra
+      ? h`<p class="aviso-inline">${ic("alerta")}A inicialização do Windows aponta para outra pasta do AutoCortes (ele mudou de lugar?). Ligue a chave acima para ela abrir esta instalação.</p>`
+      : "",
     campo({ chave: "painel.abrir_navegador", tipo: "switch", rotulo: "Abrir o painel no navegador", ajuda: "Quando o AutoCortes é aberto pelo AutoCortes.bat." }),
     campo({ chave: "painel.porta", tipo: "numero", min: 1024, max: 65535, rotulo: "Porta do painel", ajuda: "O painel só aceita conexões deste computador. Vale depois de fechar e abrir o AutoCortes." }),
     cfgAvisoReinicio(),
@@ -430,7 +435,12 @@ async function cfgAlternarInicializacao(caixa) {
   caixa.disabled = true;
   try {
     const r = await post("/sistema/inicializacao", { ativo: pedido });
-    if (App.meta) App.meta.inicializacao = r.ativo;
+    if (App.meta) {
+      const avisava = App.meta.inicializacao_outra;
+      App.meta.inicializacao = r.ativo;
+      App.meta.inicializacao_outra = false; // ligar regrava a entrada; desligar apaga
+      if (avisava) cfgRedesenharFormulario();
+    }
     caixa.checked = r.ativo;
     toast(r.ativo ? "O AutoCortes vai ligar junto com o Windows" : "O AutoCortes não liga mais com o Windows");
   } catch (e) {

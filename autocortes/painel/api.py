@@ -23,10 +23,10 @@ from ..navegador import ErroNavegador
 from ..plataformas import ErroPublicacao, criar
 from ..plataformas import manual as tarefas_manual
 from ..plataformas.navegador import Gravacao
-from ..produtor import EXTENSOES, Produtor, escrever_textos_ia, varrer_biblioteca
-from ..publicador import MAX_TENTATIVAS_FACEBOOK, TRAVAS_REDE, Publicador
+from ..produtor import EXTENSOES, TRAVA_EDICAO, Produtor, escrever_textos_ia, varrer_biblioteca
+from ..publicador import MAX_TENTATIVAS_FACEBOOK, TRAVAS_REDE, Publicador, ler_bloqueios
 from ..textos import fonte_dos_textos, ler_metadados, montar_conteudo, texto_topo, textos_ia, titulo_do_arquivo
-from ..util import ATIVIDADES, LOG_MEMORIA, ler_json, log, salvar_json
+from ..util import ATIVIDADES, LOG_MEMORIA, escrever_atomico, ler_json, log, salvar_json
 from . import sistema
 from .erros import ErroHttp
 
@@ -105,6 +105,46 @@ def _contagem(conn: sqlite3.Connection, tabela: str) -> dict:
     return dict(conn.execute(f"SELECT status, COUNT(*) FROM {tabela} GROUP BY status").fetchall())
 
 
+def _contagem_filmes(conn: sqlite3.Connection, tipo: str = "filme") -> dict:
+    """Situação dos filmes (ou das pautas). Os dois moram na mesma tabela: contar tudo junto
+    mostrava as pautas como "filmes na fila de análise"."""
+    return dict(conn.execute("SELECT status, COUNT(*) FROM filmes WHERE tipo=? GROUP BY status", (tipo,)).fetchall())
+
+
+# O /estado é pedido a cada poucos segundos. O plano dos próximos dias e o resumo das redes (que
+# recria as plataformas e decifra os logins) ficam guardados por alguns segundos; qualquer POST do
+# painel joga fora o que estava guardado (`invalidar_cache`), então o que você muda aparece na hora.
+CACHE_ESTADO_SEG = 4.0
+_TRAVA_CACHE = threading.Lock()
+
+
+def _em_cache(painel, chave: str, calcular: Callable[[], Any]):
+    import copy
+
+    with _TRAVA_CACHE:
+        cache = getattr(painel, "cache_estado", None)
+        if cache is None:
+            cache = painel.cache_estado = {}
+        versao = getattr(painel, "versao_cache", 0)
+        item = cache.get(chave)
+        if item is not None and item[1] == versao and time.monotonic() - item[0] < CACHE_ESTADO_SEG:
+            return copy.deepcopy(item[2])
+    valor = calcular()
+    with _TRAVA_CACHE:
+        if getattr(painel, "versao_cache", 0) == versao:  # um POST no meio da conta: não guarda o que ficou velho
+            cache[chave] = (time.monotonic(), versao, copy.deepcopy(valor))
+    return valor
+
+
+def invalidar_cache(painel) -> None:
+    """Chamado depois de cada POST da API (ver servidor._tratar)."""
+    with _TRAVA_CACHE:
+        painel.versao_cache = getattr(painel, "versao_cache", 0) + 1
+        cache = getattr(painel, "cache_estado", None)
+        if cache:
+            cache.clear()
+
+
 def _urls(corte_id: int, arquivo: str | None, versao: float | None = None) -> tuple[str | None, str | None]:
     """URLs de vídeo e miniatura (a miniatura é gerada na hora se faltar)."""
     if not arquivo or not Path(arquivo).exists():
@@ -146,6 +186,12 @@ def _filme(conn: sqlite3.Connection, filme_id) -> sqlite3.Row:
     return linha
 
 
+# tarefas do painel em andamento (postar agora, editar, criar, IA, download): o encerramento espera
+# por elas, senão um envio era cortado no meio e ficava "enviando" até a próxima abertura
+_TAREFAS: set[threading.Thread] = set()
+_TRAVA_TAREFAS = threading.Lock()
+
+
 def _em_segundo_plano(nome: str, trabalho: Callable[[], None]) -> None:
     def rodar():
         try:
@@ -156,8 +202,30 @@ def _em_segundo_plano(nome: str, trabalho: Callable[[], None]) -> None:
             log.exception("Erro em tarefa do painel (%s)", nome)
         finally:
             ATIVIDADES.limpar()
+            with _TRAVA_TAREFAS:
+                _TAREFAS.discard(threading.current_thread())
 
-    threading.Thread(target=rodar, name=nome, daemon=True).start()
+    thread = threading.Thread(target=rodar, name=nome, daemon=True)
+    with _TRAVA_TAREFAS:
+        _TAREFAS.add(thread)
+    thread.start()
+
+
+def tarefas_rodando() -> list[str]:
+    with _TRAVA_TAREFAS:
+        return sorted(t.name for t in _TAREFAS if t.is_alive())
+
+
+def esperar_tarefas(prazo: float) -> list[str]:
+    """Espera as tarefas do painel terminarem, até o prazo. Devolve o nome das que ficaram rodando."""
+    limite = time.monotonic() + prazo
+    while True:
+        with _TRAVA_TAREFAS:
+            vivas = [t for t in _TAREFAS if t.is_alive()]
+        restante = limite - time.monotonic()
+        if not vivas or restante <= 0:
+            return sorted(t.name for t in vivas)
+        vivas[0].join(min(restante, 1.0))
 
 
 # ---------------------------------------------------------------- visão geral
@@ -168,27 +236,47 @@ def _facebook_ligado(cfg) -> bool:
     return bool(ig["ativo"] and ig["pagina_facebook"] and ig["envio"] in ("oficial", "upload_post"))
 
 
+def _bloqueios(ctx: Contexto) -> dict[str, dict]:
+    """Redes pausadas: as do banco (valem com o motor desligado) e as sem configuração, do motor."""
+    motor = ctx.painel.motor
+    memoria = dict(motor.publicador.bloqueadas) if motor.publicador is not None and motor.rodando else {}
+    return {**memoria, **ler_bloqueios(ctx.conn)}
+
+
 def _resumo_redes(ctx: Contexto) -> dict:
-    cfg, motor = ctx.cfg, ctx.painel.motor
-    bloqueadas = dict(motor.publicador.bloqueadas) if motor.publicador is not None and motor.rodando else {}
+    cfg = ctx.cfg
+    bloqueadas = _bloqueios(ctx)
     agora = datetime.now()
     esperando = dict(ctx.conn.execute(
         "SELECT plataforma, COUNT(*) FROM postagens WHERE status='aguardando' GROUP BY plataforma").fetchall())
+    a_conferir = dict(ctx.conn.execute(
+        "SELECT plataforma, COUNT(*) FROM postagens WHERE status='conferir' GROUP BY plataforma").fetchall())
     saida = {}
     for rede in PLATAFORMAS:
         plataforma = criar(rede, cfg)
         pronta, motivo = plataforma.pronta()
-        proximo = agenda.proximo_horario(cfg, rede, agora) if cfg[rede]["ativo"] else None
+        bloqueio = bloqueadas.get(rede)
+        proximo = None
+        if cfg[rede]["ativo"]:
+            # rede pausada: o próximo horário é o primeiro depois da pausa; parada até você
+            # resolver (login, conta, configuração), não há próximo
+            ate = bloqueio.get("ate") if bloqueio and not cfg.simulacao else 0
+            if ate is not None:
+                depois = max(agora, datetime.fromtimestamp(float(ate))) if ate else agora
+                proximo = agenda.proximo_horario(cfg, rede, depois)
         saida[rede] = {
             "ativo": bool(cfg[rede]["ativo"]),
             "via": plataforma.via,
             "pronta": pronta,
             "motivo": motivo,
             "conta": plataforma.conta(),
-            "bloqueada": bloqueadas.get(rede, (None, 0))[0],
+            "bloqueada": bloqueio.get("motivo") if bloqueio else None,
+            # tipo: bloqueio, cota, recusas, rede ou configuracao; ate None = até você testar a conta
+            "bloqueio": {k: bloqueio.get(k) for k in ("tipo", "desde", "ate", "motivo")} if bloqueio else None,
             "proximo": proximo.timestamp() if proximo else None,
             "por_semana": agenda.posts_por_semana(cfg, rede),
             "tarefas": esperando.get(rede, 0),
+            "conferir": a_conferir.get(rede, 0),
         }
         if rede == "instagram":
             saida[rede]["facebook"] = {
@@ -214,6 +302,24 @@ def _tarefas(conn: sqlite3.Connection, limite: int = 30) -> list[dict]:
         video, miniatura = _urls(p["corte_id"], p["arquivo"], p["renderizado_em"])
         itens.append({
             "id": p["id"], "rede": p["plataforma"], "horario": p["horario"], "quando": p["criado_em"],
+            "manual": bool(p["manual"]), "corte_id": p["corte_id"], "parte": p["parte"], "filme": p["filme"],
+            "video": video, "miniatura": miniatura,
+        })
+    return itens
+
+
+def _a_conferir(conn: sqlite3.Connection, limite: int = 30) -> list[dict]:
+    """Posts que a rede recebeu sem confirmar: você diz se saíram (nada é repetido sozinho)."""
+    itens = []
+    for p in conn.execute(
+        "SELECT p.id, p.plataforma, p.url, p.erro, p.criado_em, p.manual, c.id AS corte_id, c.parte, c.arquivo, "
+        "c.renderizado_em, f.titulo AS filme FROM postagens p JOIN cortes c ON c.id = p.corte_id "
+        "JOIN filmes f ON f.id = c.filme_id WHERE p.status='conferir' ORDER BY p.criado_em, p.id LIMIT ?",
+        (limite,),
+    ):
+        video, miniatura = _urls(p["corte_id"], p["arquivo"], p["renderizado_em"])
+        itens.append({
+            "id": p["id"], "rede": p["plataforma"], "url": p["url"], "erro": p["erro"], "quando": p["criado_em"],
             "manual": bool(p["manual"]), "corte_id": p["corte_id"], "parte": p["parte"], "filme": p["filme"],
             "video": video, "miniatura": miniatura,
         })
@@ -251,24 +357,32 @@ def _ultimas_postagens(conn: sqlite3.Connection, limite: int) -> list[dict]:
     return itens
 
 
-def _alertas(ctx: Contexto, filmes: dict, cortes: dict, cobertura: dict, redes: dict) -> list[dict]:
+def _alertas(ctx: Contexto, filmes: dict, cortes: dict, cobertura: dict, redes: dict, pautas: dict | None = None,
+             n_conferir: int | None = None) -> list[dict]:
     cfg, motor = ctx.cfg, ctx.painel.motor
     alertas: list[dict] = []
+    pautas = pautas or {}
 
     def add(nivel: str, texto: str, destino: str | None = None) -> None:
         alertas.append({"nivel": nivel, "texto": texto, "destino": destino})
 
     total_filmes = sum(v for k, v in filmes.items() if k != "ausente")
+    criando = bool(cfg["criacao"]["ativo"])
+    # com a criação ligada, pautas e temas também viram vídeo: sem filme nenhum ainda há o que postar
+    tem_o_que_criar = criando and (any(v for k, v in pautas.items() if k != "ausente") or bool(criacao.temas(cfg)))
     if not motor.rodando:
         add("aviso", "O motor está desligado: nada será editado nem postado.", "motor")
     if cfg.simulacao:
         add("info", "Modo simulação ligado: os vídeos são gerados, mas nada é publicado.", "redes")
     if cfg["agenda"]["pausado"]:
         add("aviso", "As postagens estão pausadas.", "agenda")
-    if total_filmes == 0:
-        add("aviso", "Nenhum filme na pasta. Adicione filmes para começar.", "filmes")
+    if total_filmes == 0 and not tem_o_que_criar:
+        add("aviso", "Nenhum filme na pasta nem tema na Criação. Adicione filmes ou temas para começar."
+            if criando else "Nenhum filme na pasta. Adicione filmes para começar.", "filmes")
     if filmes.get("erro"):
         add("erro", f"{filmes['erro']} filme(s) com erro na análise.", "filmes")
+    if pautas.get("erro"):
+        add("erro", f"{pautas['erro']} pauta(s) não viraram vídeo por causa de um erro.", "criacao")
     if cortes.get("revisao"):
         add("info", f"{cortes['revisao']} corte(s) aguardando sua aprovação.", "cortes?aba=revisao")
     ativas = [r for r, v in redes.items() if v["ativo"]]
@@ -276,17 +390,27 @@ def _alertas(ctx: Contexto, filmes: dict, cortes: dict, cobertura: dict, redes: 
         add("erro", "Nenhuma rede social ativa.", "redes")
     for rede in ativas:
         v = redes[rede]
-        if v["bloqueada"]:
-            add("erro", f"{ROTULOS[rede]} pausado: {v['bloqueada']}", "redes")
+        if v["bloqueada"] and not cfg.simulacao:
+            b = v["bloqueio"] or {}
+            quando = " até você testar a conta em Redes sociais" if b.get("ate") is None and b.get("tipo") != "configuracao" \
+                else (f" até {datetime.fromtimestamp(b['ate']).strftime('%d/%m %H:%M')}" if b.get("ate") else "")
+            add("erro", f"{ROTULOS[rede]} pausado{quando}: {v['bloqueada']}", "redes")
         elif not v["pronta"]:
             add("info" if cfg.simulacao else "erro", f"{ROTULOS[rede]}: {v['motivo']}.", "redes")
-    if "tiktok" in ativas and cfg["tiktok"]["privacidade"] == "SELF_ONLY" and redes["tiktok"]["via"] == "oficial":
+    conferir = n_conferir if n_conferir is not None else sum(v.get("conferir", 0) for v in redes.values())
+    if conferir:
+        add("aviso", f"{conferir} post(s) a conferir: a rede recebeu o vídeo, mas eu não vi a confirmação. "
+            "Diga se saiu no Início.", "inicio")
+    if "tiktok" in ativas and cfg["tiktok"]["privacidade"] == "SELF_ONLY":
         if redes["tiktok"]["via"] == "upload_post":
             add("aviso", "O TikTok posta pelo Upload-Post, mas a privacidade está em \"Só eu\". "
                 "Troque para \"Todos\" para publicar em público.", "redes")
-        else:
+        elif redes["tiktok"]["via"] == "oficial":
             add("info", "TikTok pela API oficial: os posts ficam visíveis só para você. Para postar em "
                 "público, use o envio pelo Upload-Post em Redes sociais.", "redes")
+    pelo_navegador = [r for r in ativas if redes[r]["via"] == "navegador"]
+    if pelo_navegador and cfg["navegador"]["ensaio"] and not cfg.simulacao:
+        add("info", "Ensaio ligado: o envio pelo navegador preenche tudo e para antes de publicar.", "redes")
     if "youtube" in ativas:
         limite = int(cfg["youtube"]["max_segundos"])
         if planejador.sem_cortes_possiveis(cfg, "youtube"):
@@ -309,13 +433,16 @@ def _alertas(ctx: Contexto, filmes: dict, cortes: dict, cobertura: dict, redes: 
                 "não foi para a Página do Facebook"
             add("aviso", f"O último Reel {texto}: {ultima['erro'] or 'erro sem detalhes'}", "redes")
     dias = cobertura.get("dias")
-    if dias is not None and dias < 3 and total_filmes:
+    if dias is not None and dias < 3 and (total_filmes or tem_o_que_criar):
         if dias < 1:
             quanto = "menos de 1 dia"
         else:
             numero = f"{dias:.1f}".rstrip("0").rstrip(".").replace(".", ",")  # 1,7 em vez de 1.7
             quanto = "só 1 dia" if numero == "1" else f"só {numero} dias"
-        add("aviso", f"Conteúdo para {quanto} de postagem. Adicione mais filmes.", "filmes")
+        if criando:
+            add("aviso", f"Conteúdo para {quanto} de postagem. Adicione mais filmes ou temas na Criação.", "criacao")
+        else:
+            add("aviso", f"Conteúdo para {quanto} de postagem. Adicione mais filmes.", "filmes")
     if cfg["transcricao"]["fonte"] != "nenhuma" and not ferramentas.caminho_modelo(cfg).exists():
         add("info", f"O modelo de transcrição '{cfg['transcricao']['modelo']}' será baixado na primeira análise.",
             "config?aba=transcricao")
@@ -330,20 +457,23 @@ def estado(ctx: Contexto):
     cfg, conn, motor = ctx.cfg, ctx.conn, ctx.painel.motor
     sucesso = planejador.status_sucesso(cfg)
     inicio_dia = datetime.combine(date.today(), dtime()).timestamp()
-    filmes = _contagem(conn, "filmes")
+    filmes = _contagem_filmes(conn, "filme")
+    pautas = _contagem_filmes(conn, "pauta")
     cortes = _contagem(conn, "cortes")
     hoje = dict(conn.execute(
         f"SELECT plataforma, COUNT(*) FROM postagens WHERE status IN ({_marc(sucesso)}) AND criado_em >= ? "
         "GROUP BY plataforma",
         (*sucesso, inicio_dia),
     ).fetchall())
-    plano = planejador.montar_plano(cfg, conn, dias=3)
+    plano = _em_cache(ctx.painel, "plano", lambda: planejador.montar_plano(cfg, conn, dias=3))
     proximos = [i for i in plano["itens"] if i["tipo"] == "horario" and i["estado"] != "perdido"][:6]
     _anexar_midia(conn, proximos)
-    redes = _resumo_redes(ctx)
+    redes = _em_cache(ctx.painel, "redes", lambda: _resumo_redes(ctx))
     cobertura = plano["cobertura"]
     na_fila = max((v["na_fila"] for v in cobertura["por_rede"].values()), default=cortes.get("pronto", 0))
     tarefas = _tarefas(conn)
+    # inclui o Reel da Página do Facebook, que não é uma das redes da agenda
+    n_conferir = conn.execute("SELECT COUNT(*) FROM postagens WHERE status='conferir'").fetchone()[0]
     return {
         "versao": __version__,
         "agora": time.time(),
@@ -355,22 +485,27 @@ def estado(ctx: Contexto):
             "filmes": sum(v for k, v in filmes.items() if k != "ausente"),
             "filmes_na_fila": filmes.get("novo", 0) + filmes.get("analisando", 0),
             "filmes_erro": filmes.get("erro", 0),
+            # vídeos criados do zero: pautas esperando virar vídeo (ou virando agora) e com erro
+            "pautas_na_fila": pautas.get("novo", 0) + pautas.get("criando", 0),
+            "pautas_erro": pautas.get("erro", 0),
             "na_fila": na_fila,
             "revisao": cortes.get("revisao", 0),
             "candidatos": cortes.get("candidato", 0) + cortes.get("renderizando", 0),
             "hoje": sum(hoje.values()),
             "hoje_por_rede": hoje,
             "tarefas": sum(v["tarefas"] for v in redes.values()),
+            "conferir": n_conferir,
         },
         "cobertura": cobertura,
         "proximos": proximos,
         "tarefas": tarefas,
+        "conferir": _a_conferir(conn),
         "ultimas": _ultimas_postagens(conn, 8),
         "atividades": sorted(ATIVIDADES.listar(), key=lambda a: a["desde"]),
         "redes": redes,
         "desempenho": metricas.resumo(conn),
         "ia": ia.disponivel(cfg),
-        "alertas": _alertas(ctx, filmes, cortes, cobertura, redes),
+        "alertas": _alertas(ctx, filmes, cortes, cobertura, redes, pautas, n_conferir),
     }
 
 
@@ -426,6 +561,8 @@ def _meta_config(ctx: Contexto) -> dict:
         "whisper_instalado": cli.exists() and vad.exists(),
         "fontes": sistema.fontes_disponiveis(cfg),
         "inicializacao": sistema.inicializacao_ativa(),
+        # a entrada da inicialização é de outra pasta (instalação movida): ligar de novo corrige
+        "inicializacao_outra": sistema.inicializacao_de_outra_pasta(),
         # placa de vídeo e o tamanho de modelo que cabe nela (dica na aba IA)
         "ia_hardware": sistema.info_ia(),
         "presets": agenda.PRESETS,
@@ -752,8 +889,10 @@ def enviar_moldura(ctx: Contexto):
 
     tamanho = _int(tratador.headers.get("Content-Length"), -1)
     _exigir(tamanho is not None and tamanho > 0, "Arquivo vazio ou sem tamanho informado", 411)
+    # grande demais: o servidor lê e descarta o corpo antes de responder (até 256 MB)
     _exigir(tamanho <= LIMITE_MOLDURA, "Imagem grande demais (máximo 30 MB)", 413)
     # lê tudo antes de validar: assim a resposta de erro chega ao navegador em vez de derrubar a conexão
+    tratador._corpo_lido = True
     corpo = tratador.rfile.read(tamanho)
     _exigir(len(corpo) == tamanho, "O envio foi interrompido")
     tratador.close_connection = False
@@ -908,8 +1047,9 @@ def listar_cortes(ctx: Contexto):
     filme = _int(ctx.consulta.get("filme"))
     limite = max(1, min(400, _int(ctx.consulta.get("limite"), 150)))
     ativas = cfg.plataformas_ativas()
-    # a tarefa à mão ainda não foi postada: o corte continua em "Na fila" até você marcar
-    ultima, feitas = _postagens_por_corte(conn, set(planejador.status_concluidos(cfg)) - {"aguardando"})
+    # a tarefa à mão ainda não foi postada, e o post a conferir pode não ter saído: o corte continua
+    # em "Na fila" até você marcar
+    ultima, feitas = _postagens_por_corte(conn, set(planejador.status_concluidos(cfg)) - {"aguardando", "conferir"})
 
     sql = ("SELECT c.*, f.titulo AS filme_titulo, f.ano AS filme_ano, f.tipo AS filme_tipo "
            "FROM cortes c JOIN filmes f ON f.id = c.filme_id"
@@ -1031,13 +1171,21 @@ def acao_corte(ctx: Contexto, corte_id):
     criado = c["filme_tipo"] == "pauta"  # vídeo criado do zero: quem regera é a pauta, não o editor de cortes
     if criado and acao in ("reeditar", "editar_agora", "restaurar"):
         raise ErroHttp(400, "Este vídeo foi criado de uma pauta: use \"Criar de novo\" para gerar outro")
+    if acao in ("descartar", "reeditar", "recriar"):
+        # o arquivo está subindo para uma rede agora: apagar no meio não desfaz o post
+        _exigir(not conn.execute("SELECT 1 FROM postagens WHERE corte_id=? AND status='enviando' LIMIT 1",
+                                 (c["id"],)).fetchone(),
+                "Este vídeo está sendo enviado agora. Espere o envio terminar.", 409)
     if acao == "recriar":
         _exigir(criado, "Só vídeo criado de uma pauta pode ser gerado de novo")
+        _exigir(status in ("revisao", "pronto", "erro", "descartado"),
+                "Este vídeo não pode ser criado de novo agora (ele já saiu ou está sendo postado)")
         _apagar_arquivos(c["arquivo"])
         _resolver_tarefas_do_corte(ctx, c["id"], pular="vídeo vai ser criado de novo")
         conn.execute("UPDATE cortes SET status='descartado', arquivo=NULL WHERE id=?", (c["id"],))
         conn.execute(
-            "UPDATE filmes SET status='novo', esgotado=0, erro=NULL, tentativas=0, atualizado_em=? WHERE id=?",
+            "UPDATE filmes SET status='novo', esgotado=0, erro=NULL, tentativas=0, atualizado_em=? "
+            "WHERE id=? AND status != 'criando'",
             (time.time(), c["filme_id"]),
         )
         log.info("Pauta '%s' vai gerar outro vídeo (o corte %s foi descartado)", c["filme_titulo"], c["id"])
@@ -1130,6 +1278,13 @@ def postar_corte(ctx: Contexto, corte_id):
     if not cfg.simulacao and not a_mao:
         pronta, motivo = criar(base, cfg).pronta()
         _exigir(pronta, f"{ROTULOS[base]}: {motivo}")
+        # a rede pausada pelo motor também vale aqui: "postar agora" não fura um bloqueio
+        bloqueio = ler_bloqueios(ctx.conn).get(base)
+        if bloqueio and bloqueio.get("tipo") != "rede":
+            ate = bloqueio.get("ate")
+            quando = ("até você testar a conta em Redes sociais" if ate is None
+                      else f"até {datetime.fromtimestamp(ate).strftime('%d/%m %H:%M')}")
+            raise ErroHttp(409, f"O {ROTULOS[base]} está pausado {quando}: {bloqueio.get('motivo')}")
     _exigir(not TRAVAS_REDE[rede].locked(), f"Já existe um envio para o {ROTULOS[rede]} em andamento", 409)
     if c["status"] == "revisao":  # postar na mão também aprova
         ctx.conn.execute("UPDATE cortes SET status='pronto' WHERE id=?", (c["id"],))
@@ -1211,6 +1366,38 @@ def _fechar_tarefa(ctx: Contexto, tarefa_id, status: str, url: str | None = None
     tarefas_manual.apagar_copias(ctx.cfg, t["plataforma"], t["id"])
     Publicador(ctx.cfg, ctx.painel.encerrar).atualizar_concluidos(ctx.conn)
     return {"ok": True, "id": t["id"], "rede": t["plataforma"], "estado": status}
+
+
+@rota("POST", r"/postagens/(\d+)/conferir")
+def conferir_postagem(ctx: Contexto, postagem_id):
+    """Você conferiu na rede o post que eu não vi sair.
+
+    Saiu: fica publicado (com o link, se você colar). Não saiu: conta como uma falha e o corte
+    volta para a fila daquela rede.
+    """
+    saiu = ctx.corpo.get("saiu")
+    _exigir(isinstance(saiu, bool), "Diga se o post saiu")
+    url = str(ctx.corpo.get("url") or "").strip()
+    _exigir(not url or bool(re.fullmatch(r"https://[^\s<>\"']{4,490}", url)),
+            "O link do post deve começar com https:// (ou deixe em branco)")
+    p = ctx.conn.execute("SELECT id, plataforma, erro FROM postagens WHERE id=?", (int(postagem_id),)).fetchone()
+    _exigir(p is not None, "Postagem não encontrada", 404)
+    if saiu:
+        feito = ctx.conn.execute(
+            "UPDATE postagens SET status='publicado', url=COALESCE(?, url), erro=?, atualizado_em=? "
+            "WHERE id=? AND status='conferir'",
+            (url or None, "você conferiu na rede: saiu", time.time(), p["id"]),
+        ).rowcount
+    else:
+        feito = ctx.conn.execute(
+            "UPDATE postagens SET status='falhou', erro=?, atualizado_em=? WHERE id=? AND status='conferir'",
+            (f"Você conferiu na rede: não saiu. {p['erro'] or ''}".strip()[:600], time.time(), p["id"]),
+        ).rowcount
+    _exigir(feito == 1, "Este post já foi conferido", 409)
+    Publicador(ctx.cfg, ctx.painel.encerrar).atualizar_concluidos(ctx.conn)
+    log.info("%s: você conferiu o post %s (%s)", ROTULOS.get(p["plataforma"], p["plataforma"]), p["id"],
+             "saiu" if saiu else "não saiu; o corte volta para a fila")
+    return {"ok": True, "id": p["id"], "rede": p["plataforma"], "estado": "publicado" if saiu else "falhou"}
 
 
 @rota("POST", r"/tarefas/(\d+)/feito")
@@ -1304,6 +1491,8 @@ def acao_filme(ctx: Contexto, filme_id):
     f = _filme(conn, filme_id)
     acao = ctx.corpo.get("acao")
     caminho = Path(f["caminho"])
+    # a pauta mora na mesma tabela, mas não tem análise: reanalisar apagaria a pasta errada
+    _exigir(f["tipo"] == "filme" or acao == "mostrar", "Isto é uma pauta de vídeo criado: use a tela Criação")
     if acao in ("reanalisar", "reanalisar_tudo"):
         _exigir(f["status"] != "analisando", "O filme está sendo analisado agora")
         conn.execute("DELETE FROM cortes WHERE filme_id=? AND status='candidato'", (f["id"],))
@@ -1340,12 +1529,18 @@ def acao_filme(ctx: Contexto, filme_id):
 def meta_filme(ctx: Contexto, filme_id):
     conn = ctx.conn
     f = _filme(conn, filme_id)
+    _exigir(f["tipo"] == "filme", "Isto é uma pauta de vídeo criado: edite o texto dela na tela Criação")
     caminho = Path(f["caminho"])
     titulo = str(ctx.corpo.get("titulo") or "").strip()[:150]
     ano_txt = str(ctx.corpo.get("ano") or "").strip()
+    _exigir(not ano_txt or bool(re.fullmatch(r"\d{4}", ano_txt)), "O ano deve ter 4 números (ex.: 1999)")
     ano = _int(ano_txt) if ano_txt else None
     _exigir(ano is None or 1880 <= ano <= 2100, "Ano inválido")
-    hashtags = [str(h).strip() for h in (ctx.corpo.get("hashtags") or []) if str(h).strip()][:20]
+    brutas = ctx.corpo.get("hashtags") or []
+    _exigir(isinstance(brutas, list), "As hashtags devem vir em lista")
+    # "#filme de terror" viraria #filme mais o texto solto: espaço e # repetido saem
+    hashtags = list(dict.fromkeys("#" + t for t in (re.sub(r"[\s#]+", "", str(h)) for h in brutas) if t))[:20]
+    _exigir(all(len(t) <= 61 for t in hashtags), "Hashtag comprida demais (máximo 60 letras)")
     idioma = str(ctx.corpo.get("idioma") or "").strip().lower()
     _exigir(idioma in ("", "auto") or bool(re.fullmatch(r"[a-z]{2,3}", idioma)), "Idioma inválido")
     _gravar_meta(caminho, {
@@ -1372,13 +1567,21 @@ def _nome_seguro(nome: str) -> str:
     return base[:150] + extensao[:10]
 
 
-def _sem_colisao(destino: Path) -> Path:
-    if not destino.exists():
-        return destino
-    for n in range(2, 1000):
-        candidato = destino.with_name(f"{destino.stem} ({n}){destino.suffix}")
-        if not candidato.exists():
-            return candidato
+def _mover_sem_trocar(origem: Path, destino: Path) -> Path:
+    """Põe o arquivo no lugar com o primeiro nome livre ("nome (2).mp4"...), sem nunca trocar outro.
+
+    No Windows, os.rename falha se o destino existir: dois envios com o mesmo nome ao mesmo tempo
+    não gravam um por cima do outro.
+    """
+    for n in range(1, 1000):
+        candidato = destino if n == 1 else destino.with_name(f"{destino.stem} ({n}){destino.suffix}")
+        if candidato.exists():
+            continue
+        try:
+            os.rename(origem, candidato)
+        except FileExistsError:
+            continue
+        return candidato
     raise ErroHttp(409, "Já existem arquivos demais com esse nome")
 
 
@@ -1388,29 +1591,53 @@ def enviar_filme(ctx: Contexto):
     tratador.close_connection = True  # em caso de erro não sobra corpo não lido na conexão
     from urllib.parse import unquote
 
-    nome = _nome_seguro(unquote(tratador.headers.get("X-Nome-Arquivo", "")))
     tamanho = _int(tratador.headers.get("Content-Length"), -1)
-    _exigir(tamanho is not None and tamanho > 0, "Arquivo vazio ou sem tamanho informado", 411)
-    _exigir(tamanho <= LIMITE_UPLOAD, "Arquivo grande demais", 413)
-    extensao = Path(nome).suffix.lower()
-    _exigir(extensao in EXTENSOES or extensao == ".srt", f"Formato não suportado: {extensao or 'sem extensão'}")
     pasta = cfg.pasta_filmes
-    pasta.mkdir(parents=True, exist_ok=True)
-    _exigir(shutil.disk_usage(pasta).free > tamanho + 512 * 1024**2, "Espaço insuficiente no disco", 507)
-
-    destino = _sem_colisao(pasta / nome)
-    parcial = destino.with_name(destino.name + ".parcial")
-    recebido = 0
     try:
-        with open(parcial, "wb") as arquivo:
+        nome = _nome_seguro(unquote(tratador.headers.get("X-Nome-Arquivo", "")))
+        _exigir(tamanho is not None and tamanho > 0, "Arquivo vazio ou sem tamanho informado", 411)
+        _exigir(tamanho <= LIMITE_UPLOAD, "Arquivo grande demais", 413)
+        extensao = Path(nome).suffix.lower()
+        _exigir(extensao in EXTENSOES or extensao == ".srt", f"Formato não suportado: {extensao or 'sem extensão'}")
+        pasta.mkdir(parents=True, exist_ok=True)
+        _exigir(shutil.disk_usage(pasta).free > tamanho + 512 * 1024**2, "Espaço insuficiente no disco", 507)
+    except (ErroHttp, OSError) as e:
+        # recusado antes de começar: o arquivo é lido e jogado fora, senão o navegador não vê a mensagem
+        tratador.descartar_corpo(maximo=LIMITE_UPLOAD, prazo=600)
+        if isinstance(e, OSError):
+            raise ErroHttp(500, f"Não consegui usar a pasta de filmes ({pasta}): {e}") from e
+        raise
+
+    parcial = pasta / f".envio-{secrets.token_hex(6)}.parcial"
+    try:
+        arquivo = open(parcial, "wb")
+    except OSError as e:
+        tratador.descartar_corpo(maximo=LIMITE_UPLOAD, prazo=600)
+        raise ErroHttp(500, f"Não consegui criar o arquivo na pasta de filmes ({pasta}): {e}") from e
+    tratador._corpo_lido = True  # daqui em diante esta rota lê o corpo inteiro, mesmo se der erro
+    recebido = 0
+    erro_disco: OSError | None = None
+    try:
+        try:
             while recebido < tamanho:
                 bloco = tratador.rfile.read(min(1024 * 1024, tamanho - recebido))
                 if not bloco:
                     break
-                arquivo.write(bloco)
                 recebido += len(bloco)
+                if erro_disco is None:
+                    try:
+                        arquivo.write(bloco)
+                    except OSError as e:
+                        erro_disco = e  # continua lendo até o fim, para a mensagem chegar ao navegador
+        finally:
+            try:
+                arquivo.close()
+            except OSError as e:
+                erro_disco = erro_disco or e
+        if erro_disco is not None:
+            raise ErroHttp(507, f"Não consegui gravar o arquivo na pasta de filmes: {erro_disco}")
         _exigir(recebido == tamanho, "O envio foi interrompido")
-        os.replace(parcial, destino)
+        destino = _mover_sem_trocar(parcial, pasta / nome)
     except BaseException:
         parcial.unlink(missing_ok=True)
         raise
@@ -1518,7 +1745,7 @@ def iniciar_login(ctx: Contexto, rede):
             if len(paginas) == 1:
                 sessao.mensagem = plataforma.salvar_pagina(paginas[0])
                 sessao.estado = "ok"
-                painel.motor.rede_atualizada(rede)
+                painel.motor.rede_atualizada(rede, persistente=True)
                 log.info("Instagram conectado: %s", sessao.mensagem)
             else:
                 sessao.paginas, sessao.estado = paginas, "escolher"
@@ -1539,7 +1766,7 @@ def iniciar_login(ctx: Contexto, rede):
             p = login.servidor.esperar(login.estado, timeout=600)
             sessao.mensagem = plataforma.concluir_login(p["code"], login.servidor.redirect_uri, login.verificador)
             sessao.estado = "ok"
-            painel.motor.rede_atualizada(rede)
+            painel.motor.rede_atualizada(rede, persistente=True)
             log.info("%s conectado: %s", ROTULOS[rede], sessao.mensagem)
         except ErroPublicacao as e:
             if sessao.estado != "cancelado":
@@ -1581,7 +1808,7 @@ def escolher_conta(ctx: Contexto):
     except ErroPublicacao as e:
         raise ErroHttp(400, str(e)) from e
     sessao.estado, sessao.paginas = "ok", []
-    ctx.painel.motor.rede_atualizada("instagram")
+    ctx.painel.motor.rede_atualizada("instagram", persistente=True)
     log.info("Instagram conectado: %s", sessao.mensagem)
     return sessao.publico()
 
@@ -1684,9 +1911,7 @@ def salvar_roteiro(ctx: Contexto, rede):
     instrucoes, erros = roteiro.analisar(texto, rede)
     if erros:
         raise ErroHttp(400, "O roteiro tem linhas que eu não consigo executar", {"erros": erros})
-    destino = gravador.arquivo_roteiro(ctx.cfg, rede)
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    destino.write_text(texto if texto.endswith("\n") else texto + "\n", encoding="utf-8")
+    gravador.gravar_roteiro(ctx.cfg, rede, texto.replace("\r\n", "\n"))
     log.info("%s: roteiro editado pelo painel (%d linhas de ação)", ROTULOS[rede], len(instrucoes))
     return {"ok": True, "resumo": roteiro.resumo(texto, rede)}
 
@@ -1703,7 +1928,8 @@ def testar_rede(ctx: Contexto, rede):
     except ErroPublicacao as e:
         raise ErroHttp(400, str(e)) from e
     plataforma.lembrar_conta(conta)
-    ctx.painel.motor.rede_atualizada(rede)
+    # a conta respondeu: vale até para o bloqueio que não passa sozinho (verificação, conta restrita)
+    ctx.painel.motor.rede_atualizada(rede, persistente=True)
     return {"conta": conta}
 
 
@@ -1791,7 +2017,7 @@ def listar_pautas(ctx: Contexto):
     criacao_mod = criacao
     linhas = conn.execute(
         "SELECT * FROM filmes WHERE tipo='pauta' "
-        "ORDER BY CASE status WHEN 'erro' THEN 0 WHEN 'novo' THEN 1 ELSE 2 END, id DESC"
+        "ORDER BY CASE status WHEN 'erro' THEN 0 WHEN 'criando' THEN 1 WHEN 'novo' THEN 2 ELSE 3 END, id DESC"
     ).fetchall()
     fonte = str(cfg["estoque"]["fonte"])
     if fonte == "pasta":
@@ -1802,9 +2028,13 @@ def listar_pautas(ctx: Contexto):
         material = {"fonte": fonte, "ok": material_ok, "pasta": str(pasta_material)}
     else:
         material = {"fonte": fonte, "ok": bool(cfg["estoque"][f"{fonte}_chaves"]), "pasta": ""}
+    temas_texto, temas_versao = criacao_mod.ler_temas_cru(cfg)
     return {
         "pautas": [_pauta_json(cfg, conn, f) for f in linhas],
         "temas": criacao_mod.temas(cfg),
+        # o arquivo como está, com os comentários e os "# feito:" (é ele que a caixa edita)
+        "temas_texto": temas_texto,
+        "temas_versao": temas_versao,
         "pasta": str(criacao_mod.pasta_pautas(cfg)),
         "arquivo_temas": criacao_mod.ARQUIVO_TEMAS,
         "ativo": bool(cfg["criacao"]["ativo"]),
@@ -1852,6 +2082,10 @@ def ler_pauta_painel(ctx: Contexto, pauta_id):
     dados = _pauta_json(ctx.cfg, ctx.conn, f)
     dados["texto"] = caminho.read_text(encoding="utf-8-sig") if caminho.is_file() else ""
     dados["caminho"] = str(caminho)
+    try:
+        dados["avisos"] = criacao.ler_pauta(caminho).avisos if caminho.is_file() else []
+    except criacao.ErroCriacao:
+        dados["avisos"] = []
     return dados
 
 
@@ -1861,15 +2095,14 @@ def salvar_pauta_painel(ctx: Contexto, pauta_id):
     f = _pauta(conn, pauta_id)
     texto = str(ctx.corpo.get("texto") or "")
     _exigir(len(texto) <= 20000, "Pauta grande demais")
+    _exigir(f["status"] != "criando", "Esta pauta está virando vídeo agora: espere terminar para editar", 409)
     caminho = Path(f["caminho"])
     anterior = caminho.read_text(encoding="utf-8-sig") if caminho.is_file() else ""
-    temporario = caminho.with_name(caminho.name + ".tmp")
-    temporario.write_text(texto.replace("\r\n", "\n"), encoding="utf-8")
-    temporario.replace(caminho)
+    escrever_atomico(caminho, texto.replace("\r\n", "\n"))
     try:
         criacao.ler_pauta(caminho)
     except criacao.ErroCriacao as e:
-        caminho.write_text(anterior, encoding="utf-8")  # volta o que estava lá: pauta inválida não fica salva
+        escrever_atomico(caminho, anterior)  # volta o que estava lá: pauta inválida não fica salva
         raise ErroHttp(400, str(e)) from e
     criacao.sincronizar(cfg, conn)
     return ler_pauta_painel(ctx, pauta_id)
@@ -1881,11 +2114,15 @@ def acao_pauta(ctx: Contexto, pauta_id):
     f = _pauta(conn, pauta_id)
     acao = ctx.corpo.get("acao")
     if acao == "criar_agora":
-        _exigir(not TRAVA_CRIACAO.locked(), "Já existe um vídeo sendo criado agora", 409)
+        _exigir(f["status"] != "criando", "Esta pauta já está virando vídeo agora", 409)
+        with _TRAVA_FILA_CRIACAO:
+            _exigir(f["id"] not in _CRIACOES_NA_FILA, "Este vídeo já está na fila para ser criado", 409)
+            _CRIACOES_NA_FILA.add(f["id"])
         conn.execute("UPDATE filmes SET status='novo', esgotado=0, erro=NULL, tentativas=0, atualizado_em=? "
                      "WHERE id=?", (time.time(), f["id"]))
         _criar_em_segundo_plano(ctx.painel, f["id"])
     elif acao == "escrever_com_ia":
+        _exigir(f["status"] != "criando", "Esta pauta está virando vídeo agora: espere terminar", 409)
         _exigir(ia.disponivel(cfg), "Ligue a IA em Configurações > IA")
         caminho = Path(f["caminho"])
         try:
@@ -1897,7 +2134,14 @@ def acao_pauta(ctx: Contexto, pauta_id):
             raise ErroHttp(400, str(e)) from e
         criacao.sincronizar(cfg, conn)
     elif acao == "excluir":
-        Path(f["caminho"]).unlink(missing_ok=True)
+        _exigir(f["status"] != "criando", "Esta pauta está virando vídeo agora: espere terminar para excluir", 409)
+        with _TRAVA_FILA_CRIACAO:
+            _exigir(f["id"] not in _CRIACOES_NA_FILA,
+                    "Esta pauta está na fila do \"Criar agora\": espere o vídeo sair para excluir", 409)
+        try:
+            Path(f["caminho"]).unlink(missing_ok=True)
+        except OSError as e:
+            raise ErroHttp(500, f"Não consegui apagar o arquivo da pauta: {e}") from e
         tem_video = conn.execute("SELECT 1 FROM cortes WHERE filme_id=? LIMIT 1", (f["id"],)).fetchone()
         if tem_video:  # os vídeos já feitos continuam na fila: a pauta só sai da lista
             conn.execute("UPDATE filmes SET status='ausente', atualizado_em=? WHERE id=?", (time.time(), f["id"]))
@@ -1914,37 +2158,50 @@ def acao_pauta(ctx: Contexto, pauta_id):
     return {"ok": True}
 
 
-TRAVA_CRIACAO = threading.Lock()
+# pautas com um "Criar agora" esperando a vez (um pedido por pauta)
+_CRIACOES_NA_FILA: set[int] = set()
+_TRAVA_FILA_CRIACAO = threading.Lock()
 
 
 def _criar_em_segundo_plano(painel, pauta_id: int) -> None:
     def trabalho():
-        if not TRAVA_CRIACAO.acquire(blocking=False):
-            return
-        conn = painel.conectar()
         try:
-            linha = conn.execute("SELECT * FROM filmes WHERE id=?", (pauta_id,)).fetchone()
-            if linha is not None:
-                ATIVIDADES.definir(f"Criando o vídeo '{linha['titulo']}'")
-                criacao.criar_do_banco(painel.cfg, conn, linha, painel.encerrar)
+            conn = painel.conectar()
+            try:
+                linha = conn.execute("SELECT * FROM filmes WHERE id=?", (pauta_id,)).fetchone()
+                if linha is None:
+                    return
+                if TRAVA_EDICAO.locked():
+                    ATIVIDADES.definir(f"'{linha['titulo']}' espera a edição atual terminar para virar vídeo")
+                # a mesma trava do motor: uma edição ou criação por vez, e a pauta é reservada lá dentro
+                with TRAVA_EDICAO:
+                    linha = conn.execute("SELECT * FROM filmes WHERE id=?", (pauta_id,)).fetchone()
+                    if linha is None or painel.encerrar.is_set():
+                        return
+                    ATIVIDADES.definir(f"Criando o vídeo '{linha['titulo']}'")
+                    criacao.criar_do_banco(painel.cfg.copia(), conn, linha, painel.encerrar)
+            finally:
+                conn.close()
         finally:
-            conn.close()
-            TRAVA_CRIACAO.release()
+            with _TRAVA_FILA_CRIACAO:
+                _CRIACOES_NA_FILA.discard(pauta_id)
 
     _em_segundo_plano(f"criacao-{pauta_id}", trabalho)
 
 
 @rota("POST", r"/pautas/temas")
 def salvar_temas(ctx: Contexto):
+    """Grava o arquivo da fila de temas inteiro, com os comentários, se ele não mudou desde que abriu."""
     cfg = ctx.cfg
     texto = str(ctx.corpo.get("texto") or "")
     _exigir(len(texto) <= 20000, "Lista grande demais")
-    alvo = criacao.arquivo_temas(cfg)
-    alvo.parent.mkdir(parents=True, exist_ok=True)
-    temporario = alvo.with_name(alvo.name + ".tmp")
-    temporario.write_text(texto.replace("\r\n", "\n").strip() + "\n", encoding="utf-8")
-    temporario.replace(alvo)
-    return {"temas": criacao.temas(cfg)}
+    versao = ctx.corpo.get("versao")
+    try:
+        texto_novo, versao_nova = criacao.salvar_temas_cru(cfg, texto, None if versao is None else str(versao))
+    except criacao.TemasMudaram as e:
+        raise ErroHttp(409, "A fila de temas mudou enquanto você editava (o motor usou um tema). Carreguei a "
+                       "versão nova: confira e salve de novo.", {"texto": e.texto, "versao": e.versao}) from e
+    return {"temas": criacao.temas(cfg), "temas_texto": texto_novo, "temas_versao": versao_nova}
 
 
 # ---------------------------------------------------------------- perfis (nichos)
@@ -1976,7 +2233,8 @@ def listar_perfis(ctx: Contexto):
             dados["atual"] = False
         if dados["atual"]:  # este processo: o /saude só responde depois, mas ele está aberto agora
             dados["situacao"] = {"rodando": True, "outro": False, "desde": ctx.painel.iniciado_em,
-                                 "motor": ctx.painel.motor.rodando}
+                                 "motor": ctx.painel.motor.rodando, "porta": ctx.painel.porta}
+        _url_aberta(dados)
         saida.append(dados)
     return {
         "perfis": saida,
@@ -1985,6 +2243,19 @@ def listar_perfis(ctx: Contexto):
         "max": perfis.MAX_PERFIS,
         "abertos": sum(1 for d in saida if d["situacao"]["rodando"]),
     }
+
+
+def _url_aberta(dados: dict) -> None:
+    """Perfil aberto: o link vai para a porta em que ele está de verdade.
+
+    Trocar a porta com o perfil aberto só vale na próxima abertura; até lá o painel dele continua
+    na porta antiga, e o link para a nova não abria nada.
+    """
+    situacao = dados.get("situacao") or {}
+    porta = situacao.get("porta")
+    if situacao.get("rodando") and porta:
+        dados["url"] = f"http://127.0.0.1:{int(porta)}/"
+        dados["porta_aberta"] = int(porta)
 
 
 @rota("POST", r"/perfis/novo")
@@ -2037,8 +2308,19 @@ def salvar_perfil(ctx: Contexto, slug):
     except ErroConfig as e:
         raise _perfis_erro(e) from e
     dados = novo.para_painel()
-    dados["situacao"] = perfis.situacao(novo)
-    if perfis.situacao(novo)["rodando"] and (ctx.corpo or {}).keys() & {"porta", "porta_navegador"}:
+    try:
+        dados["atual"] = novo.config.resolve() == ctx.cfg.caminho.resolve()
+    except OSError:
+        dados["atual"] = False
+    if dados["atual"]:
+        dados["situacao"] = {"rodando": True, "outro": False, "desde": ctx.painel.iniciado_em,
+                             "motor": ctx.painel.motor.rodando, "porta": ctx.painel.porta}
+    else:
+        dados["situacao"] = perfis.situacao(novo)
+    _url_aberta(dados)
+    mudou_porta = (ctx.corpo or {}).keys() & {"porta", "porta_navegador"} and (
+        novo.porta != p.porta or novo.porta_navegador != p.porta_navegador)
+    if dados["situacao"].get("rodando") and mudou_porta:
         dados["aviso"] = "A porta nova vale quando você fechar e abrir este perfil."
     return {"perfil": dados}
 

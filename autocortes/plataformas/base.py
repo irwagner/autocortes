@@ -29,14 +29,25 @@ def ocultar_segredos(texto: str) -> str:
 class ErroPublicacao(Exception):
     """Falha ao publicar, com a ação que o loop deve tomar.
 
-    tipo = "temporario": tenta de novo mais tarde (rede, limite diário, servidor fora)
+    tipo = "temporario": tenta de novo mais tarde (servidor fora, erro que eu não conheço)
            "corte":      este vídeo não serve para esta rede; pula para o próximo
            "bloqueio":   login/config com problema; para de postar nesta rede
+           "ensaio":     o modo ensaio preencheu tudo e parou antes de publicar
+
+    rede_falhou: a internet caiu antes de a rede responder (nada saiu; não conta como falha do corte)
+    ambiente:    cota ou limite da rede (nada saiu; a rede espera pausa_seg antes de tentar de novo)
+    pausa_seg:   quanto esperar antes da próxima tentativa nesta rede
+    persistente: bloqueio que não passa sozinho (só some quando você testa a conta de novo)
     """
 
-    def __init__(self, mensagem: str, tipo: str = "temporario"):
+    def __init__(self, mensagem: str, tipo: str = "temporario", *, rede_falhou: bool = False,
+                 ambiente: bool = False, pausa_seg: float | None = None, persistente: bool = False):
         super().__init__(ocultar_segredos(mensagem))
         self.tipo = tipo
+        self.rede_falhou = rede_falhou
+        self.ambiente = ambiente
+        self.pausa_seg = pausa_seg
+        self.persistente = persistente
 
 
 @dataclass
@@ -44,6 +55,40 @@ class Resultado:
     id_remoto: str
     url: str | None = None
     observacao: str | None = None
+    # False = a rede recebeu o vídeo, mas eu não vi a confirmação: fica "a conferir" no painel
+    confirmado: bool = True
+
+
+class Entrega:
+    """O que a rede já aceitou neste envio.
+
+    Quem publica chama `aceitou` no ponto em que a rede fica com o vídeo (o id do post chegou,
+    ou o clique de publicar vai acontecer). Daí em diante, qualquer erro, inclusive parar o
+    motor, vira "a conferir", e nunca uma falha que postaria o vídeo de novo. `desfazer` é para
+    quando a rede avisa depois que recusou (o processamento falhou): aí nada saiu.
+    """
+
+    def __init__(self, ao_mudar=None):
+        self.id_remoto: str | None = None
+        self.url: str | None = None
+        self._ao_mudar = ao_mudar  # grava no banco na hora (id_remoto, url), para sobreviver a um fechamento
+
+    @property
+    def aceita(self) -> bool:
+        return self.id_remoto is not None
+
+    def aceitou(self, id_remoto, url: str | None = None) -> None:
+        self.id_remoto = str(id_remoto)
+        if url:
+            self.url = str(url)
+        if self._ao_mudar is not None:
+            self._ao_mudar(self.id_remoto, self.url)
+
+    def desfazer(self) -> None:
+        self.id_remoto = None
+        self.url = None
+        if self._ao_mudar is not None:
+            self._ao_mudar(None, None)
 
 
 class Plataforma:
@@ -92,7 +137,8 @@ class Plataforma:
     def verificar(self) -> str:
         raise NotImplementedError
 
-    def publicar(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None) -> Resultado:
+    def publicar(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None,
+                 entrega: Entrega | None = None) -> Resultado:
         raise NotImplementedError
 
     # ---- HTTP
@@ -101,7 +147,8 @@ class Plataforma:
         try:
             return self.sessao.request(metodo, url, **kwargs)
         except requests.RequestException as e:
-            raise ErroPublicacao(f"{self.rotulo}: falha de rede ({e.__class__.__name__}: {e})", "temporario") from e
+            raise ErroPublicacao(f"{self.rotulo}: falha de rede ({e.__class__.__name__}: {e})", "temporario",
+                                 rede_falhou=True) from e
 
 
 class LeitorProgresso:
@@ -157,7 +204,11 @@ def json_seguro(resposta: requests.Response) -> dict:
 
 
 def esperar(parar: threading.Event | None, segundos: float) -> None:
-    """Dorme, mas acorda na hora se o loop pedir para parar."""
+    """Dorme, mas acorda na hora se o loop pedir para parar.
+
+    Parar no meio de um acompanhamento (a rede já tem o vídeo) não é falha: quem chama passa
+    a Entrega aceita, e o publicador registra "a conferir", sem postar de novo.
+    """
     if parar is None:
         threading.Event().wait(segundos)
     elif parar.wait(segundos):

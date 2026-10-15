@@ -8,7 +8,10 @@ const ABAS_CORTES = [
   ["publicados", "Publicados", "Já foram para todas as redes ativas."],
   ["descartados", "Descartados", "Trechos que você descartou ou que falharam na edição. Descartados não voltam a ser escolhidos."],
 ];
-const CLASSE_REDE = { publicado: "ok", simulado: "sim", falhou: "erro", pulado: "aviso", interrompido: "aviso", enviando: "enviando", aguardando: "mao" };
+const CLASSE_REDE = {
+  publicado: "ok", simulado: "sim", falhou: "erro", pulado: "aviso", interrompido: "aviso", enviando: "enviando",
+  aguardando: "mao", conferir: "aviso", ensaio: "sim",
+};
 const SINAIS = [
   ["volume", "Volume"], ["picos", "Momentos intensos"], ["fala", "Diálogo"], ["cenas", "Ritmo de cenas"],
   ["gancho", "Começo forte"], ["texto", "Falas marcantes"], ["duracao", "Duração ideal"], ["silencio", "Silêncio"],
@@ -242,7 +245,7 @@ function textosDetalheHtml(d) {
   return h`<div class="linha-botoes">${badge(fonte, true)}${iaBotoes}</div>
     <label class="campo"><span>Título</span><input type="text" id="det-titulo" maxlength="300" value="${t.titulo_custom}" placeholder="${t.titulo_padrao}"></label>
     <label class="campo"><span>Descrição</span><textarea id="det-descricao" rows="5" maxlength="5000" placeholder="${t.descricao_padrao}">${t.descricao_custom}</textarea></label>
-    <p class="nota">Em branco, usa ${vazioUsa}. Aceita {filme}, {parte}, {frase} e {hashtags}.</p>
+    <p class="nota">Em branco, usa ${vazioUsa}. Aceita {filme}, {ano}, {ano_parenteses}, {parte}, {frase}, {hashtags}, {titulo_ia} e {descricao_ia}. Ctrl+S salva.</p>
     <div class="linha-botoes"><button class="btn pequeno primario" data-acao="corte-textos">${ic("check")}Salvar os textos</button>${t.titulo_custom || t.descricao_custom ? h`<button class="btn pequeno fantasma" data-acao="corte-textos-limpar">Voltar ao automático</button>` : ""}</div>
     <details class="guia"><summary>${ic("olho")}Como o post vai sair</summary><div class="amostra-post"><b>${t.titulo}</b>${t.descricao}</div></details>`;
 }
@@ -250,6 +253,10 @@ function textosDetalheHtml(d) {
 function botaoRedeHtml(d, rede, p) {
   if (p && p.estado === "aguardando") {
     return h`<button class="btn pequeno" data-acao="abrir-tarefa" data-tarefa="${p.id}">${ic("lista")}Ver a tarefa</button>`;
+  }
+  if (p && p.estado === "conferir") {
+    // sem "Postar agora" aqui: o vídeo pode já ter saído, e postar de novo repetiria o post
+    return h`<button class="btn pequeno" data-acao="corte-conferir" data-rede="${rede}">${ic("olho")}Conferir</button>`;
   }
   const podePostar = ["revisao", "pronto", "concluido"].includes(d.status) && Boolean(d.video);
   if (!podePostar || (rede === "facebook" && !d.facebook)) return "";
@@ -326,14 +333,32 @@ function textosSujos() {
   return titulo.value !== t.titulo_custom || descricao.value !== t.descricao_custom;
 }
 
+/** O título e a descrição digitados e ainda não salvos (null quando não há nada pendente). */
+function rascunhoTextos() {
+  if (!textosSujos()) return null;
+  return { titulo: $("#det-titulo").value, descricao: $("#det-descricao").value };
+}
+
+function devolverRascunho(rascunho) {
+  if (!rascunho) return;
+  const titulo = $("#det-titulo");
+  const descricao = $("#det-descricao");
+  if (titulo) titulo.value = rascunho.titulo;
+  if (descricao) descricao.value = rascunho.descricao;
+}
+
 function desenharDetalhe(d, completo) {
   const corpo = corpoModal();
   if (!corpo || Detalhe.id !== d.id) return;
   const anterior = Detalhe.dados;
+  // Aprovar, Postar antes, Editar agora e Gerar com IA redesenham a janela: o que você digitou
+  // nos textos e ainda não salvou volta para os campos em vez de sumir
+  const rascunho = rascunhoTextos();
   Detalhe.dados = d;
   if (completo || !$("#det-video")) {
     montar(corpo, detalheHtml(d));
     Detalhe.videoUrl = d.video;
+    devolverRascunho(rascunho);
     return;
   }
   if (d.video !== Detalhe.videoUrl || !d.video) {
@@ -381,7 +406,9 @@ function conferirEspera(d) {
     if (terminou) {
       Detalhe.aguardando = null;
       const [texto, classe] = estadoPost(p.estado);
-      toast(`${REDES[rede].rotulo}: ${texto}${p.erro ? ` (${p.erro})` : ""}`, classe === "erro" || classe === "aviso" ? "erro" : "ok", 7000);
+      // "a conferir" e "ensaio" não são erro: pedem só que você olhe
+      const tipoToast = ["conferir", "ensaio"].includes(p.estado) ? "info" : classe === "erro" || classe === "aviso" ? "erro" : "ok";
+      toast(`${REDES[rede].rotulo}: ${texto}${p.erro ? ` (${p.erro})` : ""}`, tipoToast, 7000);
     } else if (passou > 30 * 60000) Detalhe.aguardando = null;
   }
 }
@@ -407,12 +434,24 @@ async function carregarDetalhe(completo = false) {
   Detalhe.timer = setTimeout(() => carregarDetalhe(false), ativo ? 2500 : 10000);
 }
 
+async function salvarTextosCorte(el = null) {
+  const d = Detalhe.dados;
+  if (!d || !$("#det-titulo")) return;
+  const novo = await ocupado(el, () => post(`/cortes/${d.id}/textos`, { titulo: $("#det-titulo").value, descricao: $("#det-descricao").value }));
+  toast("Textos salvos");
+  Detalhe.dados = novo; // os campos já mostram o que foi salvo: o redesenho não acha rascunho
+  desenharDetalhe(novo, false);
+  montar($("#det-textos"), textosDetalheHtml(novo));
+}
+
 async function abrirCorte(id) {
   if (!id) return;
   abrirModal({
     titulo: "Detalhes do corte",
     largura: 1080,
     corpo: h`<div class="carregando-bloco"><span class="giro"></span></div>`,
+    protegido: () => textosSujos(),
+    aoSalvar: () => salvarTextosCorte(),
     aoFechar: () => {
       clearTimeout(Detalhe.timer);
       Detalhe.id = null;
@@ -436,6 +475,15 @@ App.acoes["corte-acao"] = async (el) => {
     const ok = await confirmar({ titulo: "Descartar este corte?", texto: "O vídeo editado é apagado e este trecho não volta a ser escolhido. Dá para restaurar depois em Descartados.", botao: "Descartar", perigo: true });
     if (!ok) return;
   }
+  if (tipo === "recriar") {
+    const ok = await confirmar({
+      titulo: "Criar este vídeo de novo?",
+      texto: "O vídeo atual é apagado e a pauta volta para a fila da Criação: narração, imagens de fundo e montagem são feitas de novo, e o resultado pode sair diferente.",
+      botao: "Apagar e criar de novo",
+      perigo: true,
+    });
+    if (!ok) return;
+  }
   if (tipo === "reeditar") {
     await garantirConfig();
     const modeloAtual = App.config && App.config.edicao ? App.config.edicao.modelo : "";
@@ -450,19 +498,28 @@ App.acoes["corte-acao"] = async (el) => {
   if (tipo === "gerar_textos") aguardar("ia");
   if (MSG_ACAO[tipo]) toast(MSG_ACAO[tipo]);
   if (tipo === "descartar") toast("Corte descartado");
+  if (tipo === "recriar") toast("A pauta voltou para a fila da Criação", "info");
   desenharDetalhe(novo, true);
   clearTimeout(Detalhe.timer);
   Detalhe.timer = setTimeout(() => carregarDetalhe(false), 1500);
   atualizarEstado();
 };
 
-App.acoes["corte-textos"] = async (el) => {
+App.acoes["corte-textos"] = (el) => salvarTextosCorte(el);
+
+App.acoes["corte-conferir"] = async (el) => {
   const d = Detalhe.dados;
   if (!d) return;
-  const novo = await ocupado(el, () => post(`/cortes/${d.id}/textos`, { titulo: $("#det-titulo").value, descricao: $("#det-descricao").value }));
-  toast("Textos salvos");
-  desenharDetalhe(novo, false);
-  montar($("#det-textos"), textosDetalheHtml(novo));
+  const rede = el.dataset.rede;
+  const p = d.postagens[rede];
+  if (!p || p.estado !== "conferir") return;
+  if (textosSujos()) {
+    const ok = await confirmar({ titulo: "Sair sem salvar os textos?", texto: "O título e a descrição que você mudou ainda não foram salvos.", botao: "Sair sem salvar", perigo: true });
+    if (!ok) return;
+  }
+  const corteId = d.id;
+  abrirConferirPost({ id: p.id, rede, filme: d.filme, parte: d.parte, quando: p.quando, url: p.url, erro: p.erro },
+    () => abrirCorte(corteId));
 };
 
 App.acoes["corte-textos-limpar"] = async (el) => {

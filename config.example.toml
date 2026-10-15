@@ -49,6 +49,8 @@ ffprobe = "ffprobe"
 # Vazio = baixa o whisper.cpp oficial automaticamente em ferramentas/whisper
 whisper_cli = ""
 whisper_vad = ""
+# Só versões com o SHA-256 conferido no código. Para outra, instale à mão e
+# preencha whisper_cli e whisper_vad acima
 whisper_versao = "b5130"
 # Threads do Whisper (0 = automático)
 threads = 0
@@ -247,7 +249,8 @@ visivel = true
 pausa_min_seg = 0.4
 pausa_max_seg = 1.6
 tempo_limite_seg = 180
-# true preenche tudo e NÃO publica, guardando uma imagem da tela (para conferir)
+# true preenche tudo e NÃO publica, guardando uma imagem da tela (para conferir).
+# A postagem fica como ensaio, e o corte continua na fila daquela rede
 ensaio = false
 
 # ---------------------------------------------------------------------
@@ -286,7 +289,8 @@ fade_audio_seg = 0.6
 fonte = "pasta"
 # Pasta dos seus arquivos ("" = a pasta "material" ao lado deste config)
 pasta = ""
-# Várias chaves são alternadas, porque cada uma tem limite de uso por hora
+# Várias chaves são alternadas, porque cada uma tem limite de uso por hora.
+# São segredo: o painel não as mostra de volta, só diz se estão preenchidas.
 pexels_chaves = []
 pixabay_chaves = []
 # Clipe mais curto que isto não entra
@@ -348,7 +352,8 @@ pausado = false
 # ---------------------------------------------------------------------
 [youtube]
 ativo = true
-# "oficial" (API do YouTube), "upload_post" (veja [upload_post]) ou "manual" (veja [manual])
+# "oficial" (API do YouTube), "upload_post" (veja [upload_post]), "navegador"
+# (veja [navegador]: contraria os termos) ou "manual" (veja [manual])
 envio = "oficial"
 # Porta do retorno do login (0 = escolhe uma livre)
 porta_redirect = 0
@@ -383,7 +388,8 @@ dias = []
 [tiktok]
 ativo = true
 # "oficial" (só posts privados sem auditoria), "upload_post" (público; use
-# privacidade = "PUBLIC_TO_EVERYONE") ou "manual" (você posta pelo app)
+# privacidade = "PUBLIC_TO_EVERYONE"), "navegador" (veja [navegador]:
+# contraria os termos) ou "manual" (você posta pelo app)
 envio = "oficial"
 client_key = ""
 client_secret = ""
@@ -412,7 +418,8 @@ dias = []
 # ---------------------------------------------------------------------
 [instagram]
 ativo = true
-# "oficial" (API do Instagram), "upload_post" ou "manual" (você posta pelo app)
+# "oficial" (API do Instagram), "upload_post", "navegador" (veja [navegador]:
+# contraria os termos) ou "manual" (você posta pelo app)
 envio = "oficial"
 app_id = ""
 app_secret = ""
@@ -456,6 +463,7 @@ dias = []
 # ---------------------------------------------------------------------
 [bilibili]
 ativo = false
+# "manual" (a tarefa no Início) ou "navegador" (veja [navegador]: contraria os termos)
 envio = "manual"
 # 08:00 em Brasília = 19:00 em Pequim
 horarios = ["08:00"]

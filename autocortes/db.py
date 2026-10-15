@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS filmes (
     duracao       REAL,
     -- 'filme' (recortado) ou 'pauta' (vídeo criado do zero a partir de um roteiro)
     tipo          TEXT NOT NULL DEFAULT 'filme',
-    -- novo | analisando | analisado | erro | ausente | ignorado
+    -- novo | analisando | analisado | erro | ausente | ignorado | criando (pauta virando vídeo)
     status        TEXT NOT NULL DEFAULT 'novo',
     erro          TEXT,
     tentativas    INTEGER NOT NULL DEFAULT 0,
@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS postagens (
     -- as redes da agenda e 'facebook' (o Reel do Instagram repetido na Página)
     plataforma    TEXT NOT NULL,
     -- enviando | publicado | simulado | falhou | pulado | interrompido | aguardando (tarefa à mão)
+    -- | conferir (a rede recebeu o vídeo, falta você confirmar se saiu) | ensaio (preencheu sem publicar)
     status        TEXT NOT NULL,
     id_remoto     TEXT,
     url           TEXT,
@@ -81,6 +82,8 @@ CREATE INDEX IF NOT EXISTS idx_cortes_filme ON cortes(filme_id, status);
 CREATE INDEX IF NOT EXISTS idx_cortes_status ON cortes(status);
 CREATE INDEX IF NOT EXISTS idx_postagens_corte ON postagens(corte_id, plataforma);
 CREATE INDEX IF NOT EXISTS idx_postagens_plataforma ON postagens(plataforma, criado_em);
+-- tarefas à mão, posts a conferir e envios em andamento são procurados pelo status a cada ciclo
+CREATE INDEX IF NOT EXISTS idx_postagens_status ON postagens(status, plataforma);
 """
 
 
@@ -123,6 +126,8 @@ _COLUNAS_NOVAS = {
         "horario": "REAL",
         "manual": "INTEGER NOT NULL DEFAULT 0",
         "via": "TEXT",
+        # chave do horário da agenda ("AAAA-MM-DD HH:MM", antes da variação) que a postagem atendeu
+        "slot": "TEXT",
         # métricas lidas das redes depois da publicação
         "visualizacoes": "INTEGER",
         "curtidas": "INTEGER",
@@ -145,17 +150,29 @@ def _migrar(conn: sqlite3.Connection) -> None:
                     conn.execute("UPDATE cortes SET fila_em = renderizado_em WHERE renderizado_em IS NOT NULL")
     # índices sobre colunas que vieram depois: só dá para criar com as colunas já no lugar
     conn.execute("CREATE INDEX IF NOT EXISTS idx_filmes_tipo ON filmes(tipo, status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_postagens_slot ON postagens(plataforma, slot)")
 
 
 @contextmanager
 def transacao(conn: sqlite3.Connection):
+    """Bloco tudo-ou-nada. Dentro de outra transação, só participa dela (não abre uma nova)."""
+    if conn.in_transaction:
+        yield conn
+        return
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
     except BaseException:
-        conn.execute("ROLLBACK")
+        # o SQLite desfaz sozinho em alguns erros; um ROLLBACK a mais esconderia o erro de verdade
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
         raise
-    conn.execute("COMMIT")
+    try:
+        conn.execute("COMMIT")
+    except sqlite3.Error:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
 
 
 def agora() -> float:
@@ -184,19 +201,34 @@ def apagar_estado(conn: sqlite3.Connection, chave: str) -> None:
     conn.execute("DELETE FROM estado WHERE chave=?", (chave,))
 
 
-def recuperar_estados_pendentes(conn: sqlite3.Connection) -> None:
-    """Depois de um travamento/desligamento, devolve itens 'em andamento' para a fila."""
+def recuperar_estados_pendentes(conn: sqlite3.Connection, redes_ocupadas=(), editando: bool = False) -> None:
+    """Depois de um travamento/desligamento, devolve itens 'em andamento' para a fila.
+
+    redes_ocupadas: redes com um envio de verdade acontecendo agora (o "Postar agora" do painel
+    segue rodando quando o motor é desligado); as postagens delas ficam como estão.
+    editando: uma edição está rodando agora, então os cortes em 'renderizando' ficam.
+    """
     t = agora()
-    conn.execute("UPDATE filmes SET status='novo', atualizado_em=? WHERE status='analisando'", (t,))
-    conn.execute("UPDATE cortes SET status='candidato' WHERE status='renderizando'")
+    if not editando:
+        # 'criando' é a pauta reservada para virar vídeo (criacao.criar_do_banco)
+        conn.execute("UPDATE filmes SET status='novo', atualizado_em=? WHERE status IN ('analisando', 'criando')", (t,))
+        conn.execute("UPDATE cortes SET status='candidato' WHERE status='renderizando'")
+    ocupadas = [str(r) for r in redes_ocupadas]
+    fora = f" AND plataforma NOT IN ({','.join('?' * len(ocupadas))})" if ocupadas else ""
     # Reel que o Facebook já tinha aceitado (o link é gravado nessa hora): não é enviado de novo
     conn.execute(
         "UPDATE postagens SET status='publicado', erro='o AutoCortes fechou enquanto o Facebook processava o Reel', "
-        "atualizado_em=? WHERE status='enviando' AND plataforma='facebook' AND url IS NOT NULL",
-        (t,),
+        "atualizado_em=? WHERE status='enviando' AND plataforma='facebook' AND url IS NOT NULL" + fora,
+        (t, *ocupadas),
+    )
+    # a rede já tinha recebido o vídeo (o id é gravado nessa hora): repetir postaria duas vezes
+    conn.execute(
+        "UPDATE postagens SET status='conferir', erro='o AutoCortes fechou depois que a rede recebeu o vídeo; "
+        "confira se ele saiu', atualizado_em=? WHERE status='enviando' AND id_remoto IS NOT NULL" + fora,
+        (t, *ocupadas),
     )
     conn.execute(
         "UPDATE postagens SET status='interrompido', erro='processo encerrado durante o envio', "
-        "atualizado_em=? WHERE status='enviando'",
-        (t,),
+        "atualizado_em=? WHERE status='enviando'" + fora,
+        (t, *ocupadas),
     )

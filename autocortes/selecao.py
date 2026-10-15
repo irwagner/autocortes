@@ -114,9 +114,15 @@ def gerar_candidatos(
     falas: list[list[float]],
     frases: list[Frase],
     ocupados: list[tuple[float, float]] | None = None,
+    limite: int | None = None,
 ) -> list[Candidato]:
-    """Melhores trechos sem sobreposição. 'ocupados' são trechos já usados em cortes anteriores."""
+    """Melhores trechos sem sobreposição. 'ocupados' são trechos já usados em cortes anteriores.
+
+    limite: quantos candidatos no máximo (padrão: [cortes].max_por_filme). Quem chama desconta os
+    cortes que o filme já tem, para o máximo valer para o filme e não para cada rodada.
+    """
     c = cfg["cortes"]
+    maximo = int(c["max_por_filme"]) if limite is None else max(0, int(limite))
     pesos = c["pesos"]
     dmin, dmax, alvo = float(c["duracao_min"]), float(c["duracao_max"]), float(c["duracao_alvo"])
     if duracao < dmin + 2:
@@ -265,7 +271,7 @@ def gerar_candidatos(
     bloqueados = [(float(a), float(b)) for a, b in (ocupados or [])]
     escolhidos: list[Candidato] = []
     for cand in candidatos:
-        if len(escolhidos) >= int(c["max_por_filme"]):
+        if len(escolhidos) >= maximo:
             break
         if any(cand.inicio < o.fim + espaco and cand.fim > o.inicio - espaco for o in escolhidos):
             continue

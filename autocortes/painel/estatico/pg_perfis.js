@@ -1,4 +1,4 @@
-/* AutoCortes - painel: Perfis (um nicho por pasta, com contas, tema e agenda próprios) */
+/* AutoCortes - painel: Perfis (um nicho por pasta, com contas, visual e agenda próprios) */
 "use strict";
 
 const PgPerfis = { dados: null };
@@ -12,19 +12,29 @@ function prfSituacaoHtml(p) {
     const motor = s.motor ? "trabalhando" : "motor desligado";
     return h`<span class="status-conta"><span>${ic("ok")}</span><span><b>Aberto</b> · ${motor}${p.atual ? h` · <b>você está aqui</b>` : ""}<br><small>${p.url}</small></span></span>`;
   }
+  if (s.ocupado) {
+    // a pasta está em uso sem painel: o modo terminal, ou o perfil ainda terminando de fechar
+    return h`<span class="status-conta"><span>${ic("relogio")}</span><span><b>Em uso fora do painel</b><br><small>Aberto no modo terminal, ou ainda fechando. Espere fechar para abrir aqui.</small></span></span>`;
+  }
   if (s.outro) {
     return h`<span class="status-conta"><span>${ic("alerta")}</span><span><b>Porta ocupada</b><br><small>${s.perfil_na_porta} já responde na porta ${p.porta}</small></span></span>`;
   }
   return h`<span class="status-conta"><span>${ic("pausa")}</span><span><b>Fechado</b><br><small>Nada é editado nem postado</small></span></span>`;
 }
 
+function prfPortaHtml(p) {
+  const aberta = p.porta_aberta && p.porta_aberta !== p.porta;
+  return aberta ? `porta ${p.porta} (aberto na ${p.porta_aberta} até fechar e abrir de novo)` : `porta ${p.porta}`;
+}
+
 function prfCartaoHtml(p) {
   const s = p.situacao || {};
   const slug = prfSlug(p);
   const redes = (p.redes || []).map((r) => (REDES[r] ? REDES[r].rotulo : r)).join(", ");
+  const emUso = s.rodando || s.ocupado;
   return h`<article class="card card-perfil ${s.rodando ? "aberto" : ""}">
     <div class="card-topo">
-      <h3>${ic(p.principal ? "estrela" : "caixa")}${p.nome}</h3>
+      <h3>${ic(p.principal ? "estrela" : "pessoas")}${p.nome}</h3>
       <div class="grupo-botoes">
         ${p.principal ? badge(["Principal", "neutro"], true) : ""}
         ${p.autoiniciar ? badge(["Abre junto", "info"], true) : ""}
@@ -34,8 +44,8 @@ function prfCartaoHtml(p) {
     ${prfSituacaoHtml(p)}
     <ul class="lista-simples">
       <li><span>Redes ligadas</span><b>${redes || "nenhuma"}</b></li>
-      <li><span>Tema</span><b>${p.modelo || "-"}</b></li>
-      <li><span>Painel</span><b>porta ${p.porta}</b></li>
+      <li><span>Modelo visual</span><b>${p.modelo || "-"}</b></li>
+      <li><span>Painel</span><b title="${prfPortaHtml(p)}">${prfPortaHtml(p)}</b></li>
       <li><span>Navegador</span><b>porta ${p.porta_navegador}</b></li>
       <li><span>Pasta</span><b title="${p.pasta}">${p.pasta_curta === "." ? "a instalação" : p.pasta_curta}</b></li>
     </ul>
@@ -44,11 +54,11 @@ function prfCartaoHtml(p) {
         ${s.rodando
           ? h`<a class="btn pequeno" href="${p.url}" target="_blank" rel="noopener">${ic("externo")}Abrir o painel</a>
              ${p.atual ? "" : h`<button class="btn pequeno" data-acao="prf-fechar" data-slug="${slug}">${ic("pausa")}Fechar</button>`}`
-          : h`<button class="btn pequeno primario" data-acao="prf-abrir" data-slug="${slug}" ${p.erro ? raw("disabled") : ""}>${ic("play")}Abrir</button>`}
+          : h`<button class="btn pequeno primario" data-acao="prf-abrir" data-slug="${slug}" ${p.erro || s.ocupado ? raw("disabled") : ""}>${ic("play")}Abrir</button>`}
       </div>
       <div class="grupo-botoes">
         <button class="btn pequeno fantasma" data-acao="prf-editar" data-slug="${slug}">${ic("lapis")}Ajustar</button>
-        ${p.principal ? "" : h`<button class="btn pequeno fantasma" data-acao="prf-excluir" data-slug="${slug}" ${s.rodando ? raw("disabled title=\"Feche o perfil antes de excluir\"") : ""}>${ic("lixo")}Excluir</button>`}
+        ${p.principal ? "" : h`<button class="btn pequeno fantasma" data-acao="prf-excluir" data-slug="${slug}" ${emUso ? raw("disabled title=\"Feche o perfil antes de excluir\"") : ""}>${ic("lixo")}Excluir</button>`}
       </div>
     </div>
   </article>`;
@@ -57,7 +67,7 @@ function prfCartaoHtml(p) {
 function prfPaginaHtml(d) {
   const limite = d.instalacao.max_simultaneos;
   return h`<div class="card descricao-aba">
-      <p class="nota">Cada perfil é um nicho com a sua pasta: filmes, contas das redes, tema, agenda e histórico separados, e uma janela do Chrome só dele, para as contas não se misturarem. Cada um roda no seu processo, com o painel numa porta própria.</p>
+      <p class="nota">Cada perfil é um nicho com a sua pasta: filmes, contas das redes, modelo visual, agenda e histórico separados, e uma janela do Chrome só dele, para as contas não se misturarem. Cada um roda no seu processo, com o painel numa porta própria.</p>
     </div>
     ${d.conflitos.length ? h`<div class="aviso-inline erro">${ic("alerta")}<div>${d.conflitos.map((c) => h`<div>${c}</div>`)}</div></div>` : ""}
     <div class="barra-ferramentas">
@@ -76,8 +86,11 @@ function prfPaginaHtml(d) {
     <p class="nota rodape-card">O login do TikTok usa a porta 8765 em todos os perfis, porque ela é registrada no app: conecte um perfil por vez. As ferramentas e os modelos de transcrição são compartilhados pela instalação.</p>`;
 }
 
-async function prfCarregar() {
+/** Busca e redesenha, se a tela Perfis ainda for a aberta: abrir um perfil leva até 40 s, e a
+    resposta não pode tomar o lugar da tela para onde você foi nesse meio tempo. */
+async function prfCarregar(token = App.navegacao) {
   const d = await api("/perfis");
+  if (!App.ativa(token) || App.nomePagina !== "perfis") return null;
   PgPerfis.dados = d;
   montarSeMudou($("#conteudo"), prfPaginaHtml(d));
   return d;
@@ -129,7 +142,7 @@ App.acoes["prf-criar"] = async (el) => {
         <li>Clique em <b>Abrir</b> e depois em <b>Abrir o painel</b>.</li>
         <li>Ponha os vídeos em <code>${r.perfil.pasta_filmes}</code>.</li>
         <li>Em Redes sociais, conecte as contas <b>desse</b> nicho e ligue as redes.</li>
-        <li>No Estúdio, escolha o tema. Quando estiver do seu jeito, desligue a simulação.</li>
+        <li>No Estúdio, escolha o modelo visual. Quando estiver do seu jeito, desligue a simulação.</li>
       </ol>
       <div class="acoes-modal"><button class="btn primario" data-acao="fechar-modal">Entendi</button></div>`,
   });
@@ -169,7 +182,7 @@ App.acoes["prf-editar"] = async (el) => {
         ${linhaCampo("Porta do navegador", "A janela do Chrome deste perfil. Repetida entre perfis, as contas se misturam",
           h`<input type="number" id="prf-ed-nav" min="1024" max="65535" value="${p.porta_navegador}">`)}
       </div>
-      <p class="nota">O resto (redes, tema, agenda, cortes) se ajusta dentro do painel do próprio perfil.</p>
+      <p class="nota">O resto (redes, modelo visual, agenda, cortes) se ajusta dentro do painel do próprio perfil.</p>
       <div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Cancelar</button><button class="btn primario" data-acao="prf-salvar" data-slug="${prfSlug(p)}">${ic("check")}Salvar</button></div>`,
   });
 };

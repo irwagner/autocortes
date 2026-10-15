@@ -9,7 +9,8 @@ import time
 from pathlib import Path
 
 from ..textos import Conteudo, limitar, limitar_hashtags
-from .base import ErroPublicacao, LeitorProgresso, Plataforma, Resultado, esperar, json_seguro
+from ..util import log
+from .base import Entrega, ErroPublicacao, LeitorProgresso, Plataforma, Resultado, esperar, json_seguro
 
 PERMISSOES = (
     "instagram_basic, instagram_content_publish, instagram_manage_insights, pages_show_list, "
@@ -18,7 +19,16 @@ PERMISSOES = (
 # para postar o Reel também na Página do Facebook ([instagram].pagina_facebook)
 PERMISSAO_PAGINA = "pages_manage_posts"
 METRICAS = "views,likes,comments,shares,saved,reach"
-TEMPORARIOS = {1, 2, 4, 17, 32, 341, 368, 613}
+# instabilidade da Meta: tenta de novo
+TEMPORARIOS = {1, 2}
+# limites de uso da API (nada saiu): a rede espera antes de tentar de novo
+LIMITES = {4, 17, 32, 341, 613}
+# 368 = ação considerada abusiva ou proibida: insistir piora. Para até você testar a conta.
+BLOQUEIOS_PERSISTENTES = {368}
+# subcódigos do Instagram: limite de 24 h, conta restrita e problemas do próprio vídeo
+SUB_LIMITE_24H = 2207042
+SUB_PERSISTENTES = {2207050, 2207051}  # conta inativa ou restrita; ação bloqueada como spam
+SUB_DO_VIDEO = {2207004, 2207005, 2207006, 2207009, 2207010, 2207013, 2207023, 2207026}
 # o Instagram passou a aceitar no máximo 5 hashtags por post (dez/2025, segundo a imprensa)
 MAX_HASHTAGS = 5
 # Reels da Página do Facebook pela API: de 3 a 90 s, até 30 por Página em 24 h
@@ -53,13 +63,19 @@ class Instagram(Plataforma):
     def _erro(self, http: int, erro: dict, rede: str = "Instagram") -> None:
         codigo, sub = erro.get("code"), erro.get("error_subcode")
         msg = f"{rede}: {erro.get('message') or f'HTTP {http}'} (código {codigo}{f'/{sub}' if sub else ''})"
+        if codigo in BLOQUEIOS_PERSISTENTES or sub in SUB_PERSISTENTES:
+            raise ErroPublicacao(msg + ". A Meta bloqueou a ação: resolva na conta e teste de novo em Redes sociais",
+                                 "bloqueio", persistente=True)
         if codigo in (10, 102, 190) or (isinstance(codigo, int) and 200 <= codigo < 300):
-            tipo = "bloqueio"  # token inválido ou permissão faltando
-        elif codigo in TEMPORARIOS or sub == 2207042 or http >= 500 or http == 429:
-            tipo = "temporario"  # limites de uso, instabilidade, limite de publicação em 24h
-        else:
-            tipo = "corte"
-        raise ErroPublicacao(msg, tipo)
+            raise ErroPublicacao(msg, "bloqueio")  # token inválido ou permissão faltando
+        if sub == SUB_LIMITE_24H:
+            raise ErroPublicacao(msg + " (limite de posts em 24 h)", "temporario", ambiente=True, pausa_seg=6 * 3600)
+        if codigo in LIMITES or http == 429:
+            raise ErroPublicacao(msg, "temporario", ambiente=True, pausa_seg=3600)
+        if sub in SUB_DO_VIDEO:
+            raise ErroPublicacao(msg, "corte")
+        # instabilidade ou erro que eu não conheço: tenta de novo (o limite de falhas do corte segura)
+        raise ErroPublicacao(msg, "temporario")
 
     def _graph(self, metodo: str, caminho: str, token: str | None = None, rede: str = "Instagram", **params) -> dict:
         params["access_token"] = token or self.token().get("access_token")
@@ -193,10 +209,20 @@ class Instagram(Plataforma):
 
     # ------------------------------------------------------------ métricas
     def estatisticas(self, ids: list[str]) -> dict[str, dict]:
-        """Métricas de cada Reel (precisa da permissão instagram_manage_insights no token)."""
+        """Métricas de cada Reel (precisa da permissão instagram_manage_insights no token).
+
+        Um Reel apagado (ou sem métricas ainda) não derruba os outros: só o problema da conta,
+        como o token vencido, para a coleta inteira.
+        """
         saida: dict[str, dict] = {}
         for media_id in ids:
-            dados = self._graph("GET", f"{media_id}/insights", metric=METRICAS)
+            try:
+                dados = self._graph("GET", f"{media_id}/insights", metric=METRICAS)
+            except ErroPublicacao as e:
+                if e.tipo == "bloqueio" or e.ambiente:
+                    raise
+                log.debug("Instagram: sem métricas de %s (%s)", media_id, e)
+                continue
             valores: dict[str, int] = {}
             for item in dados.get("data") or []:
                 valor = (item.get("total_value") or {}).get("value")
@@ -214,7 +240,9 @@ class Instagram(Plataforma):
         return saida
 
     # ------------------------------------------------------------ publicação
-    def publicar(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None) -> Resultado:
+    def publicar(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None,
+                 entrega: Entrega | None = None) -> Resultado:
+        entrega = entrega if entrega is not None else Entrega()
         tok = self.token()
         ig = tok.get("ig_user_id")
         if not ig or not tok.get("access_token"):
@@ -249,30 +277,62 @@ class Instagram(Plataforma):
         resposta = json_seguro(r)
         if r.status_code >= 400 or not resposta.get("success"):
             info = resposta.get("debug_info") if isinstance(resposta.get("debug_info"), dict) else {}
-            tipo = "temporario" if r.status_code >= 500 or info.get("retriable") else "corte"
             detalhe = f"{info.get('type') or ''} {info.get('message') or ''}".strip() or r.text[:200]
-            raise ErroPublicacao(f"Instagram: upload falhou (HTTP {r.status_code}) {detalhe}", tipo)
+            # sem saber se o problema é o vídeo, tenta de novo: o limite de falhas do corte segura
+            raise ErroPublicacao(f"Instagram: upload falhou (HTTP {r.status_code}) {detalhe}", "temporario")
 
         self._aguardar_processamento(container_id, parar)
 
+        legenda = parametros["caption"]
         media_id = None
         for tentativa in range(5):
             try:
                 media_id = self._graph("POST", f"{ig}/media_publish", creation_id=container_id).get("id")
                 break
             except ErroPublicacao as e:
+                if e.rede_falhou:
+                    # a resposta se perdeu no caminho: o Reel pode ter saído. O contêiner diz se saiu.
+                    situacao = self._situacao_conteiner(container_id)
+                    if situacao == "PUBLISHED":
+                        media_id = self._achar_publicado(ig, legenda) or container_id
+                        break
+                    if situacao in ("FINISHED", "IN_PROGRESS") and tentativa < 4:
+                        esperar(parar, 15)
+                        continue
+                    # sem saber, fica para você conferir: publicar de novo poderia duplicar o Reel
+                    entrega.aceitou(container_id)
+                    raise
                 if "9007" in str(e) and tentativa < 4:  # mídia ainda não está pronta
                     esperar(parar, 15)
                     continue
                 raise
         if not media_id:
             raise ErroPublicacao("Instagram não devolveu o id da publicação", "temporario")
+        entrega.aceitou(media_id)  # publicado: daqui em diante nada repete o post
         url = None
         try:
             url = self._graph("GET", media_id, fields="permalink").get("permalink")
         except ErroPublicacao:
             pass
         return Resultado(media_id, url)
+
+    def _situacao_conteiner(self, container_id: str) -> str | None:
+        try:
+            return str(self._graph("GET", container_id, fields="status_code").get("status_code") or "") or None
+        except ErroPublicacao:
+            return None
+
+    def _achar_publicado(self, ig: str, legenda: str) -> str | None:
+        """O id do Reel recém-publicado, achado pela legenda entre os últimos posts da conta."""
+        alvo = " ".join(legenda.split())
+        try:
+            recentes = self._graph("GET", f"{ig}/media", fields="id,caption", limit=5).get("data") or []
+        except ErroPublicacao:
+            return None
+        for item in recentes:
+            if isinstance(item, dict) and " ".join(str(item.get("caption") or "").split()) == alvo:
+                return str(item.get("id") or "") or None
+        return None
 
     def _aguardar_processamento(self, container_id: str, parar) -> None:
         limite = time.monotonic() + 15 * 60
@@ -290,13 +350,13 @@ class Instagram(Plataforma):
 
     # ------------------------------------------------------------ Página do Facebook
     def publicar_facebook(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None,
-                          ao_avancar=None) -> Resultado:
+                          entrega: Entrega | None = None) -> Resultado:
         """O mesmo Reel na Página do Facebook ligada à conta (API de Reels da Página, com o token dela).
 
-        ao_avancar(video_id, url) é chamado depois do início do envio (url None) e quando o Facebook
-        aceita a publicação: se o envio for interrompido depois disso, o Reel já existe e não é
-        enviado de novo.
+        A entrega é aceita quando o Facebook aceita publicar (com o link): se o envio for
+        interrompido depois disso, o Reel já existe e não é enviado de novo.
         """
+        entrega = entrega if entrega is not None else Entrega()
         tok = self.token()
         pagina, token = tok.get("pagina_id"), tok.get("access_token")
         if not pagina or not token:
@@ -305,8 +365,6 @@ class Instagram(Plataforma):
         video_id = str(inicio.get("video_id") or "")
         if not video_id:
             raise ErroPublicacao("Facebook não devolveu o id do vídeo", "temporario")
-        if ao_avancar:
-            ao_avancar(video_id, None)
         destino = inicio.get("upload_url") or f"{self.rupload_facebook_url}/{self.versao}/{video_id}"
 
         tamanho = arquivo.stat().st_size
@@ -332,13 +390,16 @@ class Instagram(Plataforma):
         )
         if fim.get("success") is False:
             raise ErroPublicacao("Facebook não aceitou publicar o Reel", "temporario")
-        if ao_avancar:
-            ao_avancar(video_id, f"https://www.facebook.com/reel/{video_id}")
-        observacao = self._aguardar_reel(video_id, parar)
+        entrega.aceitou(video_id, f"https://www.facebook.com/reel/{video_id}")
+        observacao = self._aguardar_reel(video_id, parar, entrega)
         return Resultado(video_id, self._link_reel(video_id), observacao)
 
-    def _aguardar_reel(self, video_id: str, parar) -> str | None:
-        """Espera o Facebook processar e publicar o Reel (até 10 min; depois ele termina sozinho)."""
+    def _aguardar_reel(self, video_id: str, parar, entrega: Entrega) -> str | None:
+        """Espera o Facebook processar e publicar o Reel (até 10 min; depois ele termina sozinho).
+
+        Se o Facebook avisar que não conseguiu (erro no processamento, envio expirado), o Reel não
+        saiu: a entrega é desfeita e o envio pode ser repetido.
+        """
         limite = time.monotonic() + 10 * 60
         while time.monotonic() < limite:
             esperar(parar, 10)
@@ -355,8 +416,10 @@ class Instagram(Plataforma):
             if status.get("video_status") == "error" or falha is not None:
                 erro = (falha or {}).get("error")
                 motivo = erro.get("message") if isinstance(erro, dict) else None
+                entrega.desfazer()
                 raise ErroPublicacao(f"Facebook não conseguiu processar o Reel{f': {motivo}' if motivo else ''}", "corte")
             if status.get("video_status") == "expired":
+                entrega.desfazer()
                 raise ErroPublicacao("O envio do Reel para o Facebook expirou", "temporario")
             publicacao = fases[2]
             if publicacao.get("status") == "complete" or publicacao.get("publish_status") == "published":

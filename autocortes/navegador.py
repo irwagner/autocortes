@@ -7,8 +7,8 @@ feito clicando na própria página de postagem da rede, como se fosse você.
 Só escuta em 127.0.0.1. Nada de forjar fingerprint, resolver captcha, API privada ou proxy:
 se a rede bloquear, o envio para e avisa.
 
-O CDP fala WebSocket, que a biblioteca padrão do Python não tem, então o cliente mínimo
-(RFC 6455) está aqui mesmo, para não precisar de dependência nova.
+O CDP fala WebSocket, que a biblioteca padrão do Python não tem: o cliente mínimo (RFC 6455)
+está em `websocket.py`, para não precisar de dependência nova.
 """
 
 from __future__ import annotations
@@ -40,14 +40,24 @@ PROGRAMAS = (
     Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Microsoft/Edge/Application/msedge.exe",
     Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft/Edge/Application/msedge.exe",
 )
+# eventos que dizem que a aba acabou: esperar a resposta dela não adianta mais
+_EVENTOS_FIM = ("Inspector.detached", "Inspector.targetCrashed")
 
 
 class ErroNavegador(Exception):
-    """Falha ao controlar o navegador (com o tipo que o publicador entende)."""
+    """Falha ao controlar o navegador (com o tipo que o publicador entende).
 
-    def __init__(self, mensagem: str, tipo: str = "temporario"):
+    conexao=True quer dizer que a conversa com o navegador caiu (janela fechada, aba travada,
+    sem resposta): não adianta esperar a página mudar, o passo falha na hora.
+    persistente=True é o bloqueio que não passa sozinho (a rede pediu verificação): a rede só
+    volta quando você resolve na janela e testa a conta de novo.
+    """
+
+    def __init__(self, mensagem: str, tipo: str = "temporario", conexao: bool = False, persistente: bool = False):
         super().__init__(mensagem)
         self.tipo = tipo
+        self.conexao = conexao
+        self.persistente = persistente
 
 
 class _Websocket(Websocket):
@@ -57,19 +67,19 @@ class _Websocket(Websocket):
         try:
             super().__init__(url, timeout=timeout, rotulo="o navegador")
         except ErroWebsocket as e:
-            raise ErroNavegador(str(e)) from e
+            raise ErroNavegador(str(e), conexao=True) from e
 
     def enviar(self, texto: str) -> None:
         try:
             super().enviar(texto)
         except ErroWebsocket as e:
-            raise ErroNavegador(str(e)) from e
+            raise ErroNavegador(str(e), conexao=True) from e
 
     def receber(self) -> str:
         try:
             return super().receber()
         except ErroWebsocket as e:
-            raise ErroNavegador(str(e)) from e
+            raise ErroNavegador(str(e), conexao=True) from e
 
 
 # ---------------------------------------------------------------- aba
@@ -81,7 +91,8 @@ window.__ac = (() => {
   const visivel = (el) => {
     if (!el) return false;
     if (el.tagName === "INPUT" && el.type === "file") return true;  // campo de arquivo costuma ficar escondido
-    const e = getComputedStyle(el);
+    let e;
+    try { e = getComputedStyle(el); } catch (erro) { return false; }
     if (e.visibility === "hidden" || e.display === "none" || Number(e.opacity) === 0) return false;
     const r = el.getBoundingClientRect();
     return r.width + r.height > 0;
@@ -106,12 +117,40 @@ window.__ac = (() => {
   };
   const achar = (sel) => todos(sel).find(visivel) || todos(sel)[0] || null;
   const limpar = (t) => String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
-  const atributo = (el, nome) => (el.getAttribute ? el.getAttribute(nome) || "" : "");
+  const atributo = (el, nome) => (el && el.getAttribute ? el.getAttribute(nome) || "" : "");
   // junta tudo que identifica o botão: o texto dentro dele, o rótulo de acessibilidade e a dica
   const textoDe = (el) => limpar([el.innerText, atributo(el, "aria-label"), atributo(el, "title"),
                                   el.value].filter(Boolean).join(" "));
-  const desligado = (el) => !!(el.disabled || atributo(el, "aria-disabled") === "true"
-                               || atributo(el, "disabled") === "true");
+  // botão e afins: é até ele que o "desabilitado" de quem está em volta vale
+  const TAGS_BOTAO = ["button", "a", "summary", "label", "option", "input", "select", "textarea"];
+  const PAPEIS_BOTAO = ["button", "link", "menuitem", "menuitemradio", "menuitemcheckbox", "tab", "option",
+                        "checkbox", "radio", "switch"];
+  const ehBotao = (el) => TAGS_BOTAO.includes((el.tagName || "").toLowerCase())
+    || PAPEIS_BOTAO.includes(atributo(el, "role")) || (!!el.hasAttribute && el.hasAttribute("tabindex"));
+  const marcado = (el) => {
+    try { if (el.matches && el.matches(":disabled")) return true; } catch (e) { /* sem suporte */ }
+    if (el.disabled === true || atributo(el, "aria-disabled") === "true") return true;
+    if (el.hasAttribute && el.hasAttribute("disabled") && atributo(el, "disabled") !== "false") return true;
+    return !!el.hasAttribute && el.hasAttribute("inert");
+  };
+  const classeDesligada = (el) => /disabled/i.test(atributo(el, "class"));
+  const semPonteiro = (el) => { try { return getComputedStyle(el).pointerEvents === "none"; } catch (e) { return false; } };
+  const pai = (el) => el.parentElement || (el.getRootNode && el.getRootNode() && el.getRootNode().host) || null;
+  // Desabilitado de verdade. O texto que eu acho costuma ser um rótulo dentro do botão (o "Post"
+  // do TikTok é um div dentro dele), então subo até o botão, atravessando o shadow DOM, no máximo
+  // 6 níveis. Classe com "disabled" vale no próprio elemento e no botão; pointer-events só no botão.
+  const desligado = (el) => {
+    let atual = el;
+    for (let nivel = 0; atual && atual.nodeType === 1 && nivel <= 6; nivel++) {
+      const botao = ehBotao(atual);
+      if (marcado(atual)) return true;
+      if ((botao || nivel === 0) && classeDesligada(atual)) return true;
+      if (botao) return semPonteiro(atual);
+      atual = pai(atual);
+    }
+    return false;
+  };
+  const usavel = (el) => !!el && visivel(el) && !desligado(el);
   const clicavel = (el) => {
     const tag = (el.tagName || "").toLowerCase();
     if (["button", "a", "summary", "label", "option"].includes(tag)) return true;
@@ -119,8 +158,23 @@ window.__ac = (() => {
     if (el.hasAttribute && (el.hasAttribute("tabindex") || el.hasAttribute("onclick"))) return true;
     try { return getComputedStyle(el).cursor === "pointer"; } catch (e) { return false; }
   };
+  const CJK = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uac00-\ud7af]/;
+  const escapar = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const expressoes = new Map();
+  // palavra inteira (em chinês e japonês não há espaço entre as palavras: lá vale o trecho)
+  const casa = (t, alvo) => {
+    if (CJK.test(alvo)) return t.includes(alvo);
+    let re = expressoes.get(alvo);
+    if (!re) {
+      re = new RegExp("(^|[^\\p{L}\\p{N}])" + escapar(alvo) + "($|[^\\p{L}\\p{N}])", "u");
+      expressoes.set(alvo, re);
+    }
+    return re.test(t);
+  };
   // Procura em qualquer elemento, não só em button/span/a: o botão de publicar do TikTok é uma div.
-  // Nota melhor para quem casa exato, é clicável e tem o texto nele mesmo (e não num filho).
+  // Nota melhor para quem casa exato, é clicável e tem o texto nele mesmo (e não num filho). Casar
+  // em parte só vale com a palavra inteira e até 20 letras a mais: "Publicar" acha "Publicar
+  // agora", mas não "Publicações" nem um parágrafo que cita a palavra.
   const porTexto = (sel, textos, incluirDesligado) => {
     const alvos = (Array.isArray(textos) ? textos : [textos]).map(limpar).filter(Boolean);
     if (!alvos.length) return null;
@@ -138,8 +192,9 @@ window.__ac = (() => {
       if (!t) continue;
       let nota = -1;
       for (const alvo of alvos) {
+        const sobra = t.length - alvo.length;
         if (t === alvo) nota = Math.max(nota, 100);
-        else if (t.includes(alvo)) nota = Math.max(nota, 60 - Math.min(45, t.length - alvo.length));
+        else if (sobra <= 20 && casa(t, alvo)) nota = Math.max(nota, 60 - sobra);
       }
       if (nota < 0) continue;
       if (clicavel(el)) nota += 25;
@@ -148,20 +203,103 @@ window.__ac = (() => {
     }
     return melhor;
   };
+  // Alternativas de um passo: [{v: seletor ou texto, t: é texto?, fraco: seletor genérico?, em: onde
+  // procurar o texto}]. A primeira que existir na tela vence. Se ela estiver desabilitada, a resposta
+  // é esperar, e nunca pular para a próxima (que pode ser um botão qualquer). Seletor genérico só
+  // vale quando há um elemento visível só com ele.
+  const resolver = (alvos) => {
+    for (let i = 0; i < alvos.length; i++) {
+      const a = alvos[i];
+      let el = null;
+      if (a.t) el = porTexto(a.em || "*", a.v, true);
+      else {
+        const vistos = todos(a.v).filter(visivel);
+        if (a.fraco) el = vistos.length === 1 ? vistos[0] : null;
+        else el = vistos.find((x) => !desligado(x)) || vistos[0] || null;
+      }
+      if (el) return { el, i };
+    }
+    return null;
+  };
+  const situacao = (alvos) => {
+    const r = resolver(alvos);
+    return r ? { estado: desligado(r.el) ? "desligado" : "pronto", i: r.i } : { estado: "nada" };
+  };
   const clicar = (el) => {
+    // Ícones SVG têm nome de acessibilidade, mas não têm HTMLElement.click().
+    // Aciona o elemento HTML que os contém, propagando o clique até o controle.
+    while (el && typeof el.click !== "function") el = pai(el);
     if (!el) return false;
     el.scrollIntoView({ block: "center" });
     el.click();
     return true;
   };
+  const clicarAlt = (alvos) => {
+    const r = resolver(alvos);
+    if (!r) return { estado: "nada" };
+    if (desligado(r.el)) return { estado: "desligado", i: r.i };
+    if (!clicar(r.el)) return { estado: "nada" };
+    return { estado: "clicado", i: r.i };
+  };
+  const focoProfundo = () => {
+    let a = document.activeElement;
+    while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+    return a;
+  };
+  const dentroDe = (a, el) => { for (let x = a; x; x = pai(x)) { if (x === el) return true; } return false; };
+  const focado = (el) => { const a = focoProfundo(); return !!a && a !== document.body && dentroDe(a, el); };
+  const EDITAVEL = '[contenteditable="true"], [contenteditable=""], textarea, input:not([type=hidden]):not([type=file])';
+  // Foca o campo e só então apaga o que havia nele: sem foco, o texto iria para outro lugar (e o
+  // "selecionar tudo" apagaria o campo em que o foco ficou).
+  const focarAlt = (alvos) => {
+    const r = resolver(alvos);
+    if (!r) return { estado: "nada" };
+    if (desligado(r.el)) return { estado: "desligado", i: r.i };
+    let el = r.el;
+    el.scrollIntoView({ block: "center" });
+    el.focus();
+    if (!focado(el)) {
+      const dentro = el.querySelector ? el.querySelector(EDITAVEL) : null;
+      if (dentro) { dentro.focus(); if (focado(dentro)) el = dentro; }
+    }
+    if (!focado(el)) return { estado: "sem_foco", i: r.i };
+    if (el.isContentEditable) {
+      document.execCommand("selectAll", false, null);
+      document.execCommand("delete", false, null);
+    } else if (el.select) el.select();
+    window.__acCampo = el;
+    return { estado: "focado", i: r.i };
+  };
+  const avisarCampo = () => {
+    const el = window.__acCampo;
+    if (!el) return null;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return String((el.isContentEditable ? el.innerText : el.value) || "");
+  };
+  // texto das janelas por cima da página, sem o que está dentro dos campos (que é o que eu escrevi)
+  const textoDialogos = () => {
+    const partes = [];
+    for (const d of todos('[role="dialog"], [role="alertdialog"], dialog[open], [aria-modal="true"]')) {
+      if (!visivel(d)) continue;
+      let t = d.innerText || "";
+      for (const c of d.querySelectorAll(EDITAVEL)) {
+        const v = c.isContentEditable ? c.innerText : c.value;
+        if (v) t = t.split(v).join(" ");
+      }
+      partes.push(t);
+    }
+    return limpar(partes.join(" "));
+  };
   return {
-    achar, todos, porTexto, visivel, desligado, textoDe,
-    existe: (sel) => !!achar(sel),
-    // ligado = achou e não está desabilitado (o botão de publicar só libera quando o envio termina)
-    ligado: (sel) => { const el = achar(sel); return !!el && !desligado(el); },
-    ligadoPorTexto: (sel, textos) => !!porTexto(sel, textos),
-    clicarSel: (sel) => clicar(achar(sel)),
-    clicarTexto: (sel, textos) => clicar(porTexto(sel, textos) || porTexto(sel, textos, true)),
+    achar, todos, porTexto, visivel, desligado, usavel, textoDe, situacao, clicarAlt, focarAlt, avisarCampo,
+    textoDialogos,
+    // existe = há um visível (o campo de arquivo conta sempre); presente = há no DOM, mesmo escondido
+    existe: (sel) => todos(sel).some(visivel),
+    presente: (sel) => todos(sel).length > 0,
+    // ligado = achou um visível e habilitado (o botão de publicar só libera quando o envio termina)
+    ligado: (sel) => todos(sel).some(usavel),
+    primeiroUsavel: (sel) => todos(sel).find(usavel) || null,
     // quadros de outro site (iframe) não entram na busca: os roteiros avisam quando aparecem
     iframes: () => [...document.querySelectorAll("iframe")].map((f) => f.getAttribute("src") || "(sem src)"),
     // O botão "selecionar vídeo" do site manda o navegador abrir a janela do Windows, que eu não
@@ -191,31 +329,67 @@ window.__ac = (() => {
 """
 
 
+def css(seletores) -> list[dict]:
+    """Alternativas por seletor CSS, no formato do ajudante (os roteiros embutidos usam assim)."""
+    lista = [seletores] if isinstance(seletores, str) else list(seletores)
+    return [{"v": str(s), "t": False, "fraco": False} for s in lista]
+
+
+def descrever_alvos(alvos: list[dict]) -> str:
+    partes = []
+    for alvo in alvos:
+        valor = alvo["v"]
+        if alvo.get("t"):
+            partes.append(" ou ".join(f'"{v}"' for v in (valor if isinstance(valor, list) else [valor])))
+        else:
+            partes.append(str(valor))
+    return " ou ".join(partes)
+
+
+def _comeco(texto: str) -> str:
+    return "".join(str(texto).split()).lower()[:12]
+
+
 class Aba:
     """Uma aba do navegador: comandos do CDP e os passos que os roteiros usam."""
 
-    def __init__(self, ws: _Websocket, parar: threading.Event | None = None, ritmo: tuple[float, float] = (0.4, 1.2)):
+    def __init__(self, ws: _Websocket, parar: threading.Event | None = None, ritmo: tuple[float, float] = (0.4, 1.2),
+                 prazo: float = 60):
         self._ws = ws
         self._id = 0
         self._eventos: list[dict] = []
         self.parar = parar
         self.ritmo = ritmo
+        self.prazo = max(10.0, float(prazo))  # quanto um comando do CDP pode demorar a responder
         self.comando("Page.enable")
         self.comando("Runtime.enable")
         self.comando("DOM.enable")
+        try:
+            self.comando("Inspector.enable")  # para saber na hora se a aba fechou ou travou
+        except ErroNavegador as e:
+            if e.conexao:
+                raise
 
     # ---- CDP
-    def comando(self, metodo: str, **params) -> dict:
+    def comando(self, metodo: str, _prazo: float | None = None, **params) -> dict:
         self._id += 1
-        self._ws.enviar(json.dumps({"id": self._id, "method": metodo, "params": params}))
+        meu = self._id
+        self._ws.enviar(json.dumps({"id": meu, "method": metodo, "params": params}))
+        prazo = float(_prazo or self.prazo)
+        limite = time.monotonic() + prazo
         while True:
+            if time.monotonic() > limite:
+                raise ErroNavegador(f"o navegador não respondeu a {metodo} em {int(prazo)} s", conexao=True)
             bruto = self._ws.receber()
             try:
                 msg = json.loads(bruto)
             except ValueError:
                 continue
-            if msg.get("id") != self._id:
-                if msg.get("method"):
+            if msg.get("id") != meu:
+                evento = msg.get("method")
+                if evento in _EVENTOS_FIM:
+                    raise ErroNavegador("a aba do navegador fechou ou travou no meio do envio", conexao=True)
+                if evento:
                     self._eventos.append(msg)
                     del self._eventos[:-200]
                 continue
@@ -245,6 +419,10 @@ class Aba:
         return self.avaliar(corpo, promessa)
 
     # ---- ritmo e espera
+    def _checar_parar(self) -> None:
+        if self.parar is not None and self.parar.is_set():
+            raise ErroNavegador("interrompido pelo usuário")
+
     def pausa(self, fator: float = 1.0) -> None:
         """Espera um tempo aleatório entre os passos (ritmo humano, não é disfarce)."""
         import random
@@ -264,16 +442,26 @@ class Aba:
         limite = time.monotonic() + segundos
         ultimo = None
         while time.monotonic() < limite:
-            if self.parar is not None and self.parar.is_set():
-                raise ErroNavegador("interrompido pelo usuário")
+            self._checar_parar()
             try:
                 ultimo = self.js(expressao)
-            except ErroNavegador:
+            except ErroNavegador as e:
+                if e.conexao:
+                    raise  # a janela caiu: esperar mais não muda nada
                 ultimo = None  # a página pode estar trocando
             if ultimo:
                 return ultimo
             time.sleep(0.4)
         raise ErroNavegador(f"a página não chegou ao esperado{f': {o_que}' if o_que else ''}")
+
+    def _sondar(self, expressao: str):
+        """Uma consulta à página que pode falhar enquanto ela troca (só a conexão caída sobe)."""
+        try:
+            return self.js(expressao)
+        except ErroNavegador as e:
+            if e.conexao:
+                raise
+            return None
 
     # ---- ações
     def navegar(self, url: str, segundos: float = 45) -> None:
@@ -289,12 +477,21 @@ class Aba:
     def texto(self) -> str:
         return str(self.js("__ac.texto()") or "")
 
+    def texto_dialogos(self) -> str:
+        """Texto das janelas por cima da página (avisos e bloqueios), sem o que eu escrevi nos campos."""
+        return str(self.js("__ac.textoDialogos()") or "")
+
     def iframes(self) -> list[str]:
         """Quadros de outro endereço na página: a busca não entra neles, então os roteiros avisam."""
         return list(self.js("__ac.iframes()") or [])
 
     def existe(self, seletor: str) -> bool:
+        """Há um elemento visível com este seletor (o campo de arquivo conta mesmo escondido)."""
         return bool(self.js(f"__ac.existe({json.dumps(seletor)})"))
+
+    def presente(self, seletor: str) -> bool:
+        """Há um elemento com este seletor, mesmo escondido."""
+        return bool(self.js(f"__ac.presente({json.dumps(seletor)})"))
 
     def primeiro(self, seletores, segundos: float = 30, o_que: str = "") -> str:
         """O primeiro seletor da lista que aparecer na página (os sites mudam de layout)."""
@@ -308,20 +505,51 @@ class Aba:
     def esperar_seletor(self, seletor, segundos: float = 30, o_que: str = "") -> str:
         return self.primeiro(seletor, segundos, o_que)
 
-    def clicar(self, seletor, segundos: float = 30) -> None:
-        alvo = self.primeiro(seletor, segundos)
-        if not self.js(f"__ac.clicarSel({json.dumps(alvo)})"):
-            raise ErroNavegador(f"não consegui clicar em {alvo}")
+    def _esperar_alvos(self, funcao: str, alvos: list[dict], segundos: float, o_que: str,
+                       antes=None) -> dict:
+        """Repete __ac.<funcao>(alvos) até dar certo, esperando o alvo aparecer e ficar habilitado."""
+        descricao = o_que or descrever_alvos(alvos)
+        lista = json.dumps(alvos)
+        limite = time.monotonic() + segundos
+        visto: str | None = None
+        while True:
+            self._checar_parar()
+            estado = (self._sondar(f"__ac.situacao({lista})") or {}).get("estado")
+            if estado == "pronto":
+                if antes is not None:
+                    antes()  # o que precisa acontecer logo antes da ação (anotar que o post vai sair)
+                r = self._sondar(f"__ac.{funcao}({lista})") or {}
+                if r.get("estado") in ("clicado", "focado"):
+                    return r
+                estado = r.get("estado") or estado
+            if estado in ("desligado", "sem_foco"):
+                visto = estado
+            if time.monotonic() >= limite:
+                break
+            time.sleep(0.4)
+        if visto == "desligado":
+            raise ErroNavegador(f"{descricao} continuou desabilitado por {int(segundos)} s")
+        if visto == "sem_foco":
+            raise ErroNavegador(f"achei {descricao}, mas o campo não recebeu o foco (o texto iria para outro lugar)")
+        raise ErroNavegador(f"não achei {descricao} na tela")
+
+    def clicar_alvos(self, alvos: list[dict], segundos: float = 30, antes=None, o_que: str = "") -> int:
+        """Clica no primeiro alvo que existir, esperando ele habilitar. Devolve qual alternativa foi."""
+        r = self._esperar_alvos("clicarAlt", alvos, segundos, o_que, antes)
         self.pausa()
+        return int(r.get("i") or 0)
+
+    def clicar(self, seletor, segundos: float = 30) -> None:
+        self.clicar_alvos(css(seletor), segundos)
 
     def clicar_texto(self, seletor: str, textos, segundos: float = 30) -> None:
-        """Clica pelo texto do botão (mais estável que a classe, que muda a cada versão do site)."""
+        """Clica pelo texto do botão (mais estável que a classe, que muda a cada versão do site).
+
+        Fica com o elemento que melhor casa com o texto, habilitado ou não: se ele estiver
+        desabilitado, espera liberar em vez de clicar em outro com o mesmo texto.
+        """
         lista = [textos] if isinstance(textos, str) else list(textos)
-        self.esperar(f"__ac.porTexto({json.dumps(seletor)}, {json.dumps(lista)}) ? 1 : 0", segundos,
-                     f"botão {' ou '.join(lista)}")
-        if not self.js(f"__ac.clicarTexto({json.dumps(seletor)}, {json.dumps(lista)})"):
-            raise ErroNavegador(f"não consegui clicar no botão {' ou '.join(lista)}")
-        self.pausa()
+        self.clicar_alvos([{"v": lista, "t": True, "em": seletor}], segundos, o_que=f"botão {' ou '.join(lista)}")
 
     def valor(self, seletor: str):
         return self.js(f"__ac.valor({json.dumps(seletor)})")
@@ -337,25 +565,23 @@ class Aba:
         self.comando("Input.dispatchKeyEvent", type="keyUp", **comum)
         self.pausa(0.5)
 
-    def digitar(self, seletor, texto: str, segundos: float = 30) -> None:
-        """Escreve num campo ou num div editável, disparando os eventos que o site espera."""
-        alvo = self.primeiro(seletor, segundos)
-        self.js(
-            f"(() => {{ const el = __ac.achar({json.dumps(alvo)}); if (!el) return 0;"
-            " el.scrollIntoView({block: 'center'});"
-            " if (el.isContentEditable) { el.focus(); document.execCommand('selectAll', false, null);"
-            "   document.execCommand('delete', false, null); }"
-            " else { el.focus(); el.select && el.select(); }"
-            " return 1; })()"
-        )
+    def digitar_alvos(self, alvos: list[dict], texto: str, segundos: float = 30, o_que: str = "") -> None:
+        """Escreve num campo ou num div editável, disparando os eventos que o site espera.
+
+        Só escreve depois de confirmar que o foco está no campo: o Input.insertText escreve onde
+        o foco estiver, e sem essa conferência o texto iria parar em outro campo.
+        """
+        self._esperar_alvos("focarAlt", alvos, segundos, o_que)
         if texto:
             self.comando("Input.insertText", text=texto)
-        self.js(
-            f"(() => {{ const el = __ac.achar({json.dumps(alvo)}); if (!el) return 0;"
-            " el.dispatchEvent(new Event('input', {bubbles: true}));"
-            " el.dispatchEvent(new Event('change', {bubbles: true})); return 1; })()"
-        )
+        escrito = self._sondar("__ac.avisarCampo()")
+        if texto and isinstance(escrito, str) and _comeco(texto) not in "".join(escrito.split()).lower():
+            # o site pode transformar o texto (hashtag vira etiqueta): só aviso, não paro o envio
+            log.warning("Navegador: o campo %s não mostra o começo do que escrevi", o_que or descrever_alvos(alvos))
         self.pausa()
+
+    def digitar(self, seletor, texto: str, segundos: float = 30) -> None:
+        self.digitar_alvos(css(seletor), texto, segundos)
 
     def enviar_arquivo(self, seletor, arquivo: Path, segundos: float = 30) -> None:
         """Entrega o arquivo ao <input type=file> da página (mesmo escondido ou no shadow DOM)."""
@@ -374,18 +600,21 @@ class Aba:
             no = self.comando("DOM.requestNode", objectId=id_objeto).get("nodeId")
             if not no:
                 raise ErroNavegador(f"não consegui apontar o campo de arquivo ({alvo})")
-            self.comando("DOM.setFileInputFiles", nodeId=no, files=[str(arquivo.resolve())])
+            self.comando("DOM.setFileInputFiles", nodeId=no, files=[str(Path(arquivo).resolve())])
         finally:
             try:
                 self.comando("Runtime.releaseObject", objectId=id_objeto)
-            except ErroNavegador:
-                pass
+            except ErroNavegador as e:
+                if e.conexao:
+                    raise
         self.pausa(2.0)
 
     def captura(self, destino: Path) -> Path | None:
         """Imagem da aba, para você ver onde o envio parou."""
         try:
-            dados = self.comando("Page.captureScreenshot", format="png")["data"]
+            dados = (self.comando("Page.captureScreenshot", format="png") or {}).get("data")
+            if not dados:
+                return None
             destino.parent.mkdir(parents=True, exist_ok=True)
             destino.write_bytes(base64.b64decode(dados))
             return destino
@@ -440,7 +669,7 @@ class Navegador:
         """Identificador da janela que está respondendo nesta porta (único por processo do Chrome)."""
         try:
             url = str(requests.get(f"{self.base}/json/version", timeout=3).json().get("webSocketDebuggerUrl") or "")
-        except (requests.RequestException, ValueError):
+        except (requests.RequestException, ValueError, AttributeError):
             return ""
         return urlparse(url).path if url else ""
 
@@ -458,8 +687,22 @@ class Navegador:
             return not any(
                 p.porta_navegador == self.porta and p.pasta_dados.resolve() != nossa for p in perfis.listar()
             )
-        except Exception:  # noqa: BLE001 (sem saber, fica como era antes: aproveita a janela)
+        except Exception:  # noqa: BLE001 (sem saber quem mais usa a porta, não adoto a janela)
+            log.warning("Navegador: não consegui conferir os outros perfis; não uso a janela da porta %s", self.porta)
+            return False
+
+    def _perfil_em_uso(self) -> bool:
+        """O Chrome segura o arquivo lockfile da pasta do perfil enquanto está aberto com ela."""
+        trava = self.perfil / "lockfile"
+        if not trava.is_file():
+            return False
+        try:
+            with open(trava, "ab"):
+                return False
+        except PermissionError:
             return True
+        except OSError:
+            return False
 
     def nosso(self) -> bool:
         """Quem responde nesta porta é a janela deste perfil?
@@ -468,6 +711,10 @@ class Navegador:
         primeiro, sem erro nenhum. O Chrome de hoje não grava mais o DevToolsActivePort, e a linha
         de comando pelo CDP só vem com --enable-automation (que entrega a automação para as redes).
         Então eu anoto, na pasta do perfil, qual janela eu abri: o alvo é único por processo.
+
+        Sem a anotação (ou com uma antiga), só adoto a janela se o Chrome estiver mesmo aberto com
+        o nosso perfil (o lockfile dele está preso) e nenhum outro perfil usar esta porta. Um Chrome
+        qualquer com depuração na 9222 não passa.
         """
         alvo = self._alvo_atual()
         if not alvo:
@@ -475,9 +722,7 @@ class Navegador:
         marca = ler_json(self.perfil / ARQUIVO_JANELA, {}) or {}
         if marca.get("porta") == self.porta and marca.get("alvo") == alvo:
             return True
-        if not marca and self._porta_so_nossa():
-            # instalação de um perfil só nesta porta (ou primeira vez depois da atualização):
-            # não há como ser de outro perfil, então adoto a janela e passo a anotar
+        if self._perfil_em_uso() and self._porta_so_nossa():
             self._anotar_janela()
             return True
         return False
@@ -532,8 +777,8 @@ class Navegador:
     def _ws_navegador(self) -> str:
         try:
             return str(requests.get(f"{self.base}/json/version", timeout=5).json()["webSocketDebuggerUrl"])
-        except (requests.RequestException, ValueError, KeyError) as e:
-            raise ErroNavegador(f"não consegui falar com o navegador ({e})") from e
+        except (requests.RequestException, ValueError, KeyError, TypeError) as e:
+            raise ErroNavegador(f"não consegui falar com o navegador ({e})", conexao=True) from e
 
     def nova_aba(self, url: str = "about:blank") -> Aba:
         """Abre uma aba e devolve o controle dela."""
@@ -543,10 +788,13 @@ class Navegador:
             principal.enviar(json.dumps({"id": 1, "method": "Target.createTarget", "params": {"url": url}}))
             alvo = None
             for _ in range(20):
-                msg = json.loads(principal.receber())
+                try:
+                    msg = json.loads(principal.receber())
+                except ValueError:
+                    continue
                 if msg.get("id") == 1:
                     if "error" in msg:
-                        raise ErroNavegador(f"não consegui abrir a aba ({msg['error'].get('message')})")
+                        raise ErroNavegador(f"não consegui abrir a aba ({(msg['error'] or {}).get('message')})")
                     alvo = (msg.get("result") or {}).get("targetId")
                     break
             if not alvo:
@@ -555,8 +803,13 @@ class Navegador:
             principal.fechar()
         ritmo = (float(self.conf["pausa_min_seg"]), max(float(self.conf["pausa_min_seg"]),
                                                         float(self.conf["pausa_max_seg"])))
-        aba = Aba(_Websocket(f"ws://127.0.0.1:{self.porta}/devtools/page/{alvo}",
-                             timeout=float(self.conf["tempo_limite_seg"])), self.parar, ritmo)
+        limite = float(self.conf["tempo_limite_seg"])
+        ws = _Websocket(f"ws://127.0.0.1:{self.porta}/devtools/page/{alvo}", timeout=limite)
+        try:
+            aba = Aba(ws, self.parar, ritmo, prazo=limite)
+        except ErroNavegador:
+            ws.fechar()
+            raise
         aba._alvo = alvo
         return aba
 

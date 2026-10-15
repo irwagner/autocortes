@@ -6,6 +6,7 @@ import json
 import secrets
 import threading
 import time
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from fractions import Fraction
 from pathlib import Path
 from urllib.parse import urlencode
@@ -15,16 +16,43 @@ import requests
 from ..midia import fracao
 from ..textos import Conteudo, limitar
 from ..util import log
-from .base import ErroPublicacao, LeitorProgresso, Plataforma, Resultado, esperar, json_seguro
+from .base import Entrega, ErroPublicacao, LeitorProgresso, Plataforma, Resultado, esperar, json_seguro
 from .oauth import LoginOAuth, ServidorRetorno, pkce
 
 ESCOPOS = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
 ]
-LIMITE_TEMPORARIO = {
-    "quotaExceeded", "uploadLimitExceeded", "rateLimitExceeded", "userRateLimitExceeded", "dailyLimitExceeded",
-}
+# cota do dia: só volta à meia-noite do Pacífico, tentar antes disso não adianta
+COTA_DO_DIA = {"quotaExceeded", "uploadLimitExceeded", "dailyLimitExceeded"}
+# limite por minuto: passa logo
+LIMITE_CURTO = {"rateLimitExceeded", "userRateLimitExceeded"}
+# erro de configuração (categoria, data de publicação...): todo vídeo daria o mesmo erro
+CONFIGURACAO = {"invalidCategoryId", "invalidPublishAt", "invalidRecordingDetails", "invalidVideoGameRating",
+                "invalidDefaultBroadcastPrivacySetting"}
+# o problema é deste vídeo (título, descrição, tags, arquivo): pula o corte
+DO_VIDEO = {"invalidTitle", "invalidDescription", "invalidTags", "invalidFilename", "mediaBodyRequired",
+            "invalidVideoMetadata", "invalidContentDetails"}
+
+
+def segundos_ate_meia_noite_pacifico(agora: float | None = None) -> float:
+    """Quanto falta para a meia-noite no horário do Pacífico, quando a cota do YouTube volta.
+
+    Sem a base de fusos do Windows (o zoneinfo pediria o pacote tzdata): o horário de verão dos
+    EUA vai do 2º domingo de março ao 1º domingo de novembro, às 2h.
+    """
+    utc = datetime.fromtimestamp(time.time() if agora is None else agora, timezone.utc)
+
+    def domingo(ano: int, mes: int, n: int) -> date:
+        dia = date(ano, mes, 1)
+        return dia + timedelta(days=(6 - dia.weekday()) % 7, weeks=n - 1)
+
+    inicio_verao = datetime.combine(domingo(utc.year, 3, 2), dtime(10, 0), timezone.utc)  # 2h no PST
+    fim_verao = datetime.combine(domingo(utc.year, 11, 1), dtime(9, 0), timezone.utc)     # 2h no PDT
+    deslocamento = timedelta(hours=-7 if inicio_verao <= utc < fim_verao else -8)
+    local = utc + deslocamento
+    meia_noite = datetime.combine(local.date() + timedelta(days=1), dtime(), timezone.utc) - deslocamento
+    return max(300.0, (meia_noite - utc).total_seconds() + 300)  # 5 min de folga
 
 
 def metadados(conf: dict, conteudo: Conteudo) -> dict:
@@ -232,13 +260,23 @@ class YouTube(Plataforma):
         erro = dados.get("error") if isinstance(dados.get("error"), dict) else {}
         motivos = {e.get("reason") for e in erro.get("errors", []) if isinstance(e, dict)}
         msg = f"YouTube {r.status_code}: {erro.get('message') or r.text[:200]}"
+        if motivos:
+            msg += f" ({', '.join(sorted(str(m) for m in motivos))})"
         if r.status_code == 401:
             raise ErroPublicacao(msg + " (conecte a conta de novo)", "bloqueio")
-        if motivos & LIMITE_TEMPORARIO or r.status_code == 429 or r.status_code >= 500:
+        if motivos & COTA_DO_DIA:
+            raise ErroPublicacao(msg + ". A cota do YouTube volta à meia-noite do Pacífico", "temporario",
+                                 ambiente=True, pausa_seg=segundos_ate_meia_noite_pacifico())
+        if motivos & LIMITE_CURTO or r.status_code == 429:
+            raise ErroPublicacao(msg, "temporario", ambiente=True, pausa_seg=900)
+        if r.status_code >= 500:
             raise ErroPublicacao(msg, "temporario")
-        if r.status_code == 403:
+        if r.status_code == 403 or motivos & CONFIGURACAO:
             raise ErroPublicacao(msg, "bloqueio")
-        raise ErroPublicacao(msg, "corte")
+        if motivos & DO_VIDEO:
+            raise ErroPublicacao(msg, "corte")
+        # erro que eu não conheço: tenta de novo (o limite de falhas do corte segura a repetição)
+        raise ErroPublicacao(msg, "temporario")
 
     def verificar(self) -> str:
         r = self.requisicao(
@@ -272,7 +310,9 @@ class YouTube(Plataforma):
                 }
         return saida
 
-    def publicar(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None) -> Resultado:
+    def publicar(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None,
+                 entrega: Entrega | None = None) -> Resultado:
+        entrega = entrega if entrega is not None else Entrega()
         tamanho = arquivo.stat().st_size
         r = self.requisicao(
             "POST",
@@ -295,14 +335,17 @@ class YouTube(Plataforma):
         video_id = video.get("id")
         if not video_id:
             raise ErroPublicacao("YouTube não devolveu o id do vídeo", "temporario")
+        url = f"https://youtube.com/shorts/{video_id}"
+        entrega.aceitou(video_id, url)  # o vídeo existe no canal a partir daqui
         privacidade = (video.get("status") or {}).get("privacyStatus")
         obs = None
         if privacidade and privacidade != self.conf["privacidade"]:
             obs = f"enviado como {privacidade} (projetos sem auditoria da API ficam privados)"
-        return Resultado(video_id, f"https://youtube.com/shorts/{video_id}", obs)
+        return Resultado(video_id, url, obs)
 
     def _enviar(self, sessao: str, arquivo: Path, tamanho: int, parar) -> dict:
         offset = 0
+        so_rede = True  # todas as tentativas caíram por falta de internet (nada chegou ao canal)
         for tentativa in range(1, 7):
             try:
                 with LeitorProgresso(arquivo, inicio=offset) as f:
@@ -315,6 +358,7 @@ class YouTube(Plataforma):
                 if r.status_code not in (308, 408, 429, 500, 502, 503, 504):
                     self._checar(r)
                     raise ErroPublicacao(f"YouTube recusou o upload (HTTP {r.status_code})", "temporario")
+                so_rede = False
                 log.warning("YouTube: upload respondeu HTTP %s; retomando", r.status_code)
             except requests.RequestException as e:
                 log.warning("YouTube: upload interrompido (%s); retomando", e.__class__.__name__)
@@ -329,9 +373,10 @@ class YouTube(Plataforma):
                 continue
             if q.status_code in (200, 201):
                 return json_seguro(q)
+            so_rede = False
             if q.status_code == 308:
                 faixa = q.headers.get("Range")  # "bytes=0-12345"
                 offset = int(faixa.rsplit("-", 1)[1]) + 1 if faixa else 0
             elif q.status_code == 404:
                 raise ErroPublicacao("A sessão de upload do YouTube expirou", "temporario")
-        raise ErroPublicacao("Upload do YouTube falhou depois de várias tentativas", "temporario")
+        raise ErroPublicacao("Upload do YouTube falhou depois de várias tentativas", "temporario", rede_falhou=so_rede)

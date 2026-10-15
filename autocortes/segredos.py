@@ -8,9 +8,11 @@ continuam sendo lidos e passam a ser cifrados na próxima gravação.
 from __future__ import annotations
 
 import base64
+import copy
 import ctypes
 import json
 import os
+import threading
 from pathlib import Path
 
 from .util import log, salvar_json
@@ -19,6 +21,10 @@ _MARCA = "dpapi"
 _DESCRICAO = "AutoCortes"
 _SEM_INTERFACE = 0x1  # CRYPTPROTECT_UI_FORBIDDEN: nunca abre janela pedindo nada
 _AVISADOS: set[str] = set()
+# login já decifrado -> (data do arquivo, tamanho, dados). O painel pergunta a conta de cada rede a
+# cada atualização: sem isto, era abrir e decifrar o arquivo várias vezes por segundo.
+_CACHE: dict[str, tuple[int, int, dict]] = {}
+_TRAVA_CACHE = threading.Lock()
 
 
 if os.name == "nt":
@@ -67,8 +73,36 @@ else:  # fora do Windows (não é o uso normal): fica em texto puro
         raise OSError("proteção de dados só existe no Windows")
 
 
+def _marca_do_arquivo(caminho: Path) -> tuple[int, int] | None:
+    try:
+        st = caminho.stat()
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size
+
+
 def ler_token(caminho: Path) -> dict:
-    """O login guardado ({} se não houver ou se não der para abrir neste usuário do Windows)."""
+    """O login guardado ({} se não houver ou se não der para abrir neste usuário do Windows).
+
+    Devolve uma cópia: quem altera o dicionário e salva não mexe no que está guardado na memória.
+    """
+    chave = str(caminho)
+    marca = _marca_do_arquivo(caminho)
+    if marca is None:
+        return {}
+    with _TRAVA_CACHE:
+        item = _CACHE.get(chave)
+        if item is not None and (item[0], item[1]) == marca:
+            return copy.deepcopy(item[2])
+    dados = _ler_do_disco(caminho)
+    marca = _marca_do_arquivo(caminho)  # a leitura pode ter cifrado um arquivo antigo (a data muda)
+    if marca is not None:
+        with _TRAVA_CACHE:
+            _CACHE[chave] = (marca[0], marca[1], copy.deepcopy(dados))
+    return dados
+
+
+def _ler_do_disco(caminho: Path) -> dict:
     try:
         bruto = json.loads(caminho.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -97,6 +131,8 @@ def ler_token(caminho: Path) -> dict:
 
 
 def salvar_token(caminho: Path, dados: dict) -> None:
+    with _TRAVA_CACHE:
+        _CACHE.pop(str(caminho), None)
     if not DISPONIVEL:
         salvar_json(caminho, dados)
         return

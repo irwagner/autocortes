@@ -209,11 +209,11 @@ def montar_conteudo(cfg: Config, filme: dict, corte: dict, usar_ia: bool = True)
     # da mais específica para a mais genérica: o YouTube mostra só as 3 primeiras acima
     # do título e o Instagram aceita no máximo 5
     for tag in automatica + extras + list(ia.get("hashtags") or []) + list(t["hashtags"]):
-        tag = str(tag).strip()
+        # espaço no meio quebrava a hashtag ("#filme de terror" vira #filme e texto solto)
+        tag = re.sub(r"[\s#]+", "", str(tag))
         if not tag:
             continue
-        if not tag.startswith("#"):
-            tag = "#" + tag
+        tag = "#" + tag
         chave = tag.lower()
         if chave not in vistos:
             vistos.add(chave)

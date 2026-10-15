@@ -33,12 +33,12 @@ from pathlib import Path
 
 from . import config as cfg_mod
 from .config import PLATAFORMAS, RAIZ, ErroConfig, carregar, criar_config_se_faltar
-from .util import log, slug
+from .util import Trava, escrever_atomico, log, slug
 
 __all__ = [
     "MAX_PERFIS", "Perfil", "atualizar", "autoiniciar_pendentes", "conflitos", "criar", "encerrar_pedido",
-    "encontrar", "excluir", "identidade", "iniciar", "instalacao", "limpar_pedido", "listar", "parar",
-    "pedido_de_encerrar", "principal", "salvar_instalacao", "situacao",
+    "encontrar", "excluir", "identidade", "iniciar", "instalacao", "limpar_pedido", "listar", "marcar_porta",
+    "parar", "pedido_de_encerrar", "salvar_instalacao", "situacao",
 ]
 
 PASTA = RAIZ / "perfis"
@@ -46,6 +46,12 @@ ARQUIVO_INSTALACAO = RAIZ / "perfis.toml"
 CONFIG_PRINCIPAL = RAIZ / "config.toml"
 # arquivo que pede a um perfil que se encerre (o painel dele não aceita comando sem o token da janela)
 NOME_PEDIDO = "encerrar.pedido"
+# a porta em que o painel do perfil está aberto agora: trocar a porta no config de um perfil aberto
+# só vale na próxima abertura, e sem isto ele sumia da tela (era procurado na porta nova)
+NOME_PORTA = "painel.porta"
+# pasta de perfil sendo excluída (renomeada antes de apagar: um arquivo em uso trava a troca de nome,
+# e o perfil não fica apagado pela metade)
+PREFIXO_EXCLUINDO = "_excluindo-"
 
 PORTA_PAINEL_BASE = 8778
 PORTA_NAVEGADOR_BASE = 9223
@@ -149,8 +155,13 @@ def salvar_instalacao(alteracoes: dict) -> dict:
             raise ErroConfig(f"Quantos perfis ao mesmo tempo: use de 0 (sem limite) a {MAX_PERFIS}")
         dados["max_simultaneos"] = valor
 
+    from tomlkit.exceptions import ParseError
+
     texto = ARQUIVO_INSTALACAO.read_text(encoding="utf-8-sig") if ARQUIVO_INSTALACAO.exists() else ""
-    doc = tomlkit.parse(texto)
+    try:
+        doc = tomlkit.parse(texto)
+    except ParseError as e:
+        raise ErroConfig(f"O perfis.toml tem um erro de sintaxe (foi editado à mão?): {e}") from e
     if "perfis" not in doc:
         doc.add(tomlkit.comment("AutoCortes - opções da instalação (valem para todos os perfis)"))
         doc.add(tomlkit.nl())
@@ -158,9 +169,7 @@ def salvar_instalacao(alteracoes: dict) -> dict:
         tabela.comment("Quantos perfis podem trabalhar ao mesmo tempo (0 = sem limite)")
         doc["perfis"] = tabela
     doc["perfis"]["max_simultaneos"] = dados["max_simultaneos"]
-    temporario = ARQUIVO_INSTALACAO.with_name(ARQUIVO_INSTALACAO.name + ".tmp")
-    temporario.write_text(tomlkit.dumps(doc), encoding="utf-8")
-    os.replace(temporario, ARQUIVO_INSTALACAO)
+    escrever_atomico(ARQUIVO_INSTALACAO, tomlkit.dumps(doc))
     return dados
 
 
@@ -207,14 +216,12 @@ def listar() -> list[Perfil]:
         saida.append(_ler(CONFIG_PRINCIPAL, "", True))
     if PASTA.is_dir():
         for pasta in sorted(PASTA.iterdir(), key=lambda p: p.name.lower()):
+            if pasta.name.startswith(PREFIXO_EXCLUINDO):
+                continue  # sobra de uma exclusão que não terminou de apagar
             alvo = pasta / "config.toml"
             if pasta.is_dir() and alvo.is_file():
                 saida.append(_ler(alvo, pasta.name, False))
     return saida
-
-
-def principal() -> Perfil | None:
-    return _ler(CONFIG_PRINCIPAL, "", True) if CONFIG_PRINCIPAL.exists() else None
 
 
 def encontrar(slug_: str) -> Perfil:
@@ -270,15 +277,72 @@ def _saude(porta: int) -> dict | None:
         return None
 
 
+def marcar_porta(pasta_dados: Path, porta: int | None) -> None:
+    """O painel anota a porta em que abriu (None apaga a anotação, ao fechar)."""
+    alvo = pasta_dados / NOME_PORTA
+    try:
+        if porta is None:
+            alvo.unlink(missing_ok=True)
+        else:
+            escrever_atomico(alvo, str(int(porta)))
+    except OSError as e:
+        log.debug("Não consegui anotar a porta do painel: %s", e)
+
+
+def _porta_anotada(p: Perfil) -> int:
+    try:
+        return int((p.pasta_dados / NOME_PORTA).read_text(encoding="utf-8").strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _travado(pasta_dados: Path) -> bool:
+    """Alguém segura a trava desta pasta de dados: o painel, o modo terminal ou um perfil fechando."""
+    alvo = pasta_dados / "autocortes.lock"
+    if not alvo.is_file():
+        return False
+    trava = Trava(alvo)
+    if trava.adquirir():
+        trava.liberar()
+        return False
+    return True
+
+
+def _chrome_aberto(pasta_dados: Path) -> bool:
+    """A janela do Chrome deste perfil está aberta (ele segura o lockfile da pasta dele)."""
+    alvo = pasta_dados / "chrome" / "lockfile"
+    if not alvo.is_file():
+        return False
+    try:
+        with open(alvo, "ab"):
+            return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
 def situacao(p: Perfil) -> dict:
-    """Se o perfil está aberto agora. Compara a marca da pasta de dados, não só a porta."""
-    saude = _saude(p.porta) if p.porta else None
-    if saude is None:
-        return {"rodando": False, "outro": False}
-    if str(saude.get("id") or "") == p.id:
-        return {"rodando": True, "outro": False, "desde": saude.get("desde"), "motor": saude.get("motor")}
-    # alguém responde nessa porta, mas com outra pasta de dados
-    return {"rodando": False, "outro": True, "perfil_na_porta": str(saude.get("perfil") or "outro perfil")}
+    """Se o perfil está aberto agora. Compara a marca da pasta de dados, não só a porta.
+
+    Procura na porta do config e na porta anotada pelo painel quando abriu (que é outra se você
+    trocou a porta com ele aberto). Aberto sem painel (terminal, ou fechando) vem como "ocupado".
+    """
+    portas = list(dict.fromkeys(x for x in (p.porta, _porta_anotada(p)) if x))
+    estranho = None
+    for porta in portas:
+        saude = _saude(porta)
+        if saude is None:
+            continue
+        if str(saude.get("id") or "") == p.id:
+            return {"rodando": True, "outro": False, "desde": saude.get("desde"), "motor": saude.get("motor"),
+                    "porta": porta}
+        if porta == p.porta:
+            estranho = saude
+    if estranho is not None:  # alguém responde na porta do config, mas com outra pasta de dados
+        return {"rodando": False, "outro": True, "perfil_na_porta": str(estranho.get("perfil") or "outro perfil"),
+                "ocupado": _travado(p.pasta_dados)}
+    return {"rodando": False, "outro": False, "ocupado": _travado(p.pasta_dados)}
 
 
 def situacoes(perfis: list[Perfil]) -> dict[str, dict]:
@@ -423,17 +487,32 @@ def conteudo(p: Perfil) -> dict:
 
 
 def excluir(slug_: str) -> dict:
-    """Apaga a pasta do perfil inteira (o painel confirma antes, pedindo o nome)."""
+    """Apaga a pasta do perfil inteira (o painel confirma antes, pedindo o nome).
+
+    Antes de apagar, confere que nada do perfil está aberto (painel, terminal, perfil fechando,
+    janela do Chrome dele) e troca o nome da pasta: no Windows, um arquivo em uso impede a troca,
+    e aí nada é apagado. Sem isso, o apagar parava no meio e o perfil ficava pela metade.
+    """
     p = encontrar(slug_)
     if p.principal:
         raise ErroConfig("O perfil principal não pode ser excluído")
-    if situacao(p)["rodando"]:
-        raise ErroConfig(f"Feche o perfil '{p.nome}' antes de excluir")
+    estado = situacao(p)
+    if estado["rodando"] or estado.get("ocupado"):
+        raise ErroConfig(f"Feche o perfil '{p.nome}' antes de excluir (ele está aberto no painel, no terminal "
+                         "ou ainda fechando)")
+    if _chrome_aberto(p.pasta_dados):
+        raise ErroConfig(f"A janela do navegador do perfil '{p.nome}' está aberta: feche-a antes de excluir")
     resumo = conteudo(p)
+    lixeira = p.pasta.with_name(f"{PREFIXO_EXCLUINDO}{p.slug}-{int(time.time())}")
     try:
-        shutil.rmtree(p.pasta)
+        p.pasta.rename(lixeira)
     except OSError as e:
-        raise ErroConfig(f"Não consegui apagar {p.pasta}: {e}") from e
+        raise ErroConfig(f"Não consegui excluir: algum arquivo do perfil está aberto em outro programa ({e}). "
+                         f"Feche o que estiver usando {p.pasta} e tente de novo. Nada foi apagado.") from e
+    try:
+        shutil.rmtree(lixeira)
+    except OSError as e:
+        log.warning("O perfil '%s' saiu da lista, mas sobrou a pasta %s para apagar à mão (%s)", p.nome, lixeira, e)
     log.warning("Perfil '%s' excluído (%s)", p.nome, p.pasta)
     return resumo
 
@@ -454,7 +533,11 @@ def iniciar(p: Perfil) -> dict:
         raise ErroConfig(f"O config do perfil '{p.nome}' tem um problema: {p.erro}")
     estado = situacao(p)
     if estado["rodando"]:
-        return {"iniciado": False, "motivo": "já estava aberto", "url": f"http://127.0.0.1:{p.porta}/"}
+        return {"iniciado": False, "motivo": "já estava aberto",
+                "url": f"http://127.0.0.1:{estado.get('porta') or p.porta}/"}
+    if estado.get("ocupado"):
+        raise ErroConfig(f"O perfil '{p.nome}' já está aberto no terminal (ou ainda fechando). "
+                         "Espere fechar e tente de novo.")
     if estado["outro"]:
         raise ErroConfig(
             f"A porta {p.porta} já está ocupada por {estado['perfil_na_porta']}. "
@@ -482,8 +565,9 @@ def iniciar(p: Perfil) -> dict:
     limite_espera = time.monotonic() + 40
     while time.monotonic() < limite_espera:
         time.sleep(0.5)
-        if situacao(p)["rodando"]:
-            return {"iniciado": True, "url": f"http://127.0.0.1:{p.porta}/"}
+        agora = situacao(p)
+        if agora["rodando"]:
+            return {"iniciado": True, "url": f"http://127.0.0.1:{agora.get('porta') or p.porta}/"}
     raise ErroConfig(
         f"O perfil '{p.nome}' não respondeu na porta {p.porta}. Veja o registro em {p.pasta_dados / 'logs'}."
     )

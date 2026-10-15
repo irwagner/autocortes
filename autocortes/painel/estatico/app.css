@@ -12,8 +12,13 @@
   --texto: #eef1f7;
   --texto-2: #b4bccd;
   --suave: #8a93a7;
-  --fraco: #5f687c;
+  /* texto de menos destaque: 4,9:1 sobre o cartão (o antigo #5f687c tinha 3,3:1) */
+  --fraco: #7a8499;
+  /* contorno dos campos: 3:1 sobre o cartão, o mínimo para dar para ver onde o campo está */
+  --borda-campo: #58637a;
   --acento: #ffb627;
+  /* destaque de "em andamento" (Agora, Editando, Enviando): laranja, para não se confundir com o aviso âmbar */
+  --andamento: #ff9f6b;
   --grad: linear-gradient(135deg, #ffc233 0%, #ff7a2f 55%, #ff4b3e 100%);
   --ok: #34d399;
   --aviso: #fbbf24;
@@ -38,6 +43,13 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 a { color: inherit; text-decoration: none; }
+/* link no meio do texto: sublinhado, senão ele some no texto em volta */
+:where(p, li, small, .nota, .aviso-inline, .aviso-rede, .texto-modal, .guia, .lista-erros, .passos) a:not(.btn):not(.link):not(.pilula) {
+  text-decoration: underline; text-underline-offset: 2px; text-decoration-color: rgba(238, 241, 247, .45);
+}
+:where(p, li, small, .nota, .aviso-inline, .aviso-rede, .texto-modal, .guia, .lista-erros, .passos) a:not(.btn):not(.link):not(.pilula):hover {
+  color: var(--acento); text-decoration-color: currentColor;
+}
 button, input, select, textarea { font: inherit; color: inherit; }
 img { display: block; }
 ::selection { background: rgba(255, 182, 39, .35); }
@@ -60,6 +72,13 @@ img { display: block; }
   position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; gap: 22px;
   padding: 22px 14px 18px; background: rgba(10, 13, 19, .82); border-right: 1px solid var(--borda);
   backdrop-filter: blur(10px);
+  /* tela baixa (1366 x 680): a lateral rola, e o "Fechar o AutoCortes" não fica cortado */
+  overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin;
+}
+@media (max-height: 760px) {
+  .lateral { gap: 14px; padding-top: 14px; padding-bottom: 12px; }
+  #menu a { padding: 8px 12px; }
+  .motor-status { padding: 9px 11px; }
 }
 .marca { display: flex; align-items: center; gap: 12px; padding: 4px 8px; }
 .marca-logo { width: 38px; height: 38px; flex: none; filter: drop-shadow(0 6px 16px rgba(255, 110, 40, .35)); }
@@ -194,7 +213,8 @@ img { display: block; }
 .badge.erro { background: rgba(248, 113, 113, .11); color: #fca5a5; border-color: rgba(248, 113, 113, .26); }
 .badge.info { background: rgba(96, 165, 250, .11); color: #93c5fd; border-color: rgba(96, 165, 250, .26); }
 .badge.neutro { background: rgba(148, 163, 184, .08); color: var(--texto-2); border-color: var(--borda-2); }
-.badge.acento { background: rgba(255, 182, 39, .12); color: #ffd27a; border-color: rgba(255, 182, 39, .3); }
+/* "em andamento" é laranja e o aviso é âmbar: "Agora" e "Não postado", "Enviando" e "Pulado" se distinguem */
+.badge.acento { background: rgba(255, 122, 47, .12); color: var(--andamento); border-color: rgba(255, 122, 47, .32); }
 
 .barra { height: 6px; background: #1d2431; border-radius: 99px; overflow: hidden; }
 .barra > i { display: block; height: 100%; background: var(--grad); border-radius: 99px; transition: width .5s ease; }
@@ -250,7 +270,8 @@ img { display: block; }
 .barra-ferramentas { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .rotulo-inline { display: inline-flex; align-items: center; gap: 7px; color: var(--suave); font-weight: 600; font-size: 13px; margin-right: 4px; }
 .rotulo-inline .ic { width: 16px; height: 16px; color: var(--acento); }
-.abas { display: flex; gap: 4px; background: var(--painel); border: 1px solid var(--borda); padding: 4px; border-radius: 12px; max-width: 100%; overflow-x: auto; }
+/* as abas quebram em duas linhas em vez de rolar: com a rolagem, "Sistema" sumia a 1050 px */
+.abas { display: flex; flex-wrap: wrap; gap: 4px; background: var(--painel); border: 1px solid var(--borda); padding: 4px; border-radius: 12px; max-width: 100%; }
 .aba {
   padding: 7px 13px; border-radius: 9px; color: var(--texto-2); font-weight: 600; font-size: 13.5px; cursor: pointer;
   border: 0; background: transparent; display: flex; gap: 8px; align-items: center; white-space: nowrap;
@@ -263,12 +284,20 @@ select.filtro { width: auto; min-width: 190px; height: 38px; }
 
 /* ------------------------------------------------------------ formulários */
 input[type=text], input[type=number], input[type=password], input[type=time], input[type=search], input[type=url], select, textarea {
-  width: 100%; background: var(--bg-2); border: 1px solid var(--borda-2); border-radius: 10px; color: var(--texto);
+  width: 100%; background: var(--bg-2); border: 1px solid var(--borda-campo); border-radius: 10px; color: var(--texto);
   padding: 8px 12px; min-height: 38px; transition: border-color .15s, box-shadow .15s;
 }
 textarea { resize: vertical; line-height: 1.45; min-height: 70px; }
-input:focus, select:focus, textarea:focus { outline: none; border-color: var(--acento); box-shadow: 0 0 0 3px rgba(255, 182, 39, .15); }
-input::placeholder, textarea::placeholder { color: #5a6376; }
+/* campos de texto: a borda acende; o resto (slider, cor, caixa de marcar) ganha o contorno do foco,
+   que antes sumia porque o "outline: none" valia para todo input */
+input:focus, select:focus, textarea:focus { outline: none; }
+input:not([type=range]):not([type=checkbox]):not([type=radio]):not([type=color]):focus, select:focus, textarea:focus {
+  border-color: var(--acento); box-shadow: 0 0 0 3px rgba(255, 182, 39, .28);
+}
+input[type=range]:focus-visible, input[type=color]:focus-visible, input[type=checkbox]:focus-visible, input[type=radio]:focus-visible {
+  outline: 2px solid var(--acento); outline-offset: 3px;
+}
+input::placeholder, textarea::placeholder { color: var(--fraco); }
 select { cursor: pointer; }
 input[type=number].curto { width: 110px; }
 input[type=time] { width: 118px; color-scheme: dark; }
@@ -298,11 +327,11 @@ input[type=range] { accent-color: var(--acento); }
 .range input { flex: 1; min-width: 0; }
 .range output { min-width: 52px; text-align: right; font-variant-numeric: tabular-nums; color: var(--texto-2); font-weight: 600; }
 .cor { display: flex; align-items: center; gap: 10px; }
-.cor input[type=color] { width: 44px; height: 34px; padding: 2px; border-radius: 9px; border: 1px solid var(--borda-2); background: var(--bg-2); cursor: pointer; }
+.cor input[type=color] { width: 44px; height: 34px; padding: 2px; border-radius: 9px; border: 1px solid var(--borda-campo); background: var(--bg-2); cursor: pointer; }
 .cor code { color: var(--texto-2); font-size: 13px; }
 
-.chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; padding: 5px; min-height: 40px; background: var(--bg-2); border: 1px solid var(--borda-2); border-radius: 10px; cursor: text; }
-.chips:focus-within { border-color: var(--acento); box-shadow: 0 0 0 3px rgba(255, 182, 39, .15); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; width: 100%; padding: 5px; min-height: 40px; background: var(--bg-2); border: 1px solid var(--borda-campo); border-radius: 10px; cursor: text; }
+.chips:focus-within { border-color: var(--acento); box-shadow: 0 0 0 3px rgba(255, 182, 39, .28); }
 .chip { display: inline-flex; align-items: center; gap: 4px; background: var(--painel-3); border: 1px solid var(--borda-2); border-radius: 8px; padding: 2px 4px 2px 9px; font-size: 13px; }
 .chip button { border: 0; background: none; color: var(--suave); cursor: pointer; padding: 0 2px; display: grid; place-items: center; border-radius: 5px; }
 .chip button:hover { color: var(--texto); background: rgba(255, 255, 255, .08); }
@@ -485,7 +514,11 @@ details.guia a { color: #ffc766; text-decoration: underline; }
 .copiavel { display: flex; gap: 6px; align-items: center; margin-top: 4px; }
 .copiavel code { flex: 1; background: var(--painel-3); border: 1px solid var(--borda-2); padding: 5px 9px; border-radius: 8px; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .grade-campos { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
-.card-rede .form .linha-campo { grid-template-columns: minmax(0, 1fr) minmax(150px, 210px); gap: 12px; padding: 10px 0; }
+.card-rede .form .linha-campo { grid-template-columns: minmax(0, 1fr) minmax(150px, 240px); gap: 12px; padding: 10px 0; }
+/* rede desligada: só o nome e a chave para ligar (o formulário inteiro aparece quando você liga) */
+.card-rede.desligada { border-top-color: var(--borda-2); }
+.card-rede.desligada .card-topo { margin-bottom: 0; }
+.card-rede.desligada .rede-titulo small { color: var(--fraco); }
 .card-rede .rodape-card { margin-top: auto; padding-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: space-between; }
 .contas-ig { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
 .contas-ig label { display: flex; gap: 10px; align-items: center; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--borda-2); background: var(--bg-2); cursor: pointer; }
@@ -538,7 +571,9 @@ input[type=search].busca { width: 240px; }
 @keyframes surgir { from { opacity: 0; } }
 @keyframes subir { from { opacity: 0; transform: translateY(10px) scale(.98); } }
 
-.toasts { position: fixed; right: 20px; bottom: 20px; z-index: 60; display: flex; flex-direction: column; gap: 10px; max-width: min(420px, 92vw); }
+.toasts { position: fixed; right: 20px; bottom: 20px; z-index: 60; display: flex; flex-direction: column; gap: 10px; max-width: min(420px, 92vw); transition: bottom .25s ease; }
+/* com a barra Salvar/Descartar à vista, os avisos sobem e não cobrem os botões dela */
+body:has(.barra-salvar.visivel) .toasts { bottom: 96px; }
 .toast {
   display: flex; gap: 11px; align-items: flex-start; padding: 12px 15px; border-radius: 13px; background: #1b2130; border: 1px solid var(--borda-2);
   box-shadow: var(--sombra); animation: subir .2s ease; transition: opacity .3s, transform .3s; white-space: pre-line; line-height: 1.45;
@@ -559,6 +594,12 @@ input[type=search].busca { width: 240px; }
   .grade-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .grade-3 { grid-template-columns: minmax(0, 1fr); }
   .config-layout { grid-template-columns: minmax(0, 1fr) 280px; }
+}
+/* com a coluna do lado nas Configurações, o rótulo vai para cima do campo antes que o campo
+   passe da borda do cartão (a 1050 px, um controle saía 18 px para fora) */
+@media (max-width: 1180px) {
+  .config-layout:not(.sem-lado) .linha-campo { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .config-layout:not(.sem-lado) .linha-campo .controle { justify-content: flex-start; }
 }
 @media (max-width: 1020px) {
   :root { --lateral: 76px; }

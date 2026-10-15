@@ -31,9 +31,11 @@ def coletar(cfg: Config, conn: sqlite3.Connection, plataformas: dict[str, Plataf
             continue
         if not plataforma.pronta()[0]:
             continue
+        # só o que saiu pela API oficial: o id de um post do navegador ou do Upload-Post não é da rede
         linhas = conn.execute(
             "SELECT id, id_remoto FROM postagens WHERE plataforma=? AND status='publicado' AND id_remoto IS NOT NULL "
-            "AND criado_em>=? AND (metricas_em IS NULL OR metricas_em<?) ORDER BY criado_em DESC LIMIT 200",
+            "AND (via IS NULL OR via='oficial') AND criado_em>=? AND (metricas_em IS NULL OR metricas_em<?) "
+            "ORDER BY criado_em DESC LIMIT 200",
             (nome, desde, antes_de),
         ).fetchall()
         linhas = [linha for linha in linhas if _ID_VALIDO.match(str(linha["id_remoto"]))]
@@ -79,7 +81,7 @@ def resumo(conn: sqlite3.Connection, dias: int = 7) -> dict:
             "SUM(p.curtidas) AS curtidas FROM postagens p JOIN cortes c ON c.id=p.corte_id "
             "JOIN filmes f ON f.id=c.filme_id WHERE p.status='publicado' AND p.visualizacoes IS NOT NULL "
             "AND p.criado_em>=? GROUP BY c.id ORDER BY visualizacoes DESC LIMIT 5",
-            (time.time() - 30 * 86400,),
+            (desde,),
         )
     ]
     return {"dias": dias, "por_rede": por_rede, "melhores": melhores,

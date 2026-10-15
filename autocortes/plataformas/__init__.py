@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from ..config import Config
-from .base import ErroPublicacao, Plataforma, Resultado
+from .base import Entrega, ErroPublicacao, Plataforma, Resultado
 
-__all__ = ["ErroPublicacao", "Plataforma", "Resultado", "criar"]
+__all__ = ["Entrega", "ErroPublicacao", "Plataforma", "Resultado", "criar"]
 
 
 def criar(nome: str, cfg: Config) -> Plataforma:

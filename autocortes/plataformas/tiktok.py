@@ -13,13 +13,14 @@ import requests
 
 from ..textos import Conteudo, limitar, tamanho_utf16
 from ..util import log
-from .base import ErroPublicacao, LeitorProgresso, Plataforma, Resultado, esperar, json_seguro
+from .base import Entrega, ErroPublicacao, LeitorProgresso, Plataforma, Resultado, esperar, json_seguro
 from .oauth import LoginOAuth, ServidorRetorno, pkce
 
 ESCOPOS = "user.info.basic,video.publish,video.upload"
 MB = 1024 * 1024
 
-# error.code da API -> ação
+# error.code da API -> ação. invalid_param é quase sempre configuração (privacidade, opções do
+# post): todo vídeo daria o mesmo erro, então para a rede em vez de queimar a fila.
 ERROS = {
     "access_token_invalid": "bloqueio",
     "scope_not_authorized": "bloqueio",
@@ -27,12 +28,21 @@ ERROS = {
     "unaudited_client_can_only_post_to_private_accounts": "bloqueio",
     "privacy_level_option_mismatch": "bloqueio",
     "url_ownership_unverified": "bloqueio",
+    "invalid_param": "bloqueio",
     "rate_limit_exceeded": "temporario",
     "spam_risk_too_many_posts": "temporario",
     "spam_risk_too_many_pending_share": "temporario",
     "reached_active_user_cap": "temporario",
     "internal_error": "temporario",
-    "invalid_param": "corte",
+}
+# bloqueios que não passam sozinhos: só depois de você resolver na conta e testar de novo
+PERSISTENTES = {"spam_risk_user_banned_from_posting"}
+# limites de uso (nada saiu): a rede espera esse tempo antes de tentar de novo
+LIMITES = {
+    "rate_limit_exceeded": 600,
+    "spam_risk_too_many_posts": 6 * 3600,
+    "spam_risk_too_many_pending_share": 6 * 3600,
+    "reached_active_user_cap": 6 * 3600,
 }
 DICAS = {
     "unaudited_client_can_only_post_to_private_accounts": "app não auditado: a conta do TikTok precisa estar privada",
@@ -193,14 +203,22 @@ class TikTok(Plataforma):
         dados = json_seguro(r)
         erro = dados.get("error") if isinstance(dados.get("error"), dict) else {}
         codigo = erro.get("code") or ("ok" if r.status_code == 200 else f"http_{r.status_code}")
-        if codigo == "ok":
+        if codigo == "ok" and r.status_code == 200:
             return dados.get("data") or {}
+        if codigo == "ok":
+            codigo = f"http_{r.status_code}"  # "ok" com HTTP de erro: vale o HTTP
         if codigo == "access_token_invalid" and renovar:
             self._access_token(forcar=True)
             return self._api(caminho, corpo, renovar=False)
-        tipo = ERROS.get(codigo) or ("temporario" if r.status_code >= 500 or r.status_code == 429 else "corte")
         dica = DICAS.get(codigo)
-        raise ErroPublicacao(f"TikTok: {codigo}{' - ' + dica if dica else ''} {erro.get('message') or ''}".strip(), tipo)
+        msg = f"TikTok: {codigo}{' - ' + dica if dica else ''} {erro.get('message') or ''}".strip()
+        if codigo in LIMITES or r.status_code == 429:
+            raise ErroPublicacao(msg, "temporario", ambiente=True, pausa_seg=LIMITES.get(codigo, 600))
+        if r.status_code == 401:
+            raise ErroPublicacao(msg, "bloqueio")
+        # código que eu não conheço vira temporário: o limite de falhas do corte segura a repetição
+        tipo = ERROS.get(codigo, "temporario")
+        raise ErroPublicacao(msg, tipo, persistente=codigo in PERSISTENTES)
 
     def verificar(self) -> str:
         info = self._api("/v2/post/publish/creator_info/query/")
@@ -208,7 +226,9 @@ class TikTok(Plataforma):
         return f"@{info.get('creator_username')} ({info.get('creator_nickname')}); privacidades: {opcoes}"
 
     # ------------------------------------------------------------ publicação
-    def publicar(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None) -> Resultado:
+    def publicar(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None,
+                 entrega: Entrega | None = None) -> Resultado:
+        entrega = entrega if entrega is not None else Entrega()
         tamanho = arquivo.stat().st_size
         parte, total = plano_de_partes(tamanho)
         fonte = {"source": "FILE_UPLOAD", "video_size": tamanho, "chunk_size": parte, "total_chunk_count": total}
@@ -248,10 +268,12 @@ class TikTok(Plataforma):
         publish_id, upload_url = dados.get("publish_id"), dados.get("upload_url")
         if not publish_id or not upload_url:
             raise ErroPublicacao("TikTok não devolveu publish_id/upload_url", "temporario")
-        self._enviar(upload_url, arquivo, tamanho, parte, total)
-        return self._acompanhar(publish_id, usuario, parar)
+        self._enviar(upload_url, arquivo, tamanho, parte, total, parar)
+        # com o arquivo inteiro lá, o TikTok publica sozinho: parar daqui em diante não pode repetir o post
+        entrega.aceitou(publish_id)
+        return self._acompanhar(publish_id, usuario, parar, entrega)
 
-    def _enviar(self, url: str, arquivo: Path, tamanho: int, parte: int, total: int) -> None:
+    def _enviar(self, url: str, arquivo: Path, tamanho: int, parte: int, total: int, parar=None) -> None:
         for i in range(total):
             ini = i * parte
             fim = tamanho - 1 if i == total - 1 else ini + parte - 1
@@ -270,20 +292,22 @@ class TikTok(Plataforma):
                         )
                 except requests.RequestException as e:
                     if tentativa == 3:
-                        raise ErroPublicacao(f"TikTok: falha de rede no upload ({e.__class__.__name__})", "temporario") from e
-                    time.sleep(5 * tentativa)
+                        raise ErroPublicacao(f"TikTok: falha de rede no upload ({e.__class__.__name__})", "temporario",
+                                             rede_falhou=True) from e
+                    esperar(parar, 5 * tentativa)
                     continue
                 if r.status_code in (200, 201, 206):
                     break
                 if r.status_code >= 500 and tentativa < 3:
-                    time.sleep(5 * tentativa)
+                    esperar(parar, 5 * tentativa)
                     continue
-                # 403 = upload_url expirou; 404/416 = sessão perdida: recomeça no próximo horário
-                tipo = "temporario" if r.status_code in (403, 404, 416) or r.status_code >= 500 else "corte"
-                raise ErroPublicacao(f"TikTok: upload da parte {i + 1}/{total} falhou (HTTP {r.status_code})", tipo)
+                # 403 = upload_url expirou; 404/416 = sessão perdida: recomeça no próximo horário.
+                # Outro código que eu não conheço também: o limite de falhas do corte segura a repetição.
+                raise ErroPublicacao(f"TikTok: upload da parte {i + 1}/{total} falhou (HTTP {r.status_code})",
+                                     "temporario")
         log.info("TikTok: vídeo enviado (%d parte(s)), aguardando processamento", total)
 
-    def _acompanhar(self, publish_id: str, usuario: str | None, parar) -> Resultado:
+    def _acompanhar(self, publish_id: str, usuario: str | None, parar, entrega: Entrega) -> Resultado:
         limite = time.monotonic() + 20 * 60
         status = ""
         while time.monotonic() < limite:
@@ -297,7 +321,12 @@ class TikTok(Plataforma):
             status = d.get("status", "")
             if status == "FAILED":
                 motivo = d.get("fail_reason") or "desconhecido"
-                raise ErroPublicacao(f"TikTok recusou o vídeo: {motivo}", FALHAS.get(motivo, "corte"))
+                entrega.desfazer()  # o TikTok avisou que não publicou: nada saiu
+                if motivo in LIMITES:
+                    raise ErroPublicacao(f"TikTok recusou o vídeo: {motivo}", "temporario", ambiente=True,
+                                         pausa_seg=LIMITES[motivo])
+                tipo = FALHAS.get(motivo, "corte")
+                raise ErroPublicacao(f"TikTok recusou o vídeo: {motivo}", tipo, persistente=motivo in PERSISTENTES)
             if status == "SEND_TO_USER_INBOX":
                 return Resultado(publish_id, None, "na caixa de entrada do TikTok: finalize a postagem no app")
             if status == "PUBLISH_COMPLETE":
@@ -305,4 +334,5 @@ class TikTok(Plataforma):
                 if ids and usuario:
                     return Resultado(str(ids[0]), f"https://www.tiktok.com/@{usuario}/video/{ids[0]}")
                 return Resultado(publish_id, None, "publicado (privado ou ainda em moderação)")
-        return Resultado(publish_id, None, f"enviado; o TikTok ainda estava processando ({status or 'sem status'})")
+        return Resultado(publish_id, None, f"enviado; o TikTok ainda estava processando ({status or 'sem status'})",
+                         confirmado=False)

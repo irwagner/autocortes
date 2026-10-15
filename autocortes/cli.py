@@ -15,7 +15,8 @@ Comandos principais:
   painel                abre o painel no navegador com o loop ligado (padrão)
   init                  cria o config.toml e as pastas
   verificar [--online]  confere FFmpeg, whisper, fonte e logins das redes
-  auth <rede>           conecta youtube, tiktok ou instagram pelo terminal (Kwai e Bilibili são à mão)
+  auth <rede>           conecta youtube, tiktok ou instagram; numa rede pelo navegador (Bilibili
+                        inclusive), abre a janela para entrar na conta. O Kwai é só à mão
   rodar                 loop contínuo sem painel (modo terminal)
   status                resumo de filmes, cortes e próximas postagens
   criar [pauta]         gera um vídeo do zero (narração + imagens) e põe na fila
@@ -54,6 +55,23 @@ def _conn(cfg):
     from . import db
 
     return db.conectar(cfg.banco)
+
+
+def _travar(cfg):
+    """Os comandos que editam, criam ou postam não rodam com o AutoCortes aberto na mesma pasta.
+
+    Com o painel (ou o modo terminal) ligado, os dois processos pegavam o mesmo corte: o vídeo
+    saía duas vezes na rede, ou um apagava o arquivo que o outro estava usando. A trava é a
+    mesma do painel e fica com o comando até ele terminar.
+    """
+    from .util import Trava
+
+    trava = Trava(cfg.pasta_dados / "autocortes.lock")
+    if not trava.adquirir(espera=2):
+        print("O AutoCortes está aberto com esta pasta de dados (no painel ou no modo terminal). "
+              "Faça isso pelo painel, ou feche-o antes de usar este comando.", file=sys.stderr)
+        raise SystemExit(1)
+    return trava
 
 
 # ---------------------------------------------------------------- comandos
@@ -109,8 +127,13 @@ def cmd_verificar(args) -> int:
         linha(True if modelo.exists() else None,
               f"Modelo '{cfg['transcricao']['modelo']}': {modelo if modelo.exists() else 'será baixado no primeiro uso'}")
 
-    fonte = Path(str(cfg["edicao"]["fonte_arquivo"]))
-    linha(fonte.exists(), f"Fonte das legendas: {fonte}")
+    # caminho relativo vale a partir da pasta do config, como na edição
+    nome_fonte = str(cfg["edicao"]["fonte_arquivo"]).strip()
+    if nome_fonte:
+        fonte = cfg.caminho_de(nome_fonte)
+        linha(fonte.is_file(), f"Fonte das legendas: {fonte}")
+    else:
+        linha(None, "Fonte das legendas: a padrão do sistema")
 
     filmes = [p for p in cfg.pasta_filmes.rglob("*") if p.suffix.lower() in EXTENSOES] if cfg.pasta_filmes.exists() else []
     linha(True if filmes else None, f"Pasta de filmes {cfg.pasta_filmes}: {len(filmes)} vídeo(s)")
@@ -208,11 +231,13 @@ def cmd_criar(args) -> int:
     from . import criacao
 
     cfg = _carregar(args)
+    trava = _travar(cfg)  # noqa: F841 (fica com o comando até o fim)
     conn = _conn(cfg)
     pasta = criacao.pasta_pautas(cfg)
     pasta.mkdir(parents=True, exist_ok=True)
     criacao.sincronizar(cfg, conn)
 
+    alvos = []
     if args.tema:
         try:
             arquivo = criacao.pauta_do_tema(cfg, conn, args.tema)
@@ -220,9 +245,14 @@ def cmd_criar(args) -> int:
             print(f"Erro: {e}", file=sys.stderr)
             return 1
         print(f"A IA escreveu a pauta: {arquivo}")
-
-    alvos = []
-    if args.pauta:
+        # só a pauta deste tema: as outras pendentes ficam para o motor (ou para um "criar" sem tema)
+        linha = conn.execute("SELECT * FROM filmes WHERE tipo='pauta' AND caminho=?",
+                             (str(arquivo.resolve()),)).fetchone()
+        if linha is None:
+            print(f"A pauta {arquivo.name} não entrou no banco (confira o formato)", file=sys.stderr)
+            return 1
+        alvos = [linha]
+    elif args.pauta:
         alvo = Path(args.pauta)
         if not alvo.is_absolute() and not alvo.is_file():
             alvo = pasta / alvo
@@ -235,6 +265,9 @@ def cmd_criar(args) -> int:
                              (str(alvo.resolve()),)).fetchone()
         if linha is None:
             print(f"A pauta {alvo.name} não entrou no banco (confira o formato)", file=sys.stderr)
+            return 1
+        if linha["status"] == "criando":
+            print(f"A pauta {alvo.name} está virando vídeo agora (no painel ou no motor)", file=sys.stderr)
             return 1
         if linha["status"] != "novo":  # pauta já usada: gera outra parte a pedido
             conn.execute("UPDATE filmes SET status='novo', esgotado=0, erro=NULL, tentativas=0 WHERE id=?",
@@ -257,7 +290,7 @@ def cmd_criar(args) -> int:
     falhas = 0
     for linha in alvos:
         print(f"'{linha['titulo']}': narrando e montando...")
-        corte_id = criacao.criar_do_banco(cfg, conn, linha)
+        corte_id = criacao.criar_do_banco(cfg.copia(), conn, linha)
         if corte_id is None:
             atual = conn.execute("SELECT erro FROM filmes WHERE id=?", (linha["id"],)).fetchone()
             print(f"  não deu: {(atual['erro'] if atual else '') or 'veja o registro'}", file=sys.stderr)
@@ -327,13 +360,20 @@ def cmd_analisar(args) -> int:
     from .produtor import Produtor, varrer_biblioteca
 
     cfg = _carregar(args)
+    trava = _travar(cfg)  # noqa: F841 (fica com o comando até o fim)
     conn = _conn(cfg)
     varrer_biblioteca(cfg, conn)
     produtor = Produtor(cfg, threading.Event())
+    # pauta (vídeo criado do zero) não é filme: o ffprobe num .txt virava "filme com erro"
     if args.filme:
-        filmes = conn.execute("SELECT * FROM filmes WHERE id=?", (args.filme,)).fetchall()
+        filmes = conn.execute("SELECT * FROM filmes WHERE id=? AND tipo='filme'", (args.filme,)).fetchall()
+        if not filmes:
+            pauta = conn.execute("SELECT 1 FROM filmes WHERE id=?", (args.filme,)).fetchone()
+            print(f"#{args.filme} é uma pauta de vídeo criado, não um filme (use: criar)." if pauta
+                  else f"Filme #{args.filme} não existe (veja os números em: status).", file=sys.stderr)
+            return 1
     else:
-        filmes = conn.execute("SELECT * FROM filmes WHERE status='novo' ORDER BY id").fetchall()
+        filmes = conn.execute("SELECT * FROM filmes WHERE status='novo' AND tipo='filme' ORDER BY id").fetchall()
     if not filmes:
         print("Nenhum filme novo para analisar (coloque vídeos em %s)." % cfg.pasta_filmes)
         return 0
@@ -349,10 +389,15 @@ def cmd_reanalisar(args) -> int:
     from .analise import pasta_do_filme
 
     cfg = _carregar(args)
+    trava = _travar(cfg)  # noqa: F841 (fica com o comando até o fim)
     conn = _conn(cfg)
     filme = conn.execute("SELECT * FROM filmes WHERE id=?", (args.filme,)).fetchone()
     if not filme:
         print(f"Filme #{args.filme} não existe.")
+        return 1
+    if filme["tipo"] != "filme":
+        print(f"#{args.filme} é uma pauta de vídeo criado: para refazer, use o \"Recriar\" do painel.",
+              file=sys.stderr)
         return 1
     conn.execute("DELETE FROM cortes WHERE filme_id=? AND status='candidato'", (filme["id"],))
     pasta = pasta_do_filme(cfg, filme["id"])
@@ -370,6 +415,7 @@ def cmd_renderizar(args) -> int:
     from .produtor import Produtor
 
     cfg = _carregar(args)
+    trava = _travar(cfg)  # noqa: F841 (fica com o comando até o fim)
     conn = _conn(cfg)
     produtor = Produtor(cfg, threading.Event())
     feitos = 0
@@ -384,29 +430,82 @@ def cmd_renderizar(args) -> int:
     return 0
 
 
+RESULTADOS_POSTAR = {
+    "publicado": "publicado",
+    "simulado": "simulado (modo simulação: nada foi enviado)",
+    "aguardando": "tarefa de postagem à mão criada (veja o vídeo e os textos no Início do painel)",
+    "conferir": "a rede recebeu o vídeo, mas não deu para confirmar que saiu. Confira no app e marque "
+                "no Início do painel (Saiu / Não saiu)",
+    "ensaio": "ensaio: tudo foi preenchido e nada foi publicado (o motivo ficou no histórico do corte)",
+    "pausado": "a rede ou a internet falharam antes de o vídeo sair: nada foi publicado e a rede espera "
+               "um pouco antes de tentar de novo (veja o registro)",
+    "bloqueado": "a rede recusou a conta (login vencido, verificação ou configuração): nada foi publicado, e a "
+                 "rede fica pausada até você resolver em Redes sociais no painel (veja o registro)",
+    "ocupado": "já existe um envio para essa rede em andamento",
+    "pulado": "o corte foi pulado nesta rede (o motivo ficou no histórico)",
+    "falhou": "falhou (o motivo ficou no histórico e no registro)",
+    "erro": "o arquivo do corte sumiu",
+    "interrompido": "interrompido",
+}
+
+
 def cmd_postar(args) -> int:
     import threading as th
+    from datetime import datetime as dt
 
-    from .publicador import Publicador
+    from .config import ROTULOS
+    from .publicador import Publicador, ler_bloqueios
 
     cfg = _carregar(args)
     if args.real:
         cfg["geral"]["simulacao"] = False
+    rede, rotulo = args.rede, ROTULOS[args.rede]
+    if not cfg[rede]["ativo"]:
+        print(f"O {rotulo} está desativado ([{rede}].ativo no config ou em Redes sociais no painel).",
+              file=sys.stderr)
+        return 1
+    trava = _travar(cfg)  # noqa: F841 (fica com o comando até o fim)
     conn = _conn(cfg)
+    a_mao = cfg[rede]["envio"] == "manual"
+    if not cfg.simulacao and not a_mao:
+        # a pausa do motor vale aqui também: postar à mão não fura um bloqueio da rede
+        bloqueio = ler_bloqueios(conn).get(rede)
+        if bloqueio and bloqueio.get("tipo") != "rede":
+            ate = bloqueio.get("ate")
+            quando = ("até você testar a conta em Redes sociais" if ate is None
+                      else f"até {dt.fromtimestamp(ate).strftime('%d/%m %H:%M')}")
+            print(f"O {rotulo} está pausado {quando}: {bloqueio.get('motivo')}", file=sys.stderr)
+            return 1
     publicador = Publicador(cfg, th.Event())
     if args.corte:
-        corte = conn.execute("SELECT * FROM cortes WHERE id=? AND arquivo IS NOT NULL", (args.corte,)).fetchone()
+        corte = conn.execute("SELECT * FROM cortes WHERE id=?", (args.corte,)).fetchone()
+        if corte is None:
+            print(f"O corte #{args.corte} não existe (veja os números em: cortes).", file=sys.stderr)
+            return 1
+        editado = corte["status"] in ("revisao", "pronto", "concluido") and bool(corte["arquivo"]) \
+            and Path(corte["arquivo"]).is_file()
+        if not editado:
+            print(f"O corte #{corte['id']} ainda não foi editado (ou o arquivo sumiu): situação '{corte['status']}'.",
+                  file=sys.stderr)
+            return 1
+        if rede == "youtube":
+            limite = int(cfg["youtube"]["max_segundos"])
+            if corte["fim"] - corte["inicio"] > limite + 0.5:
+                print(f"O corte #{corte['id']} tem {corte['fim'] - corte['inicio']:.0f} s e o YouTube recebe só "
+                      f"Shorts de até {limite} s ([youtube].max_segundos).", file=sys.stderr)
+                return 1
+        if corte["status"] == "revisao":  # postar à mão também aprova, como no painel
+            conn.execute("UPDATE cortes SET status='pronto' WHERE id=?", (corte["id"],))
+            corte = conn.execute("SELECT * FROM cortes WHERE id=?", (corte["id"],)).fetchone()
     else:
-        corte = publicador.proximo_corte(conn, args.rede)
+        corte = publicador.proximo_corte(conn, rede)
     if corte is None:
         print("Nenhum corte pronto para essa rede (rode: renderizar).")
         return 1
-    status = publicador.postar(conn, args.rede, corte, manual=True)  # fora da agenda, como o "postar agora"
-    if status == "aguardando":
-        print("Resultado: tarefa de postagem à mão criada (veja o vídeo e os textos no Início do painel)")
-        return 0
-    print(f"Resultado: {status}")
-    return 0 if status in ("publicado", "simulado") else 1
+    status = publicador.postar(conn, rede, corte, manual=True)  # fora da agenda, como o "postar agora"
+    publicador.atualizar_concluidos(conn)
+    print(f"Resultado: {RESULTADOS_POSTAR.get(status, status)}")
+    return 0 if status in ("publicado", "simulado", "aguardando", "ensaio") else 1
 
 
 def cmd_cortes(args) -> int:

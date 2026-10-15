@@ -9,12 +9,17 @@ from . import agenda
 from .config import Config
 
 
+# falhas comuns de um corte numa rede antes de desistir dele (a última vira 'pulado', com o motivo)
+FALHAS_POR_CORTE = 4
+
+
 def status_concluidos(cfg: Config) -> tuple[str, ...]:
     """Status de postagem que contam como 'já feito' para um corte numa rede.
 
     'aguardando' é a tarefa de postagem à mão: o corte já foi entregue para você postar.
+    'conferir' é o envio que a rede recebeu sem confirmar: nunca é repetido sozinho.
     """
-    base = ("publicado", "pulado", "enviando", "aguardando")
+    base = ("publicado", "pulado", "enviando", "aguardando", "conferir")
     return base + ("simulado",) if cfg.simulacao else base
 
 
@@ -23,9 +28,12 @@ def status_sucesso(cfg: Config) -> tuple[str, ...]:
 
 
 def status_ocupam_horario(cfg: Config) -> tuple[str, ...]:
-    """Postagens que atendem um horário da agenda e contam no intervalo mínimo e no limite do dia
-    (a tarefa à mão ocupa o horário, mesmo antes de você postar)."""
-    return status_sucesso(cfg) + ("aguardando",)
+    """Postagens que atendem um horário da agenda e contam no intervalo mínimo e no limite do dia.
+
+    A tarefa à mão ocupa o horário mesmo antes de você postar; o post 'a conferir' provavelmente
+    saiu; e o ensaio também gasta o horário (senão o mesmo horário puxaria o corte seguinte).
+    """
+    return status_sucesso(cfg) + ("aguardando", "conferir", "ensaio")
 
 
 def duracao_maxima(cfg: Config, rede: str) -> float | None:
@@ -53,11 +61,12 @@ def fila(cfg: Config, conn: sqlite3.Connection, rede: str, limite: int | None = 
         + ("AND (c.fim - c.inicio) <= ? " if maximo is not None else "")
         + "AND NOT EXISTS (SELECT 1 FROM postagens p WHERE p.corte_id = c.id AND p.plataforma = ? "
         f"               AND p.status IN ({_marcas(len(feitos))})) "
+        # o publicador transforma a última falha em 'pulado'; isto segura só o histórico antigo
         "AND (SELECT COUNT(*) FROM postagens p WHERE p.corte_id = c.id AND p.plataforma = ? "
-        "     AND p.status IN ('falhou', 'interrompido')) < 4 "
+        "     AND p.status = 'falhou') < ? "
         "ORDER BY c.prioridade DESC, c.fila_em, c.id"
     )
-    params: list = ([maximo + 0.5] if maximo is not None else []) + [rede, *feitos, rede]
+    params: list = ([maximo + 0.5] if maximo is not None else []) + [rede, *feitos, rede, FALHAS_POR_CORTE]
     if limite:
         sql += " LIMIT ?"
         params.append(limite)
@@ -65,12 +74,21 @@ def fila(cfg: Config, conn: sqlite3.Connection, rede: str, limite: int | None = 
 
 
 def horario_atendido(conn: sqlite3.Connection, rede: str, ts: float, sucesso: tuple[str, ...],
-                     limite_ts: float | None = None) -> bool:
-    """Um horário conta como atendido quando uma postagem da agenda saiu para ele."""
+                     limite_ts: float | None = None, chave: str | None = None) -> bool:
+    """Um horário conta como atendido quando uma postagem da agenda saiu para ele.
+
+    A ligação é pela chave do horário (agenda.horarios_com_chave); as postagens de antes da
+    chave existir são comparadas pela hora exata.
+    """
     marc = _marcas(len(sucesso))
+    if chave and conn.execute(
+        f"SELECT 1 FROM postagens WHERE plataforma=? AND status IN ({marc}) AND slot=? LIMIT 1",
+        (rede, *sucesso, chave),
+    ).fetchone():
+        return True
     if conn.execute(
         f"SELECT 1 FROM postagens WHERE plataforma=? AND status IN ({marc}) AND horario IS NOT NULL "
-        "AND abs(horario - ?) < 1 LIMIT 1",
+        "AND slot IS NULL AND abs(horario - ?) < 1 LIMIT 1",
         (rede, *sucesso, ts),
     ).fetchone():
         return True
@@ -133,7 +151,9 @@ def cobertura(cfg: Config, conn: sqlite3.Connection) -> dict:
     analisados = uma("SELECT COUNT(*) FROM filmes WHERE tipo='filme' AND status='analisado'")
     total_cortes = uma("SELECT COUNT(*) FROM cortes c JOIN filmes f ON f.id=c.filme_id "
                        "WHERE f.status='analisado' AND f.tipo='filme'")
-    pautas_novas = uma("SELECT COUNT(*) FROM filmes WHERE tipo='pauta' AND status='novo'")
+    # pauta só vira vídeo com a criação ligada: desligada, ela não sustenta a agenda
+    pautas_novas = uma("SELECT COUNT(*) FROM filmes WHERE tipo='pauta' AND status IN ('novo', 'criando')") \
+        if cfg["criacao"]["ativo"] else 0
     media = total_cortes / analisados if analisados else min(20, int(cfg["cortes"]["max_por_filme"]))
     estimados = int(round(filmes_novos * media))
 
@@ -161,6 +181,13 @@ def cobertura(cfg: Config, conn: sqlite3.Connection) -> dict:
     }
 
 
+def _pausas_das_redes(conn: sqlite3.Connection) -> dict[str, float | None]:
+    """Até quando cada rede está pausada pelo motor (None = até você testar a conta)."""
+    from .publicador import ler_bloqueios  # aqui dentro: o publicador importa este módulo
+
+    return {rede: (None if b.get("ate") is None else float(b["ate"])) for rede, b in ler_bloqueios(conn).items()}
+
+
 def montar_plano(cfg: Config, conn: sqlite3.Connection, agora: datetime | None = None, dias: int = 7) -> dict:
     """Calendário de hoje até 'dias' à frente: postagens feitas e horários futuros com o corte previsto."""
     agora = agora or datetime.now()
@@ -169,6 +196,8 @@ def montar_plano(cfg: Config, conn: sqlite3.Connection, agora: datetime | None =
     ocupam = status_ocupam_horario(cfg)
     tolerancia = timedelta(minutes=max(5.0, float(cfg["agenda"]["tolerancia_minutos"])))
     pausado = bool(cfg["agenda"]["pausado"])
+    # rede parada pelo motor (bloqueio, cota, recusas): os horários dela até a pausa acabar não saem
+    pausas = {} if cfg.simulacao else _pausas_das_redes(conn)
     itens: list[dict] = []
 
     for p in conn.execute(
@@ -186,14 +215,14 @@ def montar_plano(cfg: Config, conn: sqlite3.Connection, agora: datetime | None =
     abertos: dict[str, tuple[list, list]] = {}
     necessarios = 0
     for rede in cfg.plataformas_ativas():
-        horarios = agenda.horarios_entre(cfg, rede, inicio, fim)
+        horarios = agenda.horarios_entre_com_chave(cfg, rede, inicio, fim)
         pendentes: list[tuple[datetime, str]] = []
-        for i, h in enumerate(horarios):
+        for i, (h, chave) in enumerate(horarios):
             if h > agora:
                 pendentes.append((h, "agendado"))
                 continue
-            limite = horarios[i + 1] if i + 1 < len(horarios) else h + tolerancia
-            if horario_atendido(conn, rede, h.timestamp(), ocupam, min(limite, h + tolerancia).timestamp()):
+            limite = horarios[i + 1][0] if i + 1 < len(horarios) else h + tolerancia
+            if horario_atendido(conn, rede, h.timestamp(), ocupam, min(limite, h + tolerancia).timestamp(), chave):
                 continue  # a postagem feita (ou a tarefa à mão) já aparece no histórico
             if agora <= h + tolerancia:
                 pendentes.append((h, "pendente"))
@@ -204,17 +233,23 @@ def montar_plano(cfg: Config, conn: sqlite3.Connection, agora: datetime | None =
         if not sem_cortes_possiveis(cfg, rede):  # sem corte que caiba, editar mais não resolve
             necessarios = max(necessarios, len(pendentes) - len(fila_rede))
 
-    previstos = previsao_edicao(cfg, conn, necessarios)
+    # Os mesmos cortes editados vão para todas as redes, mas no YouTube só os que cabem num Short:
+    # a previsão olha mais à frente para achar os que cabem lá
+    com_limite = any(duracao_maxima(cfg, r) is not None for r in abertos)
+    previstos = previsao_edicao(cfg, conn, necessarios * 3 + 5 if com_limite and necessarios else necessarios)
     for rede, (pendentes, fila_rede) in abertos.items():
         nenhum_cabe = sem_cortes_possiveis(cfg, rede)
+        maximo = duracao_maxima(cfg, rede)
+        cabem = [c for c in previstos if maximo is None or c["fim"] - c["inicio"] <= maximo + 0.5]
         for j, (h, estado) in enumerate(pendentes):
+            parada = rede in pausas and (pausas[rede] is None or h.timestamp() < pausas[rede])
             item = {"tipo": "horario", "rede": rede, "quando": h.timestamp(),
-                    "estado": "pausado" if pausado else estado}
+                    "estado": "pausado" if pausado or parada else estado}
             if j < len(fila_rede):
                 c = fila_rede[j]
                 item.update(corte_id=c["id"], filme=c["filme_titulo"], parte=c["parte"], previsto=False)
-            elif not nenhum_cabe and j - len(fila_rede) < len(previstos):
-                c = previstos[j - len(fila_rede)]
+            elif not nenhum_cabe and j - len(fila_rede) < len(cabem):
+                c = cabem[j - len(fila_rede)]
                 item.update(corte_id=c["id"], filme=c["filme"], parte=c["parte"], previsto=True)
             else:
                 item["sem_corte"] = True

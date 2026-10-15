@@ -17,10 +17,12 @@ import requests
 from ..config import ROTULOS, Config
 from ..textos import Conteudo, limitar, limitar_hashtags, tamanho_utf16
 from ..util import log
-from .base import ErroPublicacao, LeitorProgresso, Plataforma, Resultado, esperar, json_seguro
+from .base import Entrega, ErroPublicacao, LeitorProgresso, Plataforma, Resultado, esperar, json_seguro
 
 API = "https://api.upload-post.com"
 PAINEL = "https://app.upload-post.com/manage-users"
+# limite do plano: espera antes de tentar de novo (nada saiu)
+PAUSA_LIMITE_SEG = 6 * 3600
 
 
 class CorpoMultipart:
@@ -147,7 +149,8 @@ class ViaUploadPost(Plataforma):
         if r.status_code == 404:
             raise ErroPublicacao(f"Upload-Post: perfil '{self.up['perfil']}' não encontrado", "bloqueio")
         if r.status_code == 429:
-            raise ErroPublicacao(f"Upload-Post: limite do plano atingido ({msg})", "bloqueio")
+            raise ErroPublicacao(f"Upload-Post: limite do plano atingido ({msg})", "temporario", ambiente=True,
+                                 pausa_seg=PAUSA_LIMITE_SEG)
         if r.status_code >= 500:
             raise ErroPublicacao(f"Upload-Post fora do ar ({r.status_code}): {msg}", "temporario")
         if "available_pages" in dados:  # mais de uma Página do Facebook no perfil
@@ -160,8 +163,8 @@ class ViaUploadPost(Plataforma):
                 f"Upload-Post: a conta do {ROTULOS[alvo]} não está conectada no perfil "
                 f"'{self.up['perfil']}'. Conecte em {PAINEL}", "bloqueio",
             )
-        tipo = "bloqueio" if "privacy" in msg.lower() else "corte"
-        raise ErroPublicacao(f"Upload-Post: {msg}", tipo)
+        # pela mensagem: configuração (para a rede), problema do vídeo (pula o corte) ou, sem saber, tenta de novo
+        raise ErroPublicacao(f"Upload-Post: {msg}", _classificar_falha(msg))
 
     def autorizar(self) -> None:
         print(
@@ -252,12 +255,14 @@ class ViaUploadPost(Plataforma):
                 campos.append(("share_to_feed", "true" if c["compartilhar_no_feed"] else "false"))
         return campos
 
-    def publicar(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None) -> Resultado:
+    def publicar(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None,
+                 entrega: Entrega | None = None) -> Resultado:
         request_id = f"autocortes-{uuid.uuid4().hex}"
-        return self._enviar(self._campos(conteudo, request_id), arquivo, request_id, self.nome, parar)
+        return self._enviar(self._campos(conteudo, request_id), arquivo, request_id, self.nome, parar,
+                            entrega if entrega is not None else Entrega())
 
     def publicar_facebook(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None,
-                          ao_avancar=None) -> Resultado:
+                          entrega: Entrega | None = None) -> Resultado:
         """O mesmo Reel na Página do Facebook conectada no perfil do Upload-Post."""
         request_id = f"autocortes-{uuid.uuid4().hex}"
         campos: list[tuple[str, str]] = [
@@ -273,9 +278,11 @@ class ViaUploadPost(Plataforma):
         pagina = str(self.cfg["instagram"].get("facebook_pagina_id") or "").strip()
         if pagina:
             campos.append(("facebook_page_id", pagina))
-        return self._enviar(campos, arquivo, request_id, "facebook", parar)
+        return self._enviar(campos, arquivo, request_id, "facebook", parar,
+                            entrega if entrega is not None else Entrega())
 
-    def _enviar(self, campos: list[tuple[str, str]], arquivo: Path, request_id: str, alvo: str, parar) -> Resultado:
+    def _enviar(self, campos: list[tuple[str, str]], arquivo: Path, request_id: str, alvo: str, parar,
+                entrega: Entrega) -> Resultado:
         corpo = CorpoMultipart(campos, "video", arquivo)
         cabecalhos = {**self._cabecalhos(), "Content-Type": corpo.content_type, "Idempotency-Key": request_id}
         try:
@@ -283,7 +290,7 @@ class ViaUploadPost(Plataforma):
         except requests.RequestException as e:
             # o arquivo pode ter chegado mesmo sem resposta: consulta pelo request_id antes de desistir
             log.warning("%s: sem resposta do envio (%s); consultando o andamento", self.rotulo, e.__class__.__name__)
-            return self._acompanhar(request_id, parar, alvo, tolerar_ausente=True)
+            return self._acompanhar(request_id, parar, alvo, entrega, tolerar_ausente=True)
         finally:
             corpo.close()
         if r.status_code not in (200, 201, 202):
@@ -291,16 +298,22 @@ class ViaUploadPost(Plataforma):
         dados = json_seguro(r)
         if dados.get("success") is False:
             self._erro_http(r, alvo)
+        request_id = str(dados.get("request_id") or request_id)
+        # o serviço ficou com o vídeo e vai publicar sozinho: parar daqui em diante não repete o post
+        entrega.aceitou(request_id)
         resultados = dados.get("results")
         if isinstance(resultados, dict) and alvo in resultados:  # respondeu na hora
-            return self._resultado(resultados[alvo], request_id, alvo)
-        return self._acompanhar(dados.get("request_id") or request_id, parar, alvo)
+            return self._resultado(resultados[alvo], request_id, alvo, entrega)
+        return self._acompanhar(request_id, parar, alvo, entrega)
 
-    def _acompanhar(self, request_id: str, parar, alvo: str, tolerar_ausente: bool = False) -> Resultado:
+    def _acompanhar(self, request_id: str, parar, alvo: str, entrega: Entrega,
+                    tolerar_ausente: bool = False) -> Resultado:
         limite = time.monotonic() + 30 * 60
         inicio = time.monotonic()
+        intervalo = 8.0
         while time.monotonic() < limite:
-            esperar(parar, 8)
+            esperar(parar, intervalo)
+            intervalo = min(60.0, intervalo * 1.5)  # a maioria termina em segundos; depois, sem pressa
             try:
                 r = self.sessao.get(f"{self.api}/api/uploadposts/status", params={"request_id": request_id},
                                     headers=self._cabecalhos(), timeout=(20, 60))
@@ -311,29 +324,37 @@ class ViaUploadPost(Plataforma):
             if r.status_code == 404 or status == "not_found":
                 if time.monotonic() - inicio < 120 or not tolerar_ausente:
                     continue
+                entrega.desfazer()
                 raise ErroPublicacao("Upload-Post não recebeu o vídeo (sem resposta do envio)", "temporario")
+            if r.status_code == 429 or r.status_code >= 500:
+                intervalo = 60.0  # o serviço pediu calma ou está instável: a consulta continua
+                continue
             if r.status_code >= 400:
                 self._erro_http(r, alvo)
+            entrega.aceitou(request_id)  # o serviço conhece o envio (vale para o caso sem resposta)
             for item in dados.get("results") or []:
                 if isinstance(item, dict) and item.get("platform") == alvo:
                     estado = str(item.get("status") or "")
                     if item.get("success") or estado == "completed":
-                        return self._resultado(item, request_id, alvo)
+                        return self._resultado(item, request_id, alvo, entrega)
                     if estado in ("failed", "skipped") or item.get("skipped") or item.get("success") is False:
                         if estado not in ("retryable", "queued", "processing"):
-                            return self._resultado(item, request_id, alvo)
+                            return self._resultado(item, request_id, alvo, entrega)
             if status == "failed":
+                entrega.desfazer()
                 raise ErroPublicacao(f"Upload-Post: {dados.get('message') or 'o envio falhou'}", "temporario")
-        return Resultado(request_id, None, "enviado ao Upload-Post; ainda estava processando")
+        return Resultado(request_id, None, "enviado ao Upload-Post; ainda estava processando", confirmado=False)
 
-    def _resultado(self, item: dict, request_id: str, alvo: str) -> Resultado:
+    def _resultado(self, item: dict, request_id: str, alvo: str, entrega: Entrega) -> Resultado:
         if item.get("skipped"):
+            entrega.desfazer()
             raise ErroPublicacao(
                 f"A conta do {ROTULOS[alvo]} não está conectada no perfil do Upload-Post. Conecte em {PAINEL}",
                 "bloqueio",
             )
         if not item.get("success") and str(item.get("status") or "") != "completed":
             motivo = str(item.get("error") or item.get("message") or "falha sem detalhes")
+            entrega.desfazer()  # o serviço avisou que a rede não publicou: nada saiu
             raise ErroPublicacao(f"Upload-Post ({ROTULOS[alvo]}): {motivo}", _classificar_falha(motivo))
         url = _url_publica(item.get("url")) or _url_publica(item.get("post_url"))
         id_remoto = str(item.get("post_id") or item.get("video_id") or item.get("video_reel_id")

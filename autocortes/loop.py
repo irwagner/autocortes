@@ -13,9 +13,22 @@ from datetime import datetime
 from . import agenda, db
 from .config import Config
 from .midia import Interrompido
-from .produtor import Produtor
-from .publicador import Publicador
+from .produtor import TRAVA_ANALISE, TRAVA_EDICAO, Produtor
+from .publicador import TRAVAS_REDE, Publicador, desbloquear
 from .util import ATIVIDADES, Trava, impedir_suspensao, log
+
+
+def recuperar_pendentes(cfg: Config) -> None:
+    """Devolve à fila o que ficou "em andamento", sem mexer no que está rodando agora mesmo
+    (um "Postar agora" do painel ou uma edição continuam enquanto o motor reinicia)."""
+    conn = db.conectar(cfg.banco)
+    try:
+        db.recuperar_estados_pendentes(
+            conn, redes_ocupadas=[rede for rede, trava in TRAVAS_REDE.items() if trava.locked()],
+            editando=TRAVA_EDICAO.locked() or TRAVA_ANALISE.locked(),
+        )
+    finally:
+        conn.close()
 
 
 def _dormir(parar: threading.Event, segundos: float) -> None:
@@ -65,9 +78,7 @@ class Motor:
             if self.rodando:
                 return False
             self._parar = threading.Event()
-            conn = db.conectar(self.cfg.banco)
-            db.recuperar_estados_pendentes(conn)
-            conn.close()
+            recuperar_pendentes(self.cfg)
             self.produtor = Produtor(self.cfg, self._parar)
             self.publicador = Publicador(self.cfg, self._parar)
             self._threads = [
@@ -90,9 +101,14 @@ class Motor:
         log.info("Desligando o motor (aguarde o processo atual parar)...")
         for t in threads:
             t.join(timeout)
-        conn = db.conectar(self.cfg.banco)
-        db.recuperar_estados_pendentes(conn)
-        conn.close()
+        vivas = [t.name for t in threads if t.is_alive()]
+        if vivas:
+            # a thread ainda está no meio de um envio ou de uma edição: devolver o estado agora
+            # poria na fila de novo algo que ainda está acontecendo. Fica para a próxima abertura.
+            log.warning("O motor não terminou a tempo (%s ainda trabalhando); o estado em andamento fica como está",
+                        ", ".join(vivas))
+        else:
+            recuperar_pendentes(self.cfg)
         self.iniciado_em = None
         log.info("Motor desligado.")
 
@@ -102,10 +118,20 @@ class Motor:
         if self.publicador is not None:
             self.publicador.sincronizar()
 
-    def rede_atualizada(self, rede: str) -> None:
-        """Depois de um login novo, a rede volta a ser tentada na hora."""
-        if self.publicador is not None:
-            self.publicador.bloqueadas.pop(rede, None)
+    def rede_atualizada(self, rede: str, persistente: bool = False) -> None:
+        """Depois de um login novo ou de mudar a configuração, a rede volta a ser tentada na hora.
+
+        persistente=True (você testou a conta ou conectou de novo) tira também o bloqueio que não
+        passa sozinho, como a verificação de robô ou a conta restrita.
+        """
+        conn = db.conectar(self.cfg.banco, preparar=False)
+        try:
+            if self.publicador is not None:
+                self.publicador.liberar(conn, rede, persistente)
+            else:
+                desbloquear(conn, rede, persistente)
+        finally:
+            conn.close()
 
     def pedir_varredura(self) -> None:
         if self.produtor is not None:
@@ -126,7 +152,7 @@ class Motor:
                 except Exception:
                     falhas += 1
                     log.exception("Erro na produção de cortes (tentando de novo em instantes)")
-                    ATIVIDADES.definir("Erro na produção; tentando de novo em instantes")
+                    ATIVIDADES.definir("Erro na produção; tentando de novo em instantes", ocioso=True)
                     _dormir(parar, min(900, 30 * falhas))
                     continue
                 if not trabalhou:
@@ -160,7 +186,7 @@ class Motor:
 def rodar(cfg: Config) -> int:
     """Modo terminal, sem painel."""
     trava = Trava(cfg.pasta_dados / "autocortes.lock")
-    if not trava.adquirir():
+    if not trava.adquirir(espera=2):
         log.error("Já existe um AutoCortes rodando com esta pasta de dados (feche o painel ou a outra janela).")
         return 1
     motor = Motor(cfg)

@@ -60,12 +60,15 @@ class Atividades:
         self._trava = threading.Lock()
         self._itens: dict[str, dict] = {}
 
-    def definir(self, texto: str, pct: float | None = None, chave: str | None = None) -> None:
+    def definir(self, texto: str, pct: float | None = None, chave: str | None = None, ocioso: bool = False) -> None:
+        """ocioso=True é o recado de quem está esperando ("Estoque completo..."): aparece no painel,
+        mas não conta como trabalho em andamento (o painel não precisa se atualizar a toda hora)."""
         chave = chave or threading.current_thread().name
         with self._trava:
             atual = self._itens.get(chave)
             desde = atual["desde"] if atual and atual["texto"] == texto else time.time()
-            self._itens[chave] = {"chave": chave, "texto": texto, "pct": _pct(pct), "desde": desde}
+            self._itens[chave] = {"chave": chave, "texto": texto, "pct": _pct(pct), "desde": desde,
+                                  "ocioso": bool(ocioso)}
 
     def progresso(self, pct: float, chave: str | None = None) -> None:
         chave = chave or threading.current_thread().name
@@ -126,12 +129,58 @@ def configurar_log(pasta: Path, detalhado: bool = False) -> None:
         log.addHandler(console)
 
 
+def escrever_atomico(caminho: Path, texto: str, sincronizar: bool = False) -> None:
+    """Grava de forma atômica: temporário com nome único, depois replace.
+
+    O nome único deixa duas threads gravarem o mesmo arquivo sem uma trocar o temporário da
+    outra; se algo falhar no meio, o temporário é apagado e o arquivo antigo fica como estava.
+    Com `sincronizar`, o temporário vai para o disco antes da troca: numa queda de energia fica
+    o arquivo antigo ou o novo, nunca um vazio.
+    """
+    caminho.parent.mkdir(parents=True, exist_ok=True)
+    temporario = caminho.with_name(f".{caminho.name}.{os.getpid()}-{threading.get_ident()}.tmp")
+    try:
+        with open(temporario, "w", encoding="utf-8") as saida:
+            saida.write(texto)
+            if sincronizar:
+                saida.flush()
+                os.fsync(saida.fileno())
+        for tentativa in range(5):
+            try:
+                os.replace(temporario, caminho)
+                return
+            except PermissionError:
+                # no Windows, antivírus e indexador às vezes seguram o arquivo por um instante
+                if tentativa == 4:
+                    raise
+                time.sleep(0.1 * (tentativa + 1))
+    finally:
+        try:
+            temporario.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def trocar_arquivo(origem: Path, destino: Path) -> None:
+    """os.replace que aguenta o destino aberto por outro (o player do painel, o antivírus).
+
+    O Windows recusa trocar um arquivo aberto, mesmo quando quem abriu deixa apagar. Apagar
+    funciona (no NTFS o nome fica livre na hora), e aí o arquivo novo entra no lugar.
+    """
+    for tentativa in range(4):
+        try:
+            os.replace(origem, destino)
+            return
+        except PermissionError:
+            if tentativa < 3:
+                time.sleep(0.15 * (tentativa + 1))
+    destino.unlink(missing_ok=True)  # se nem apagar der, o arquivo está preso de verdade: o erro sobe
+    os.replace(origem, destino)
+
+
 def salvar_json(caminho: Path, dados) -> None:
     """Grava de forma atômica (arquivo temporário + replace)."""
-    caminho.parent.mkdir(parents=True, exist_ok=True)
-    temporario = caminho.with_name(caminho.name + ".tmp")
-    temporario.write_text(json.dumps(dados, ensure_ascii=False, indent=1), encoding="utf-8")
-    os.replace(temporario, caminho)
+    escrever_atomico(caminho, json.dumps(dados, ensure_ascii=False, indent=1))
 
 
 def ler_json(caminho: Path, padrao=None):
@@ -149,8 +198,23 @@ def sem_acentos(texto: str) -> str:
 
 
 def slug(texto: str, maximo: int = 40) -> str:
-    base = re.sub(r"[^A-Za-z0-9]+", "-", sem_acentos(texto)).strip("-").lower()
-    return (base[:maximo].strip("-")) or "video"
+    """Nome de arquivo seguro, só com letras sem acento, números e hífen.
+
+    Texto que perde letras na conversão (chinês, japonês, coreano...) ganha um pedaço do hash do
+    original: sem isso, todo título em outra escrita virava "video", e dois temas ou dois arquivos
+    diferentes passavam por um só.
+    """
+    import hashlib
+
+    original = str(texto or "")
+    base = re.sub(r"[^A-Za-z0-9]+", "-", sem_acentos(original)).strip("-").lower()[:maximo].strip("-")
+    perdeu = any(c.isalnum() and not c.isascii() and not sem_acentos(c) for c in original)
+    if base and not perdeu:
+        return base
+    sufixo = hashlib.sha1(original.encode("utf-8")).hexdigest()[:8]
+    if not base:
+        return f"video-{sufixo}" if original.strip() else "video"
+    return f"{base[: max(1, maximo - 9)].strip('-')}-{sufixo}"
 
 
 def fmt_tempo(segundos: float) -> str:
@@ -173,8 +237,22 @@ class Trava:
         self.caminho = caminho
         self._arquivo = None
 
-    def adquirir(self) -> bool:
+    def adquirir(self, espera: float = 0) -> bool:
+        """Pega a trava. Com `espera`, tenta de novo por esse tempo antes de desistir.
+
+        A espera cobre quem só confere a trava por um instante (a tela de perfis faz isso para
+        saber se um perfil está aberto): sem ela, o perfil que abria bem nessa hora desistia.
+        """
         self.caminho.parent.mkdir(parents=True, exist_ok=True)
+        limite = time.monotonic() + max(0.0, espera)
+        while True:
+            if self._tentar():
+                return True
+            if time.monotonic() >= limite:
+                return False
+            time.sleep(0.2)
+
+    def _tentar(self) -> bool:
         arquivo = open(self.caminho, "a+")
         try:
             if os.name == "nt":

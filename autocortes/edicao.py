@@ -6,6 +6,7 @@ import math
 import os
 import shutil
 import threading
+import time
 from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from fractions import Fraction
@@ -19,7 +20,7 @@ from .legendas import (
 from .midia import (
     ErroMidia, Progresso, base_ffmpeg, caminho_filtro, duracao_arquivo, executar, fracao, saida_binaria, sondar,
 )
-from .util import log
+from .util import log, trocar_arquivo
 
 
 def _par(valor: float) -> int:
@@ -424,7 +425,8 @@ def preparar_fonte(cfg: Config) -> Path | None:
         for arquivo in dict.fromkeys([str(e["fonte_arquivo"]), str(e.get("fonte_topo_arquivo") or "")]):
             if not arquivo.strip():
                 continue
-            origem = Path(arquivo)
+            # caminho relativo vale a partir da pasta do config (e não da pasta em que o programa abriu)
+            origem = cfg.caminho_de(arquivo.strip())
             if not origem.exists():
                 log.warning("Fonte %s não encontrada; usando a fonte padrão do sistema", origem)
                 continue
@@ -447,8 +449,28 @@ def preparar_fonte(cfg: Config) -> Path | None:
 
 # ---------------------------------------------------------------- filtros
 
-# codificadores de GPU que já falharam nesta execução (o resto das edições vai direto para o libx264)
-_CODECS_FALHOS: set[str] = set()
+# Codificador de GPU que falhou há pouco -> hora da falha. As próximas edições vão direto para o
+# libx264, mas só por um tempo: a falha pode ser passageira (a memória da placa ocupada pelo Ollama,
+# por exemplo), e uma falha só desligava a GPU até fechar o programa.
+_CODECS_FALHOS: dict[str, float] = {}
+VALIDADE_FALHA_GPU = 30 * 60
+
+
+def gpu_disponivel(codec: str) -> bool:
+    """O codificador de GPU pode ser tentado (nunca falhou, ou a falha já passou do prazo)."""
+    falhou = _CODECS_FALHOS.get(codec)
+    if falhou is None:
+        return True
+    if time.time() - falhou > VALIDADE_FALHA_GPU:
+        _CODECS_FALHOS.pop(codec, None)
+        return True
+    return False
+
+
+def prazo_render(dur: float) -> float:
+    """Tempo máximo de uma codificação: folgado (CPU lenta, prioridade baixa), mas um FFmpeg
+    travado não segura a fila de edição para sempre."""
+    return max(900.0, float(dur) * 40)
 
 
 def _args_video(cfg: Config, fps: Fraction, codec: str | None = None) -> list[str]:
@@ -471,7 +493,6 @@ def _filtro_video(cfg: Config, g: Geometria, origem: str, extra_cor: str, dur: f
     """
     e = cfg["edicao"]
     largura, altura = int(e["largura"]), int(e["altura"])
-    area = g.area or Area(0, 0, largura, altura)
     partes: list[str] = []
     barra = bool(e["barra_progresso"])
     cor_barra = str(e["cor_barra"]).lstrip("#")
@@ -548,6 +569,59 @@ def _filtro_ass(ass: Path, pasta_fontes: Path | None) -> str:
     return filtro
 
 
+def filtro_ass(ass: Path, pasta_fontes: Path | None) -> str:
+    """O filtro que queima a legenda (ASS) no vídeo, com a pasta das fontes."""
+    return _filtro_ass(ass, pasta_fontes)
+
+
+def filtro_video(cfg: Config, g: Geometria, origem: str, extra_cor: str, dur: float | None,
+                 moldura: dict | None, entrada_moldura: int) -> tuple[list[str], str]:
+    """Fundo, filme (ou a origem montada), barra de progresso e moldura: o visual do modelo em uso."""
+    return _filtro_video(cfg, g, origem, extra_cor, dur, moldura, entrada_moldura)
+
+
+def codificar(cfg: Config, comando, fps: Fraction, dur: float, parcial: Path, destino: Path,
+              parar: threading.Event | None = None, rotulo: str = "", intervalo_seg: float = 20,
+              oque: str = "renderização") -> float:
+    """Roda o FFmpeg montado por `comando(args_do_video)` e põe o arquivo pronto no lugar.
+
+    Usa o codificador do config; se o da placa falhar, tenta de novo no libx264 (e as próximas
+    edições vão para a CPU por um tempo). Confere a duração do resultado. Em qualquer saída com
+    erro, inclusive parar o motor, o arquivo parcial é apagado. Devolve a duração obtida.
+    Fonte única do fim do render: a edição dos cortes e a montagem dos vídeos criados usam esta.
+    """
+    codec = str(cfg["edicao"]["codec"])
+    usar_gpu = codec != "libx264" and gpu_disponivel(codec)
+    prazo = prazo_render(dur)
+    baixa = cfg["geral"]["prioridade_baixa"]
+    try:
+        prog = Progresso(rotulo or f"Codificando {destino.name}", dur, intervalo_seg=intervalo_seg)
+        r = executar(comando(_args_video(cfg, fps, None if usar_gpu else "libx264")), parar=parar,
+                     ao_ler_saida=prog.linha_ffmpeg, baixa_prioridade=baixa, timeout=prazo)
+        if r.codigo != 0 and usar_gpu:
+            # placa/driver sem suporte ao codificador escolhido (ou sem memória agora): tenta o libx264 (CPU)
+            log.warning("O codificador %s falhou (%s). Tentando com o libx264.", codec, r.resumo_erro(2))
+            prog = Progresso(rotulo or f"Codificando {destino.name}", dur, intervalo_seg=intervalo_seg)
+            r = executar(comando(_args_video(cfg, fps, "libx264")), parar=parar,
+                         ao_ler_saida=prog.linha_ffmpeg, baixa_prioridade=baixa, timeout=prazo)
+            if r.codigo == 0:  # o problema era o codificador da placa: as próximas vão na CPU por um tempo
+                _CODECS_FALHOS[codec] = time.time()
+                log.warning("Usando o libx264 pelos próximos %d min (o %s falhou nesta placa ou driver).",
+                            VALIDADE_FALHA_GPU // 60, codec)
+        if r.codigo != 0:
+            raise ErroMidia(f"falha na {oque}: {r.resumo_erro(6)}")
+        obtida = duracao_arquivo(cfg["ferramentas"]["ffprobe"], parcial)
+        if obtida < dur * 0.9:
+            raise ErroMidia(f"o vídeo da {oque} ficou curto ({obtida:.1f}s de {dur:.1f}s)")
+        try:
+            trocar_arquivo(parcial, destino)  # aguenta o vídeo antigo aberto no player do painel
+        except OSError as erro:
+            raise ErroMidia(f"não consegui pôr o vídeo pronto no lugar de {destino.name}: {erro}") from erro
+        return obtida
+    finally:
+        parcial.unlink(missing_ok=True)  # depois do replace ele já não existe; com erro, não fica lixo
+
+
 # ---------------------------------------------------------------- render
 
 def renderizar(
@@ -572,8 +646,9 @@ def renderizar(
     cw, ch, cx, cy = info["crop"]
     destino.parent.mkdir(parents=True, exist_ok=True)
 
-    # --- legendas e texto do topo (ASS)
-    ass = destino.with_suffix(".ass")
+    # --- legendas e texto do topo (ASS). Nome parcial: numa reedição, o .ass do vídeo que já
+    # existe só é trocado quando o novo render dá certo
+    ass = destino.with_name(destino.stem + ".parcial.ass")
     palavras = palavras_no_intervalo(frases, inicio, fim) if e["legendas"] else []
     estilo = estilo_legenda(cfg, g)
     ass.write_text(gerar_ass(estilo, palavras, dur, g.legenda_y, topo, g.topo_y), encoding="utf-8")
@@ -615,48 +690,44 @@ def renderizar(
             str(parcial),
         ]
 
-    codec = str(e["codec"])
-    usar_gpu = codec != "libx264" and codec not in _CODECS_FALHOS
-    rotulo = rotulo or f"Renderizando {destino.name}"
-    prog = Progresso(rotulo, dur, intervalo_seg=20)
-    r = executar(comando(_args_video(cfg, fps, None if usar_gpu else "libx264")), parar=parar,
-                 ao_ler_saida=prog.linha_ffmpeg, baixa_prioridade=cfg["geral"]["prioridade_baixa"])
-    if r.codigo != 0 and usar_gpu:
-        # placa/driver sem suporte ao codificador escolhido: tenta o libx264 (CPU)
-        log.warning("O codificador %s falhou (%s). Tentando com o libx264.", codec, r.resumo_erro(2))
-        prog = Progresso(rotulo, dur, intervalo_seg=20)
-        r = executar(comando(_args_video(cfg, fps, "libx264")), parar=parar,
-                     ao_ler_saida=prog.linha_ffmpeg, baixa_prioridade=cfg["geral"]["prioridade_baixa"])
-        if r.codigo == 0:  # o problema era mesmo o codificador da placa: as próximas edições vão direto na CPU
-            _CODECS_FALHOS.add(codec)
-            log.warning("Usando o libx264 daqui em diante (o %s não funcionou nesta placa ou driver).", codec)
-    if r.codigo != 0:
-        parcial.unlink(missing_ok=True)
-        raise ErroMidia(f"falha na renderização: {r.resumo_erro(6)}")
-
-    obtida = duracao_arquivo(cfg["ferramentas"]["ffprobe"], parcial)
-    if obtida < dur * 0.9:
-        parcial.unlink(missing_ok=True)
-        raise ErroMidia(f"vídeo renderizado ficou curto ({obtida:.1f}s de {dur:.1f}s)")
-    parcial.replace(destino)
+    try:
+        codificar(cfg, comando, fps, dur, parcial, destino, parar, rotulo or f"Renderizando {destino.name}")
+        try:  # a legenda usada fica ao lado do vídeo, como antes
+            os.replace(ass, destino.with_suffix(".ass"))
+        except OSError as erro:
+            log.debug("Não consegui guardar a legenda de %s: %s", destino.name, erro)
+    finally:
+        ass.unlink(missing_ok=True)
     gerar_miniatura(cfg, destino, min(dur / 3, 3.0))
     return destino
 
 
 def gerar_miniatura(cfg: Config, video: Path, segundo: float = 2.0) -> Path | None:
-    """JPEG pequeno ao lado do vídeo, usado nos cards do painel."""
+    """JPEG pequeno ao lado do vídeo, usado nos cards do painel.
+
+    Gerado num nome temporário e trocado de uma vez: o painel pode pedir a miniatura enquanto ela
+    é feita, e nunca recebe meia imagem. A falha aqui nunca derruba o render, que já terminou.
+    """
     destino = video.with_suffix(".jpg")
-    r = executar(
-        base_ffmpeg(cfg["ferramentas"]["ffmpeg"])
-        + ["-loglevel", "error", "-ss", f"{max(0.0, segundo):.2f}", "-i", str(video), "-frames:v", "1",
-           "-vf", "scale=360:-2", "-q:v", "4", "-update", "1", str(destino)],
-        baixa_prioridade=cfg["geral"]["prioridade_baixa"],
-        timeout=120,
-    )
-    if r.codigo != 0 or not destino.exists():
-        log.debug("Miniatura não gerada para %s: %s", video.name, r.resumo_erro(2))
+    temporario = video.with_name(f"{video.stem}.{os.getpid()}-{threading.get_ident()}.parcial.jpg")
+    try:
+        r = executar(
+            base_ffmpeg(cfg["ferramentas"]["ffmpeg"])
+            + ["-loglevel", "error", "-ss", f"{max(0.0, segundo):.2f}", "-i", str(video), "-frames:v", "1",
+               "-vf", "scale=360:-2", "-q:v", "4", "-update", "1", str(temporario)],
+            baixa_prioridade=cfg["geral"]["prioridade_baixa"],
+            timeout=120,
+        )
+        if r.codigo != 0 or not temporario.exists():
+            log.debug("Miniatura não gerada para %s: %s", video.name, r.resumo_erro(2))
+            return None
+        trocar_arquivo(temporario, destino)  # a miniatura antiga pode estar aberta no painel
+        return destino
+    except (ErroMidia, OSError) as erro:
+        log.debug("Miniatura não gerada para %s: %s", video.name, erro)
         return None
-    return destino
+    finally:
+        temporario.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------- prévia
@@ -737,14 +808,16 @@ def previa_estilo(cfg: Config, destino: Path, quadro: Path | None = None, topo: 
     partes, atual = _filtro_video(cfg, g, origem, "", None, moldura, 1, barra_fixa=0.35)
     partes.append(f"[{atual}]{_filtro_ass(ass, preparar_fonte(cfg))},scale=720:-2[saida]")
     entrada_moldura = ["-i", str(arquivo_moldura)] if moldura is not None else []
-    r = executar(
-        base_ffmpeg(cfg["ferramentas"]["ffmpeg"])
-        + ["-loglevel", "error", "-loop", "1", "-i", str(quadro), *entrada_moldura,
-           "-filter_complex", ";".join(partes), "-map", "[saida]", "-frames:v", "1", "-ss", f"{momento:.2f}",
-           "-q:v", "3", "-update", "1", str(destino)],
-        baixa_prioridade=False, timeout=120,
-    )
-    ass.unlink(missing_ok=True)
+    try:
+        r = executar(
+            base_ffmpeg(cfg["ferramentas"]["ffmpeg"])
+            + ["-loglevel", "error", "-loop", "1", "-i", str(quadro), *entrada_moldura,
+               "-filter_complex", ";".join(partes), "-map", "[saida]", "-frames:v", "1", "-ss", f"{momento:.2f}",
+               "-q:v", "3", "-update", "1", str(destino)],
+            baixa_prioridade=False, timeout=120,
+        )
+    finally:
+        ass.unlink(missing_ok=True)
     if r.codigo != 0:
         raise ErroMidia(f"falha ao gerar a prévia: {r.resumo_erro(4)}")
     return destino

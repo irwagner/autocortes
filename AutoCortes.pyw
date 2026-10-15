@@ -54,7 +54,14 @@ def main() -> int:
 
         codigo = cli(argumentos)
     except SystemExit as e:
-        codigo = e.code if isinstance(e.code, int) else 1
+        # SystemExit() sem código é saída normal; com texto, o texto é a mensagem de erro
+        if e.code is None:
+            codigo = 0
+        elif isinstance(e.code, int):
+            codigo = e.code
+        else:
+            saida.write(str(e.code))
+            codigo = 1
     except Exception as e:  # noqa: BLE001 (qualquer falha vira um aviso na tela)
         saida.write(f"{e.__class__.__name__}: {e}")
         codigo = 1

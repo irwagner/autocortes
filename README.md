@@ -178,7 +178,9 @@ cd AutoCortes
 
 Sem o Git, use **Code > Download ZIP** no GitHub e extraia a pasta.
 
-**Para abrir, dê dois cliques no `AutoCortes.bat`.** Na primeira vez ele cria o ambiente do Python, instala as bibliotecas e cria o `config.toml` a partir do `config.example.toml`; depois abre o painel no navegador em `http://127.0.0.1:8777`, já com o motor ligado. A janela preta mostra o registro: fechar a janela (ou usar "Fechar o AutoCortes" no painel) desliga tudo. Se o AutoCortes já estiver aberto, o `.bat` só abre o painel de novo.
+**Para abrir, dê dois cliques no `AutoCortes.bat`.** Na primeira vez ele cria o ambiente do Python, instala as bibliotecas e cria o `config.toml` a partir do `config.example.toml`; depois abre o painel no navegador em `http://127.0.0.1:8777`, já com o motor ligado. A janela preta mostra o registro: fechar a janela (ou usar "Fechar o AutoCortes" no painel) desliga tudo. Se o AutoCortes já estiver aberto, o `.bat` só abre o painel de novo. Quando o `requirements.txt` muda, o `.bat` instala as bibliotecas de novo sozinho; se a pasta `.venv` vier de um Python antigo (ou o Python dela tiver sido desinstalado), ele avisa para apagar a pasta, que é refeita na abertura seguinte.
+
+Com o AutoCortes aberto, os comandos do terminal que editam, criam ou postam (`analisar`, `renderizar`, `reanalisar`, `criar` e `postar`) recusam rodar na mesma pasta de dados: os dois processos pegariam o mesmo corte.
 
 **Iniciar com o Windows:** ligue em Configurações > Sistema. O AutoCortes passa a abrir em segundo plano quando você entra no Windows, pelo `AutoCortes.pyw`, sem janela e sem abrir o navegador. Para ver o painel, abra o `AutoCortes.bat`. Se algo impedir a abertura, aparece uma caixa com o motivo.
 
@@ -203,7 +205,7 @@ Comandos, todos no formato `.venv\Scripts\python -m autocortes <comando>`:
 | `rodar` | loop contínuo sem painel |
 | `status` | filmes, cortes, redes e últimas postagens |
 | `criar [pauta]` | gera um vídeo do zero a partir de uma pauta de `pautas/` |
-| `auth <rede>` | conecta youtube, tiktok ou instagram (Kwai e Bilibili não conectam: são à mão) |
+| `auth <rede>` | conecta youtube, tiktok ou instagram; numa rede pelo navegador (o Bilibili inclusive), abre a janela para entrar na conta. O Kwai é só à mão |
 | `verificar [--online]` | confere a instalação e testa os logins |
 | `baixar` | baixa o whisper.cpp e os modelos agora |
 | `analisar [--filme N]` | analisa filmes novos sem postar |
@@ -229,7 +231,7 @@ Abre no navegador pelo `AutoCortes.bat`. A lateral mostra se o motor está ligad
 </tr>
 </table>
 
-- **Início:** avisos do que falta configurar, as tarefas de postagem à mão (com o número no menu), cortes na fila, dias de conteúdo, posts de hoje, próximas postagens, o que está sendo feito agora (com progresso), últimas postagens, desempenho dos últimos 7 dias e a situação de cada rede.
+- **Início:** avisos do que falta configurar, os posts **a conferir** (a rede recebeu o vídeo e não confirmou: você diz se saiu, e nada é repetido até lá), as tarefas de postagem à mão (com o número no menu), cortes na fila, dias de conteúdo, posts de hoje, próximas postagens, o que está sendo feito agora (com progresso), últimas postagens, desempenho dos últimos 7 dias e a situação de cada rede.
 - **Agenda:** calendário de 7 ou 14 dias com cada horário e o corte previsto, dias de conteúdo por rede, pausa geral, horários e dias de cada rede, presets e regras (variação, tolerância, intervalo, limites e tentativas).
 - **Cortes:** abas por situação (aguardando aprovação, na fila, encontrados, publicados e descartados), filtro por filme e aprovar todos. O detalhe de cada corte tem o vídeo, por que o trecho foi escolhido, os textos do post (editar, gerar com IA, ver como o post sai), a situação em cada rede (e na Página do Facebook) com "Postar agora", "Postar à mão" ou "Ver a tarefa", e o histórico.
 - **Filmes:** enviar filmes e legendas arrastando para a página, situação e progresso da análise, reanalisar, ignorar e editar título, ano, hashtags e idioma.
@@ -237,7 +239,8 @@ Abre no navegador pelo `AutoCortes.bat`. A lateral mostra se o motor está ligad
 - **Estúdio:** o visual dos cortes numa tela de celular. Arraste o vídeo, o título e a legenda para cima e para baixo (ou use as setas do teclado), escolha ou envie a moldura, o tamanho do vídeo (Menor, Inteiro com o quadro todo, Padrão de 1,25x e Maior de 1,7x, ou o valor exato), o fundo, a fonte, o tamanho e as cores do título e da legenda, a barra e o fade. "O que os apps cobrem" mostra as faixas onde ficam os botões e a descrição das redes, e "Como vai sair" mostra o quadro gerado pelo mesmo editor dos cortes.
 - **Criação:** as pautas dos [vídeos feitos do zero](#vídeos-criados-do-zero) e a fila de temas. Escrever a pauta à mão ou pedir o roteiro à IA, editar o texto, criar o vídeo na hora e ver o que cada pauta já rendeu.
 - **Perfis:** vários nichos na mesma instalação ([veja abaixo](#perfis-vários-nichos-de-uma-vez)), cada um com sua pasta, suas contas e seu tema. Criar, abrir, fechar, ajustar portas e excluir, com o limite de quantos trabalham ao mesmo tempo.
-- **Configurações:** abas Geral, Cortes, Vídeo (qualidade e volume), Textos dos posts, IA, Transcrição e Sistema, com exemplo do post, teste da IA, download do modelo de transcrição e iniciar com o Windows. As alterações ficam pendentes numa barra no rodapé até você salvar (Ctrl+S também salva).
+- **Configurações:** abas Geral, Cortes, Vídeo (qualidade e volume), Criação, Textos dos posts, IA, Transcrição e Sistema, com exemplo do post, teste da IA, download do modelo de transcrição e iniciar com o Windows. As alterações ficam pendentes numa barra no rodapé até você salvar (Ctrl+S também salva). Os botões de Redes sociais (Conectar, Testar, Aprender a postar) salvam só o que é daquela rede.
+- **Janelas:** o editor do roteiro, da pauta, dos dados do filme e dos textos do corte perguntam antes de fechar com algo não salvo (Esc, clique fora, X ou troca de tela), e o Ctrl+S dentro deles salva o que está na janela.
 - **Registro:** mensagens ao vivo, com busca, filtro de avisos e erros e cópia.
 
 As alterações valem na hora, sem reiniciar, exceto a porta do painel e a pasta de dados: essas pedem para fechar e abrir o AutoCortes, e o painel avisa.
@@ -388,7 +391,13 @@ Regras:
 - **PC desligado:** o PC precisa estar ligado para postar. Se o horário passar com ele desligado, o post ainda sai até 90 min depois; fora disso, o horário fica como "não postado". Enquanto o motor roda, o Windows não entra em suspensão.
 - **Intervalo mínimo:** 60 min entre dois posts na mesma rede, contando também os de fora da agenda ("Postar agora") e as tarefas à mão.
 - **Limite de segurança:** no máximo 6 posts por rede em 24 h.
-- **Erros:** falha temporária (internet, limite diário, servidor fora do ar) tenta de novo depois de 10 min e depois de mais 20, até 3 tentativas por horário. Vídeo recusado pela rede pula para o próximo corte. Problema de login pausa a rede por 6 h, ou até a conta ser conectada de novo pelo painel.
+- **Erros:** cada falha é tratada pelo que ela diz, e as pausas ficam no banco (valem depois de reiniciar):
+  - internet ou servidor fora do ar antes de a rede responder: nada saiu, a rede espera 10 min e o corte não perde a vez;
+  - erro comum (ou desconhecido): tenta de novo depois de 10 min e de mais 20, até 3 tentativas por horário; depois de 4 falhas, o corte sai daquela rede com o motivo no histórico;
+  - limite de uso da rede: pausa até o limite voltar (no YouTube, à meia-noite do Pacífico);
+  - vídeo recusado pela rede: o corte é pulado nela; 2 recusas seguidas pausam a rede por 6 h, porque aí o problema costuma ser a configuração;
+  - login vencido: pausa de 6 h, ou até você conectar de novo; verificação, conta restrita ou ação bloqueada: a rede **para** até você testar a conta em Redes sociais, sem insistir;
+  - a rede recebeu o vídeo, mas não deu para confirmar que saiu: o post fica **a conferir** no Início, e nada é repetido até você dizer se saiu.
 - **Ordem da fila:** cortes marcados como prioridade saem primeiro; depois, na ordem em que ficaram prontos. Editar de novo um corte que já estava na fila não muda o lugar dele; um corte restaurado volta para o fim.
 - **Pausa geral:** `[agenda].pausado = true` segura as postagens sem parar a edição.
 
@@ -456,7 +465,7 @@ Funciona em **YouTube, TikTok, Instagram e Bilibili**. O Kwai não entra: o uplo
 | 2 | Clique em **Conectar**: abre a janela do Chrome do AutoCortes. Entre na conta e resolva o 2FA |
 | 3 | Clique em **Testar a sessão**: o AutoCortes abre a página de envio e confirma |
 | 4 | Clique em **Aprender a postar** e poste um vídeo à mão, uma vez: o AutoCortes assiste e escreve o roteiro ([veja abaixo](#aprender-a-postar-e-o-roteiro)) |
-| 5 | Ligue o **ensaio** no cartão "Postagem pelo navegador" e poste um corte: ele segue o roteiro, **não publica** e guarda uma imagem da tela em `dados/navegador` |
+| 5 | Ligue o **ensaio** no cartão "Postagem pelo navegador" e poste um corte: ele segue o roteiro, **não publica** (para no `publicar` e em qualquer clique que pareça publicar) e guarda uma imagem da tela em `dados/navegador`. A postagem fica como "Ensaio" e o corte continua na fila |
 | 6 | Conferiu? Desligue o ensaio |
 
 O que o AutoCortes faz e não faz:
@@ -473,6 +482,8 @@ O que o AutoCortes faz e não faz:
 Em vez de deixar os cliques de cada rede fixos no código, o AutoCortes **aprende assistindo**. Em Redes sociais, "Aprender a postar" abre a página de envio, e você posta um vídeo à mão como faria normalmente. Enquanto isso, o painel mostra o **log de ações ao vivo**: cada clique, cada campo preenchido, cada passo reconhecido. Se faltar algo, repita o passo ali mesmo, ou use **Desfazer** e **Recomeçar**. No fim, clique em **Terminei**.
 
 Para saber qual texto vai em qual campo, cole a **marca** no campo durante a gravação: `@@TITULO@@`, `@@DESCRICAO@@`, `@@LEGENDA@@`, `@@TAGS@@` ou `@@FONTE@@`. Quando a rede tem só um campo de texto (TikTok e Instagram), escreva normal: o AutoCortes deduz por eliminação. Um detalhe: **espere o envio do vídeo terminar antes de clicar em publicar**, senão o roteiro sai com o clique cedo demais.
+
+O clique que publica é reconhecido pelo texto do botão (Publicar, Post, Compartilhar, 投稿...), e não por ser o último: a confirmação "Publicar agora" ou o "Ver post" depois dele não tomam o lugar. Quando eu não tenho certeza, o log marca o passo para você conferir. Senha, código de verificação, e-mail e telefone nunca são gravados, e nada é anotado enquanto há uma tela de login aberta.
 
 O que sai da gravação é um **roteiro em texto**, uma ação por linha, em `dados/roteiros/<rede>.txt`. "Ver o roteiro" abre o editor no painel, com a lista de comandos ao lado:
 
@@ -493,18 +504,18 @@ conferir "foi publicado"
 | `abrir <endereço>` | vai para a página. Costuma ser a primeira linha |
 | `video [em <alvo>]` | entrega o corte no campo de arquivo; sem o `em`, procura sozinho |
 | `clicar <alvo>` | clica no primeiro alvo que existir e estiver habilitado |
-| `publicar <alvo>` | o clique que publica. No ensaio eu paro aqui, sem clicar |
+| `publicar <alvo>` | o clique que publica. Botão desabilitado (vídeo ainda subindo) não conta: eu espero ele liberar, até 15 min. No ensaio eu paro aqui, sem clicar |
 | `escrever <papel\|"texto"> em <alvo>` | escreve título, descrição, legenda, fonte, ou um texto fixo entre aspas |
 | `tags em <alvo>` | escreve cada hashtag e tecla Enter, uma por uma |
 | `esperar <n>` | para de 1 a 900 segundos sem fazer nada |
 | `esperar <alvo>` | espera o texto aparecer na tela. Melhor que contar tempo |
 | `tecla Enter\|Tab\|Escape` | tecla no campo em que está |
 | `rolar [px]` | rola a página para baixo |
-| `conferir <alvo>` | no fim, espera a confirmação da rede; se não vier, aviso sem tratar como erro |
+| `conferir <alvo>` | no fim, espera a confirmação da rede; se não vier, o post fica **a conferir** no Início em vez de "publicado". Sem esta linha, o post termina como publicado, com uma observação |
 | `opcional <linha>` | na frente de qualquer linha: se não achar o alvo, segue em frente |
 | `# comentário` | linha que começa com `#` não faz nada. Serve para desligar um passo sem apagar |
 
-Alvo entre **aspas** é procurado pelo texto que aparece na tela (`innerText`, `aria-label` ou `title`, em qualquer elemento); **sem aspas** é seletor CSS. Alternativas vão separadas por ` ou `, e a primeira que existir na página vence. Ao salvar, o roteiro é conferido linha a linha: erro de escrita, roteiro sem `video`, sem `publicar` ou sem os campos obrigatórios da rede não grava, e o painel aponta a linha.
+Alvo entre **aspas** é procurado pelo texto que aparece na tela (`innerText`, `aria-label` ou `title`, em qualquer elemento, palavra inteira); **sem aspas** é seletor CSS. Alternativas vão separadas por ` ou `, e a primeira que existir na página vence. Ao salvar, o roteiro é conferido linha a linha: erro de escrita, roteiro sem `video`, sem `publicar` (ou com ele antes do vídeo), `opcional` no vídeo ou no publicar e texto entre aspas no lugar do campo não gravam, e o painel aponta a linha. O que funciona, mas é arriscado, aparece como aviso: seletor genérico demais (`button`, `div > div ...`, que casa com quase tudo), falta de `conferir`, clique que parece publicar fora do `publicar` e campo da rede sem preenchimento automático (sem a marca, o texto digitado na gravação fica fixo e se repete em todo post).
 
 ### Postagem à mão (Kwai, Bilibili e qualquer rede)
 
@@ -580,6 +591,9 @@ Tudo fica no `config.toml`, criado a partir do `config.example.toml`. O painel g
 | `[edicao]` | modelo visual em uso, moldura, formato, tamanho e altura do vídeo, fonte, cores, tamanho e lugar da legenda, título (texto, fonte, cor, altura), barra, codec |
 | `[textos]` | modelos de título e descrição (com e sem IA), hashtags |
 | `[ia]` | ligar a IA, endereço da API, modelo, chave, criatividade e tempo limite |
+| `[criacao]` | vídeos criados do zero: ligar, quem sai primeiro (filmes ou criação), duração que a IA mira, quadros por segundo, música (pasta e volume), sobra no fim, zoom lento e ordem dos clipes |
+| `[estoque]` | imagens de fundo dos vídeos criados: de onde vêm (pasta própria, Pexels ou Pixabay), a pasta, as chaves (secretas, alternadas), clipe mínimo e não repetir material |
+| `[voz]` | narração: serviço, voz, velocidade, volume, tom, respiro entre linhas e tempo limite |
 | `[upload_post]` | chave da API e nome do perfil no Upload-Post |
 | `[manual]` | pasta sincronizada que recebe o vídeo e os textos das tarefas à mão |
 | `[navegador]` | envio pelo navegador: caminho do Chrome, porta do DevTools, janela visível, pausas, tempo limite e ensaio |
@@ -637,7 +651,15 @@ AutoCortes/
 | `util.py` | log em arquivo e em memória, atividades em andamento, trava de instância, energia |
 | `segredos.py` | logins das redes cifrados com a proteção de dados do Windows (DPAPI) |
 | `midia.py` | execução do FFmpeg e do whisper com progresso e cancelamento |
-| `navegador.py` | controle do Chrome pelo DevTools: cliente WebSocket próprio, busca que entra no shadow DOM, envio de arquivo e captura de tela |
+| `websocket.py` | cliente WebSocket próprio (`ws://` e `wss://`), usado pelo DevTools e pela narração |
+| `navegador.py` | controle do Chrome pelo DevTools: busca que entra no shadow DOM, clique que espera o botão liberar, envio de arquivo e captura de tela |
+| `roteiro.py` | a linguagem do roteiro de envio pelo navegador: leitura, validação e avisos |
+| `gravador.py` | "Aprender a postar": anota o que você faz na página e escreve o roteiro em `dados/roteiros` |
+| `perfis.py` | perfis de nicho: listar, criar, ajustar, abrir, fechar e excluir |
+| `criacao.py` | pautas e fila de temas dos vídeos criados do zero |
+| `voz.py` | narração com o tempo de cada palavra (para a legenda) |
+| `estoque.py` | imagens e clipes de fundo (pasta própria, Pexels ou Pixabay), com crédito |
+| `montagem.py` | monta o vídeo criado (clipes, voz, música) e passa pelo mesmo editor dos cortes |
 | `ferramentas.py` | download do whisper.cpp e dos modelos |
 | `analise.py` | tarjas, cenas, volume, voz e legendas |
 | `legendas.py` | leitura de SRT e Whisper, ajuste pela voz e legenda animada (ASS) |
@@ -652,7 +674,7 @@ AutoCortes/
 | `produtor.py` | varredura, análise, edição e estoque de cortes |
 | `publicador.py` | decide quando e o que postar em cada rede |
 | `loop.py` | motor com as threads de produção e publicação |
-| `plataformas/` | YouTube, TikTok, Instagram (e o Reel da Página do Facebook), Upload-Post, envio pelo navegador (`navegador.py`: roteiro de cada página de envio), postagem à mão (`manual.py`: textos por rede e pasta sincronizada), login OAuth local e upload com progresso |
+| `plataformas/` | YouTube, TikTok, Instagram (e o Reel da Página do Facebook), Upload-Post, envio pelo navegador (`navegador.py`: executa o roteiro gravado de cada rede, que fica em `dados/roteiros`), postagem à mão (`manual.py`: textos por rede e pasta sincronizada), login OAuth local e upload com progresso |
 | `painel/` | servidor HTTP local, rotas da API, integração com o Windows e a interface (`estatico/`: `nucleo.js` com o básico, um `pg_*.js` por tela e `app.js` com menu, navegação e estado ao vivo) |
 
 <details>
@@ -670,19 +692,23 @@ As rotas `/api` exigem o cabeçalho `X-AutoCortes` com o token da sessão; a mí
 | Estúdio | `GET /api/estudio`, `POST /api/estudio/geometria`, `POST /api/modelos/usar`, `/criar`, `/renomear` e `/excluir`, `POST /api/molduras/enviar` |
 | Cortes | `GET /api/cortes?aba=`, `GET /api/cortes/{id}`, `POST /api/cortes/{id}/acao`, `/textos` e `/postar` (`rede` pode ser `facebook`; numa rede à mão devolve a tarefa), `POST /api/cortes/aprovar-todos` |
 | Postagem à mão | `GET /api/tarefas/{id}` (vídeo, textos da rede e passos), `POST /api/tarefas/{id}/feito` (link opcional) e `/pular` |
+| A conferir | `POST /api/postagens/{id}/conferir` (`saiu` true ou false, link opcional) |
+| Criação | `GET /api/pautas` (com o arquivo da fila de temas e a versão dele), `POST /api/pautas/nova`, `POST /api/pautas/temas` (409 se a fila mudou), `GET` e `POST /api/pautas/{id}`, `POST /api/pautas/{id}/acao` |
+| Roteiro | `GET` e `POST /api/redes/{rede}/roteiro`, `POST .../roteiro/apagar`, `GET` e `POST .../gravar`, `POST .../gravar/fim`, `/cancelar`, `/desfazer` e `/recomecar` |
+| Perfis | `GET /api/perfis`, `POST /api/perfis/novo` e `/opcoes`, `POST /api/perfis/{slug}/abrir`, `/fechar`, `/salvar` e `/excluir`, `GET .../conteudo` |
 | Filmes | `GET /api/filmes`, `POST /api/filmes/enviar`, `/varrer`, `/{id}/acao` e `/{id}/meta` |
 | Redes | `GET /api/redes`, `GET` e `POST /api/redes/{rede}/login`, `POST .../cancelar`, `/testar` e `/desconectar`, `POST /api/redes/instagram/conta` |
 | Sistema | `GET /api/logs?desde=`, `POST /api/sistema/abrir`, `/inicializacao` e `/encerrar` |
 | Mídia | `GET /media/corte/{id}.mp4` e `.jpg` (com Range), `GET /media/previa.jpg` |
 
-Ações de corte: `aprovar`, `descartar`, `restaurar`, `reeditar`, `editar_agora`, `priorizar`, `normal`, `gerar_textos` e `limpar_textos_ia`. Ações de filme: `reanalisar`, `reanalisar_tudo`, `ignorar`, `reativar`, `mostrar`.
+Ações de corte: `aprovar`, `descartar`, `restaurar`, `reeditar`, `editar_agora`, `recriar` (vídeo criado), `priorizar`, `normal`, `gerar_textos` e `limpar_textos_ia`; descartar, reeditar e recriar esperam o envio em andamento terminar (409). Ações de filme: `reanalisar`, `reanalisar_tudo`, `ignorar`, `reativar`, `mostrar` (as quatro primeiras só em filme, não em pauta). Ações de pauta: `criar_agora`, `escrever_com_ia`, `excluir`, `mostrar`.
 
 </details>
 
 Ciclo de vida no banco:
-- **Filme:** `novo` → `analisando` → `analisado` (ou `erro`, `ausente`, `ignorado`)
+- **Filme:** `novo` → `analisando` → `analisado` (ou `erro`, `ausente`, `ignorado`). A pauta de um vídeo criado é uma linha com `tipo = 'pauta'`: `novo` → `criando` → `analisado`.
 - **Corte:** `candidato` → `renderizando` → `revisao` (com aprovação ligada) → `pronto` → `concluido` (ou `erro`, `descartado`)
-- **Postagem:** `enviando` → `publicado` ou `simulado` (ou `falhou`, `pulado`, `interrompido`); à mão, `aguardando` → `publicado` ou `pulado`. O Reel da Página fica como a rede `facebook`.
+- **Postagem:** `enviando` → `publicado` ou `simulado` (ou `falhou`, `pulado`, `interrompido`, `ensaio`); quando a rede recebeu e não confirmou, `conferir` → `publicado` ou `falhou`, pela sua resposta; à mão, `aguardando` → `publicado` ou `pulado`. O Reel da Página fica como a rede `facebook`. As pausas de cada rede ficam na tabela `estado` (`bloqueio:<rede>`).
 
 ## Arquivos gerados
 
@@ -698,12 +724,13 @@ Ciclo de vida no banco:
 ## Segurança
 
 - O painel só escuta em `127.0.0.1`. Cada abertura gera um token aleatório, exigido em toda chamada da API e nos vídeos. O servidor também confere os cabeçalhos `Host` e `Origin` e usa uma política de conteúdo restritiva, sem scripts externos.
-- As chaves secretas (redes, Upload-Post e IA) nunca voltam para o navegador; o painel só sabe se estão preenchidas.
-- O envio de arquivos pelo painel aceita só vídeos e `.srt`, grava primeiro como `.parcial` e limpa o nome do arquivo (não sai da pasta de filmes).
+- As chaves secretas (redes, Upload-Post, IA, Pexels e Pixabay) nunca voltam para o navegador; o painel só sabe se estão preenchidas.
+- O envio de arquivos pelo painel aceita só vídeos e `.srt`, grava primeiro num `.parcial` com nome único, limpa o nome do arquivo (não sai da pasta de filmes) e nunca grava por cima de outro arquivo.
 - Os logins usam OAuth com PKCE e conferem o `state`; o retorno passa por um servidor temporário em `127.0.0.1`.
 - Os tokens ficam em `dados/tokens/*.json` cifrados com a proteção de dados do Windows (DPAPI): só o seu usuário, neste PC, consegue abrir. Copiar a pasta para outro PC ou outro usuário pede para conectar as contas de novo. As chaves de API do `config.toml` continuam em texto: não compartilhe a pasta `dados/` nem o `config.toml` (os dois já estão no `.gitignore`). Os logs escondem tokens.
 - O envio de molduras aceita só PNG de verdade (confere a assinatura e o tamanho declarado, até 8192 px de lado), com área transparente, e nunca grava por cima de outra moldura.
-- O whisper.cpp vem do GitHub oficial, com SHA-256 conferido.
+- O whisper.cpp vem do GitHub oficial, e os modelos do Whisper e do detector de voz vêm do Hugging Face, todos com SHA-256 e tamanho conferidos. Outra `whisper_versao` sem hash conhecido é recusada: para usar outra, instale à mão e informe os caminhos.
+- As pastas de filmes e de dados não podem ficar vazias nem uma dentro da outra, e a varredura nunca entra numa pasta de dados (deste ou de outro perfil): o AutoCortes não recorta os próprios cortes.
 
 ## Decisões técnicas
 
@@ -713,7 +740,7 @@ Ciclo de vida no banco:
 - **Uploads:** YouTube resumível, com retomada depois de erro; TikTok inteiro até 64 MB e em partes de 10 MB acima disso; Instagram e Página do Facebook direto do arquivo local.
 - **Quadros por segundo:** o corte sai com a taxa do filme, limitada entre 24 e 60, porque os Reels da Página pedem essa faixa. Um filme em 23,976 sai em 24 (um quadro repetido a cada 42 s).
 - **Postagem à mão:** a tarefa é uma postagem com status `aguardando`, então a fila, o intervalo mínimo e o calendário funcionam como nas outras redes.
-- **Envio pelo navegador:** DevTools em vez de Selenium ou Playwright, para não trazer dependência nova; o cliente WebSocket (uns 120 linhas) vive em `navegador.py`, porque a biblioteca padrão do Python não tem um. A busca de elementos entra no shadow DOM, sem o que o YouTube Studio seria inalcançável. O arquivo vai pelo `DOM.setFileInputFiles` a partir do objeto, que funciona com o campo escondido e dentro do shadow DOM.
+- **Envio pelo navegador:** DevTools em vez de Selenium ou Playwright, para não trazer dependência nova; o cliente WebSocket vive em `websocket.py` (a biblioteca padrão do Python não tem um), e a narração usa o mesmo. A busca de elementos entra no shadow DOM, sem o que o YouTube Studio seria inalcançável. O arquivo vai pelo `DOM.setFileInputFiles` a partir do objeto, que funciona com o campo escondido e dentro do shadow DOM.
 - **Configuração:** gravada com `tomlkit`, que preserva os comentários do `config.toml`.
 - **Área segura:** textos só entre y=288 e y=1248 (em 1920), com no máximo 696 px de largura centrada, fora da barra superior, dos botões laterais e da descrição dos apps. As medidas vêm dos guias de anúncio do [Instagram](https://www.facebook.com/business/ads-guide/update/video/instagram-reels), do [TikTok](https://ads.tiktok.com/help/article/tiktok-auction-in-feed-ads) e do [YouTube](https://support.google.com/google-ads/answer/9128498?hl=en), porque não há guia oficial para posts comuns.
 

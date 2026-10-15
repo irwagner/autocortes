@@ -31,8 +31,8 @@ function kpisHtml(e) {
   const hojeSub = [...ORDEM_REDES, "facebook"].filter((r) => n.hoje_por_rede[r]).map((r) => `${REDES[r].rotulo} ${n.hoje_por_rede[r]}`).join(" · ")
     || (e.simulacao ? "no modo simulação" : "nenhum ainda");
   let filmesSub = "todos analisados";
-  if (!n.filmes) filmesSub = "adicione filmes para começar";
-  else if (n.filmes_na_fila) filmesSub = `${n.filmes_na_fila} na fila de análise`;
+  if (!n.filmes) filmesSub = n.pautas_na_fila ? `${plural(n.pautas_na_fila, "pauta esperando", "pautas esperando")} na Criação` : "adicione filmes para começar";
+  else if (n.filmes_na_fila) filmesSub = `${n.filmes_na_fila} esperando a análise`;
   else if (n.filmes_erro) filmesSub = `${n.filmes_erro} com erro na análise`;
   return [
     kpi("#ffb627", "tesoura", "Na fila", fmtNum(n.na_fila), filaSub),
@@ -79,7 +79,7 @@ function agoraHtml(e) {
 }
 
 function ultimaHtml(p) {
-  const falhou = !["publicado", "simulado", "aguardando"].includes(p.estado);
+  const falhou = ["falhou", "pulado", "interrompido"].includes(p.estado);
   const rede = REDES[p.rede] || { rotulo: p.rede };
   return h`<div class="item-post clicavel" ${atributosAbrirCorte(p.corte_id)}>${miniaturaHtml(p.miniatura)}<div class="item-texto"><b>${p.filme} · Parte ${p.parte}</b><small>${logoRede(p.rede)}<span class="${falhou && p.erro ? "erro-texto" : ""}">${rede.rotulo}${p.manual ? " · fora da agenda" : ""}${p.erro ? ` · ${p.erro}` : ""}</span></small></div><div class="item-lado">${badge(estadoPost(p.estado), true)}<small>${fmtRelativo(p.quando)}</small></div></div>`;
 }
@@ -209,6 +209,80 @@ App.acoes["tarefa-pular"] = async (el) => {
   if (App.pagina && App.pagina.recarregar && App.nomePagina !== "inicio") App.pagina.recarregar();
 };
 
+/* ------------------------------------------------------------ posts a conferir */
+
+function conferirItemHtml(p) {
+  const rede = REDES[p.rede] || { rotulo: p.rede };
+  return h`<div class="item-post">${miniaturaHtml(p.miniatura)}<div class="item-texto"><b>${p.filme} · Parte ${p.parte}</b><small>${logoRede(p.rede)}<span title="${p.erro || ""}">${rede.rotulo} · enviado ${fmtRelativo(p.quando)}${p.erro ? ` · ${p.erro}` : ""}</span></small></div><div class="item-lado"><button type="button" class="btn pequeno" data-acao="conferir-post" data-postagem="${p.id}">${ic("olho")}Conferir</button></div></div>`;
+}
+
+function conferirHtml(e) {
+  const lista = e.conferir || [];
+  if (!lista.length) return "";
+  const total = e.numeros.conferir || lista.length;
+  return h`<div class="card tarefas-card"><div class="card-topo"><h3>${ic("olho")}A conferir</h3>${badge([plural(total, "post", "posts"), "aviso"], true)}</div>
+    <p class="nota">A rede recebeu estes vídeos, mas eu não vi a confirmação de que saíram. Olhe o perfil na rede e me diga. Até você responder, nada é repetido sozinho; se não saiu, o corte volta para a fila daquela rede.</p>
+    <div class="lista">${lista.map(conferirItemHtml)}</div></div>`;
+}
+
+// voltar: o que abrir depois de responder (a janela do corte, quando você veio de lá)
+const Conferir = { dados: null, voltar: null };
+
+function abrirConferirPost(p, voltar = null) {
+  const rede = REDES[p.rede] || { rotulo: p.rede };
+  const url = urlSegura(p.url);
+  abrirModal({
+    titulo: `O post saiu no ${rede.rotulo}?`,
+    largura: 560,
+    corpo: h`<p class="texto-modal"><b>${p.filme} · Parte ${p.parte}</b> foi enviado ${fmtRelativo(p.quando)}, mas eu não vi a publicação terminar.</p>
+      ${p.erro ? h`<p class="nota">${p.erro}</p>` : ""}
+      ${url ? h`<p class="nota">${link(url, "Abrir o post que a rede devolveu")}</p>` : ""}
+      <label class="campo"><span>Link do post, se saiu (opcional)</span><input type="url" id="conferir-url" value="${url || ""}" placeholder="https://..." spellcheck="false" autocomplete="off"></label>
+      <div class="acoes-modal"><button type="button" class="btn fantasma" data-acao="conferir-nao">Não saiu</button><button type="button" class="btn sucesso" data-acao="conferir-sim">${ic("check")}Saiu</button></div>`,
+    aoFechar: () => { Conferir.dados = null; Conferir.voltar = null; },
+  });
+  // depois do abrirModal: o fechamento da janela anterior não apaga estes dados
+  Conferir.dados = p;
+  Conferir.voltar = voltar;
+}
+
+async function responderConferir(el, saiu) {
+  const p = Conferir.dados;
+  if (!p) return;
+  const voltar = Conferir.voltar;
+  const url = saiu ? (($("#conferir-url") && $("#conferir-url").value.trim()) || "") : "";
+  await ocupado(el, () => post(`/postagens/${p.id}/conferir`, { saiu, url }));
+  fecharModal();
+  const rede = (REDES[p.rede] || { rotulo: p.rede }).rotulo;
+  toast(saiu ? `${rede}: marcado como publicado` : `${rede}: o corte voltou para a fila`, saiu ? "ok" : "info");
+  atualizarEstado();
+  if (voltar) voltar();
+  else if (App.pagina && App.pagina.recarregar && App.nomePagina !== "inicio") App.pagina.recarregar();
+}
+
+App.acoes["conferir-post"] = (el) => {
+  const id = Number(el.dataset.postagem);
+  const p = ((App.estado && App.estado.conferir) || []).find((x) => x.id === id);
+  if (p) abrirConferirPost(p);
+  else toast("Este post já foi conferido", "info");
+};
+
+App.acoes["conferir-sim"] = (el) => responderConferir(el, true);
+
+App.acoes["conferir-nao"] = async (el) => {
+  const p = Conferir.dados;
+  if (!p) return;
+  const rede = (REDES[p.rede] || { rotulo: p.rede }).rotulo;
+  const ok = await confirmar({
+    titulo: "Não saiu mesmo?",
+    texto: `O corte volta para a fila do ${rede} e pode ser postado de novo num próximo horário. Confira bem antes: se ele saiu e você marcar que não, o vídeo aparece duas vezes.`,
+    botao: "Não saiu, pode repetir",
+    perigo: true,
+  });
+  if (!ok) return;
+  await responderConferir(el, false);
+};
+
 function ultimasHtml(e) {
   if (!e.ultimas.length) {
     return vazioBloco("aviao", "Nenhuma postagem ainda", e.simulacao ? "No modo simulação, as postagens aparecem aqui como simuladas." : "");
@@ -228,11 +302,18 @@ function desempenhoHtml(d) {
   return h`<div class="metricas">${linhas}</div>${melhores.length ? h`<div class="rotulo-campo">Cortes com mais visualizações (30 dias)</div><div class="lista">${melhores}</div>` : ""}`;
 }
 
+// a pausa que o motor pôs na rede, do jeito curto que cabe no cartão
+const PAUSA_CURTA = {
+  cota: ["Pausada: limite da rede", "aviso"], recusas: ["Pausada: recusas", "erro"], rede: ["Sem resposta da rede", "aviso"],
+  configuracao: ["Falta configurar", "erro"], bloqueio: ["Parada: teste a conta", "erro"],
+};
+
 function redeResumoHtml(rede, r, e) {
   const info = REDES[rede];
   let estado;
   if (!r.ativo) estado = ["Desativada", "neutro"];
-  else if (r.bloqueada) estado = ["Pausada por erro", "erro"];
+  else if (r.bloqueada && !e.simulacao) estado = PAUSA_CURTA[(r.bloqueio || {}).tipo] || ["Pausada por erro", "erro"];
+  else if (r.conferir) estado = [plural(r.conferir, "post a conferir", "posts a conferir"), "aviso"];
   else if (r.via === "manual") estado = r.tarefas ? [plural(r.tarefas, "tarefa", "tarefas"), "acento"] : ["À mão", "info"];
   else if (r.pronta) estado = ["Conectada", "ok"];
   else estado = [e.simulacao ? "Falta conectar" : "Não conectada", e.simulacao ? "aviso" : "erro"];
@@ -253,6 +334,7 @@ App.paginas.inicio = {
       return;
     }
     montar(el, h`<div id="ini-alertas"></div>
+      <div id="ini-conferir"></div>
       <div id="ini-tarefas"></div>
       <div class="grade-kpi" id="ini-kpis"></div>
       <div class="grade-2">
@@ -271,6 +353,7 @@ App.paginas.inicio = {
   },
   desenhar(e) {
     montarSeMudou($("#ini-alertas"), alertasHtml(e.alertas));
+    montarSeMudou($("#ini-conferir"), conferirHtml(e));
     montarSeMudou($("#ini-tarefas"), tarefasHtml(e));
     montarSeMudou($("#ini-kpis"), kpisHtml(e));
     montarSeMudou($("#ini-proximos"), proximosHtml(e));

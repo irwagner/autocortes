@@ -16,11 +16,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from . import roteiro
 from .config import Config
-from .roteiro import MARCAS, NOMES, PAPEIS_DA_REDE, gerar
-from .util import log, sem_acentos
+from .roteiro import MARCAS, NOMES, PAPEIS_DA_REDE, Alvo, fraco, gerar, parece_publicar
+from .util import escrever_atomico, log, sem_acentos
 
-__all__ = ["SCRIPT", "analisar", "arquivo_roteiro", "carregar", "lista_passos", "papeis", "salvar"]
+__all__ = ["SCRIPT", "analisar", "arquivo_roteiro", "carregar", "gravar_roteiro", "lista_passos", "papeis",
+           "salvar"]
 
 _MARCA = re.compile(r"@@\s*([^@\s]{2,20})\s*@@")
 
@@ -33,6 +35,48 @@ window.__acGrav = (() => {
   const passos = [];
   const limpar = (t) => String(t || "").replace(/\s+/g, " ").trim();
   const ehLogin = () => /\/login|accounts\/login|accounts\.google\.com|passport\.bilibili|\/signin/.test(location.href);
+  const raizes = () => {
+    const achadas = [document];
+    const fila = [document];
+    while (fila.length) {
+      const raiz = fila.shift();
+      for (const el of raiz.querySelectorAll("*")) {
+        if (el.shadowRoot) { achadas.push(el.shadowRoot); fila.push(el.shadowRoot); }
+      }
+    }
+    return achadas;
+  };
+  // Senha (mesmo com "mostrar senha", que troca o type para text), código de verificação e cartão.
+  // Com um campo assim na tela (um login numa janela por cima da página, por exemplo), nada é gravado.
+  const SENSIVEL = 'input[type="password"], input[autocomplete~="current-password"], ' +
+    'input[autocomplete~="new-password"], input[autocomplete~="one-time-code"], input[autocomplete^="cc-"], ' +
+    'input[name*="pass" i], input[id*="pass" i], input[name*="senha" i], input[id*="senha" i]';
+  const aparece = (el) => {
+    try {
+      const r = el.getBoundingClientRect();
+      return r.width + r.height > 0 && getComputedStyle(el).visibility !== "hidden";
+    } catch (e) { return false; }
+  };
+  let sensivelEm = 0, sensivelAgora = false;
+  const sensivel = () => {
+    if (ehLogin()) return true;
+    if (Date.now() - sensivelEm < 400) return sensivelAgora;
+    sensivelEm = Date.now();
+    sensivelAgora = false;
+    for (const raiz of raizes()) {
+      for (const el of raiz.querySelectorAll(SENSIVEL)) { if (aparece(el)) { sensivelAgora = true; return true; } }
+    }
+    return false;
+  };
+  // e-mail, telefone, usuário e afins: dado pessoal, nunca vira passo do roteiro
+  const campoSensivel = (el) => {
+    if (!el || el.tagName !== "INPUT") return false;
+    try { if (el.matches(SENSIVEL)) return true; } catch (e) { /* seletor sem suporte */ }
+    const auto = String(el.getAttribute("autocomplete") || "").toLowerCase();
+    const nome = String(el.getAttribute("name") || "") + " " + String(el.id || "");
+    return ["email", "tel"].includes(el.type) || /username|email|password|one-time-code|cc-|tel/.test(auto)
+      || /user|login|e-?mail|senha|pass|phone|fone|otp/i.test(nome);
+  };
   // id ou atributo com cara de gerado (react-aria-1234, :r3:, ember42) não serve de âncora
   const estavel = (v) => {
     const s = limpar(v);
@@ -45,6 +89,8 @@ window.__acGrav = (() => {
   const csse = (v) => (window.CSS && CSS.escape ? CSS.escape(v) : String(v).replace(/["\\]/g, "\\$&"));
   const seletores = (el) => {
     const saida = [];
+    const raizesDaPagina = raizes();
+    const quantidade = (s) => raizesDaPagina.reduce((total, raiz) => total + raiz.querySelectorAll(s).length, 0);
     const tag = (el.tagName || "").toLowerCase();
     if (el.id && estavel(el.id)) saida.push("#" + csse(el.id));
     for (const attr of ["data-e2e", "data-testid", "data-test-id", "data-tt", "name", "aria-label", "placeholder"]) {
@@ -54,6 +100,17 @@ window.__acGrav = (() => {
     if (tag === "input" && el.type) saida.push(`input[type="${csse(el.type)}"]`);
     if (el.getAttribute && el.getAttribute("role")) saida.push(`${tag}[role="${csse(el.getAttribute("role"))}"]`);
     if (el.isContentEditable) saida.push(`${tag}[contenteditable="true"]`);
+    // Menus compactos escondem o texto "Criar"; o nome Novo post fica no SVG.
+    // Grava o controle que contém esse ícone, sem depender do caminho dos divs.
+    if (el.matches('a, button, [role="button"], [role="link"]')) {
+      for (const icone of el.querySelectorAll('svg[aria-label]')) {
+        const nome = icone.getAttribute("aria-label");
+        if (estavel(nome) && aparece(icone)) {
+          const seletor = `${tag}:has(svg[aria-label="${csse(nome)}"])`;
+          if (quantidade(seletor) === 1) saida.push(seletor);
+        }
+      }
+    }
     // caminho curto até um ancestral com âncora (último recurso)
     let atual = el, caminho = [], niveis = 0;
     while (atual && niveis < 4) {
@@ -67,11 +124,30 @@ window.__acGrav = (() => {
       atual = pai;
       niveis++;
     }
-    if (caminho.length) saida.push(caminho.join(" > "));
-    return [...new Set(saida)];
+    // O Studio repete #textbox (título/descrição) e #text-input (tags e outros campos).
+    // A âncora do campo pai vem primeiro: o id interno sozinho apontaria outra caixa.
+    if (caminho.length) {
+      let pai = el.parentElement;
+      for (let n = 0; pai && n < 12; n++, pai = pai.parentElement) {
+        if (pai.id && estavel(pai.id)) {
+          const escopo = "#" + csse(pai.id) + " " + (saida[0] || tag);
+          // #input, #container e #outer também se repetem no Studio. Sobe até o campo único.
+          if (quantidade(escopo) === 1) { saida.unshift(escopo); break; }
+        }
+      }
+      saida.push(caminho.join(" > "));
+    }
+    const unicos = [...new Set(saida)];
+    const precisos = unicos.filter((s) => quantidade(s) === 1);
+    if (precisos.length) return precisos;
+    const id = el.id && estavel(el.id) ? "#" + csse(el.id) : "";
+    if (id && quantidade(id) > 1) {
+      return unicos.filter((s) => s !== id);  // id repetido também não serve como alternativa
+    }
+    return unicos;
   };
   const anotar = (passo) => {
-    if (ehLogin()) return;  // nada do que você faz numa tela de login é gravado
+    if (sensivel()) return;  // nada do que você faz numa tela de login (ou com senha na tela) é gravado
     passo.em = Date.now();
     passo.url = location.href;
     passos.push(passo);
@@ -83,12 +159,61 @@ window.__acGrav = (() => {
     while (el && !el.tagName && el.parentElement) el = el.parentElement;
     return el;
   };
+  const campoDe = (el) => {
+    // O evento pode vir de um span dentro do editor; o campo é quem tem contenteditable.
+    while (el && el.isContentEditable && el.parentElement && el.parentElement.isContentEditable) {
+      el = el.parentElement;
+    }
+    return el && (el.isContentEditable || ["INPUT", "TEXTAREA"].includes(el.tagName)) ? el : null;
+  };
+  const clicavelDe = (el) => {
+    // O Studio põe ícones e camadas de animação dentro do botão. É o botão que
+    // tem nome, estado e âncora estável; o div tocado pode desaparecer no próximo clique.
+    const bruto = el;
+    while (el && el.tagName) {
+      if (el.matches('button, a[href], input, textarea, select, ytcp-button, ytcp-icon-button, ' +
+                     '[role="button"], [role="link"], [role="radio"], [role="checkbox"], ' +
+                     '[role="menuitem"], [role="tab"]')) return el;
+      el = el.parentElement || (el.getRootNode && el.getRootNode().host);
+    }
+    return bruto;
+  };
+  const conteudo = (el) => limpar(el.isContentEditable ? (el.innerText || el.textContent) : el.value);
+  const temMarca = (valor) => /@@\s*[^@\s]{2,20}\s*@@/.test(valor);
+  const vistos = new Map();
+  const chaves = new WeakMap();
+  let proximaChave = 0;
+  const registrarTexto = (el, colado) => {
+    el = campoDe(el);
+    if (!el || campoSensivel(el) || sensivel()) return;
+    if (el.tagName === "INPUT" && (el.type === "password" || el.type === "file")) return;
+    const valor = colado === undefined ? conteudo(el) : limpar(colado);
+    if (colado === undefined && vistos.get(el) === valor) return;
+    if (colado === undefined) vistos.set(el, valor);
+    if (!valor) return;
+    if (!chaves.has(el)) chaves.set(el, String(++proximaChave));
+    const chave = chaves.get(el);
+    const anterior = passos.find((p) => p.tipo === "digitar" && p.chave === chave);
+    if (anterior) {
+      // A marca identifica o campo mesmo que você depois ponha um texto real ou confirme a tag.
+      // Preserva também a hora inicial: rever um campo não o leva para depois de "Publicar".
+      if (!temMarca(anterior.valor) || temMarca(valor)) anterior.valor = valor;
+      return;
+    }
+    anotar({ tipo: "digitar", seletores: seletores(el), valor, chave });
+  };
   document.addEventListener("click", (ev) => {
-    const el = alvo(ev);
+    const bruto = alvo(ev);
+    const el = campoDe(bruto) || clicavelDe(bruto);
     if (!el || !el.tagName) return;
     if (el.tagName === "INPUT" && (el.type === "file" || el.type === "password")) return;
+    if (campoSensivel(el)) return;
+    varrer();  // captura antes de um botão fechar ou trocar a tela dos campos
     const attr = (n) => limpar(el.getAttribute && el.getAttribute(n)).slice(0, 60);
-    anotar({ tipo: "clicar", seletores: seletores(el), texto: limpar(el.innerText || el.textContent).slice(0, 60),
+    // clique num campo de texto: o que está escrito nele é seu, não o nome do botão
+    const editavel = el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName);
+    anotar({ tipo: "clicar", seletores: seletores(el),
+             texto: editavel ? "" : limpar(el.innerText || el.textContent).slice(0, 60),
              rotulo: attr("aria-label"), dica: attr("title"), tag: (el.tagName || "").toLowerCase() });
   }, true);
   document.addEventListener("change", (ev) => {
@@ -97,68 +222,50 @@ window.__acGrav = (() => {
     if (el.type === "file") anotar({ tipo: "arquivo", seletores: seletores(el) });
   }, true);
   const digitou = (ev) => {
-    const el = alvo(ev);
-    if (!el || !el.tagName) return;
-    // senha nunca; arquivo tem passo próprio (o value dele é "C:\fakepath\...", que não se digita)
-    if (el.tagName === "INPUT" && (el.type === "password" || el.type === "file")) return;
-    const valor = el.isContentEditable ? limpar(el.innerText) : (el.value !== undefined ? limpar(el.value) : "");
-    if (!valor) return;
-    const anterior = passos[passos.length - 1];
-    if (anterior && anterior.tipo === "digitar" && anterior.chave === (el.id || "") + seletores(el)[0]) {
-      anterior.valor = valor;  // junta o que você digitou aos poucos num só passo
-      return;
-    }
-    anotar({ tipo: "digitar", seletores: seletores(el), valor, chave: (el.id || "") + seletores(el)[0] });
+    registrarTexto(alvo(ev));
   };
   document.addEventListener("input", digitou, true);
   document.addEventListener("change", digitou, true);
+  document.addEventListener("focusout", digitou, true);
+  document.addEventListener("paste", (ev) => {
+    const texto = ev.clipboardData && ev.clipboardData.getData("text/plain");
+    // Alguns editores transformam a colagem em chips sem emitir input para fora do componente.
+    if (texto && temMarca(texto)) registrarTexto(alvo(ev), texto);
+  }, true);
   document.addEventListener("keydown", (ev) => {
     if (ev.key !== "Enter" && ev.key !== "Tab") return;
     const el = alvo(ev);
-    if (el && el.tagName === "INPUT" && el.type === "password") return;
+    if (campoSensivel(el)) return;
+    registrarTexto(el);  // Enter pode transformar a tag em chip e esvaziar o input imediatamente
     anotar({ tipo: "tecla", tecla: ev.key });
   }, true);
 
   // --- varredura dos campos de texto (não depende de evento nenhum)
-  const raizes = () => {
-    const achadas = [document];
-    const fila = [document];
-    while (fila.length) {
-      const raiz = fila.shift();
-      for (const el of raiz.querySelectorAll("*")) {
-        if (el.shadowRoot) { achadas.push(el.shadowRoot); fila.push(el.shadowRoot); }
-      }
-    }
-    return achadas;
-  };
-  const TIPOS_TEXTO = ["", "text", "search", "url", "email", "tel", "number"];
+  const TIPOS_TEXTO = ["", "text", "search", "url", "number"];
   const campos = () => {
     const saida = [];
     for (const raiz of raizes()) {
-      for (const el of raiz.querySelectorAll('input, textarea, [contenteditable="true"], [contenteditable=""]')) {
-        if (el.tagName === "INPUT" && !TIPOS_TEXTO.includes(el.type || "")) continue;
-        saida.push(el);
+      for (const el of raiz.querySelectorAll('input, textarea, [contenteditable]')) {
+        if (el.tagName === "INPUT" && (!TIPOS_TEXTO.includes(el.type || "") || campoSensivel(el))) continue;
+        const campo = campoDe(el);
+        if (campo && aparece(campo) && !saida.includes(campo)) saida.push(campo);
       }
     }
     return saida;
   };
-  const conteudo = (el) => (el.isContentEditable ? limpar(el.innerText) : limpar(el.value));
-  const vistos = new Map();
   const varrer = () => {
-    if (ehLogin()) return;
+    if (sensivel()) return;
     for (const el of campos()) {
-      let valor;
-      try { valor = conteudo(el); } catch (e) { continue; }
-      if (vistos.get(el) === valor) continue;
-      vistos.set(el, valor);
-      if (!valor) continue;
-      const chave = (el.id || "") + "|" + (seletores(el)[0] || "");
-      const existente = passos.find((p) => p.tipo === "digitar" && p.chave === chave);
-      if (existente) { existente.valor = valor; existente.em = Date.now(); continue; }
-      anotar({ tipo: "digitar", seletores: seletores(el), valor, chave });
+      try { registrarTexto(el); } catch (e) { /* campo removido enquanto eu varria */ }
     }
   };
-  for (const el of campos()) { try { vistos.set(el, conteudo(el)); } catch (e) { /* ignora */ } }
+  for (const el of campos()) {
+    try {
+      const valor = conteudo(el);
+      if (temMarca(valor)) registrarTexto(el);  // a página pode ter trocado depois de você colar
+      else vistos.set(el, valor);
+    } catch (e) { /* ignora */ }
+  }
   const relogio = setInterval(varrer, 900);
   return {
     passos,
@@ -229,8 +336,9 @@ def limpar_passos(rede: str, passos: list[dict]) -> list[dict]:
             if papel:
                 limpo["papel"] = papel
             elif estranhas:
-                # marca que eu não conheço: nunca digitar isso num post de verdade
+                # Sem papel reconhecido, o texto fica fixo no roteiro, com aviso no painel.
                 limpo["marca_estranha"] = estranhas[0]
+                limpo["valor"] = valor
             else:
                 limpo["valor"] = valor  # texto seu, repetido igual
         elif tipo == "tecla":
@@ -243,17 +351,11 @@ def limpar_passos(rede: str, passos: list[dict]) -> list[dict]:
     return _juntar(saida)
 
 
-def _mesmo_campo(a: dict, b: dict) -> bool:
-    return (a["seletores"] == b["seletores"] and a.get("papel") == b.get("papel")
-            and a.get("valor") == b.get("valor"))
-
-
 def _juntar(passos: list[dict]) -> list[dict]:
-    """Um passo por campo (com o texto final) e sem cliques repetidos seguidos."""
+    """Um passo por campo (com o texto final), preservando cada clique."""
     saida: list[dict] = []
     por_campo: dict[tuple, dict] = {}
     for passo in passos:
-        anterior = saida[-1] if saida else None
         if passo["tipo"] == "digitar":
             chave = tuple(passo["seletores"])
             ja = por_campo.get(chave)
@@ -271,9 +373,8 @@ def _juntar(passos: list[dict]) -> list[dict]:
                     ja.pop("marca_estranha", None)
                 continue
             por_campo[chave] = passo
-        if anterior and passo["tipo"] == "clicar" and anterior["tipo"] == "clicar" \
-                and anterior["seletores"] == passo["seletores"] and anterior.get("texto") == passo.get("texto"):
-            continue
+        # O mesmo botão pode avançar várias telas. Os três "Próximo" do Studio
+        # são três ações, mesmo com o mesmo seletor e texto.
         saida.append(passo)
     return saida
 
@@ -293,25 +394,52 @@ def analisar(rede: str, passos: list[dict]) -> dict:
         sem_dono[0].pop("marca_estranha", None)
         inferido, faltando = faltando[0], []
     estranhas = [p["marca_estranha"] for p in limpos if p.get("marca_estranha")]
-    cliques = [i for i, p in enumerate(limpos) if p["tipo"] == "clicar"]
+    publicar_em, incerto = _clique_de_publicar(limpos)
     return {
         "passos_limpos": limpos,
         "faltando": faltando,
         "estranhas": estranhas,
         "inferido": inferido,
         "tem_arquivo": any(p["tipo"] == "arquivo" for p in limpos),
-        "publicar_em": cliques[-1] if cliques else None,
+        "publicar_em": publicar_em,
+        "publicar_incerto": incerto,
     }
 
 
+def _parece_publicar(passo: dict) -> bool:
+    alvos = [Alvo(str(s)) for s in passo.get("seletores") or []]
+    alvos += [Alvo(str(passo[c]), True) for c in ("texto", "rotulo", "dica") if passo.get(c)]
+    return parece_publicar(alvos)
+
+
+def _clique_de_publicar(passos: list[dict]) -> tuple[int | None, bool]:
+    """Qual clique publica: o primeiro com cara de publicar depois do vídeo.
+
+    Não é o último clique: depois de "Publicar" ainda vêm a confirmação, o "Ver post" ou o
+    fechar do aviso, e o ensaio executaria o clique que publica. Sem nenhum com cara de publicar,
+    fica o último depois do vídeo, marcado como incerto (o roteiro sai com um aviso).
+    """
+    cliques = [i for i, p in enumerate(passos) if p["tipo"] == "clicar"]
+    arquivo = next((i for i, p in enumerate(passos) if p["tipo"] == "arquivo"), None)
+    depois = [i for i in cliques if arquivo is not None and i > arquivo]
+    for i in depois:
+        if _parece_publicar(passos[i]):
+            return i, False
+    if depois:
+        return depois[-1], True
+    return (cliques[-1], True) if cliques else (None, False)
+
+
 def fragil(passo: dict) -> bool:
-    """Passo sem âncora estável: só sobrou o caminho na página, que quebra fácil."""
+    """Passo sem âncora estável: só sobraram seletores genéricos, que casam com qualquer coisa."""
     seletores = passo.get("seletores") or []
     if not seletores:
         return True
+    if passo["tipo"] == "arquivo":
+        return False  # o campo de arquivo costuma ser o único da página
     if passo["tipo"] == "clicar" and (passo.get("texto") or passo.get("rotulo") or passo.get("dica")):
         return False  # o texto do botão serve de âncora
-    return all(" > " in s or s in ("input[type=\"text\"]", "div", "span", "button") for s in seletores)
+    return all(fraco(s) for s in seletores)
 
 
 def descrever(passo: dict) -> str:
@@ -342,26 +470,40 @@ def lista_passos(rede: str, passos: list[dict]) -> list[dict]:
             "n": i, "tipo": passo["tipo"], "texto": descrever(passo),
             "fragil": fragil(passo), "papel": passo.get("papel"),
             "estranha": passo.get("marca_estranha"),
+            # o clique que eu vou tratar como "publicar" (o ensaio para nele)
+            "publica": i - 1 == a["publicar_em"], "publica_incerto": i - 1 == a["publicar_em"] and a["publicar_incerto"],
         })
     return saida
 
 
-def salvar(cfg: Config, rede: str, passos: list[dict], url_inicial: str, confirmacao: str = "") -> dict:
-    """Escreve o roteiro em texto, se ele servir. Devolve ok=False sem gravar quando não serve."""
+def gravar_roteiro(cfg: Config, rede: str, texto: str) -> Path:
+    """Grava o roteiro de uma vez só (temporário + troca): nunca fica um arquivo pela metade."""
+    destino = arquivo_roteiro(cfg, rede)
+    escrever_atomico(destino, texto if texto.endswith("\n") else texto + "\n")
+    return destino
+
+
+def salvar(cfg: Config, rede: str, passos: list[dict], url_inicial: str, confirmacao: str = "",
+           texto_inicial: str = "") -> dict:
+    """Salva os passos mesmo sem marcas; recusa apenas um roteiro que não pode ser executado."""
     a = analisar(rede, passos)
     limpos = a.pop("passos_limpos")
-    if a["faltando"] or a["estranhas"] or not a["tem_arquivo"]:
-        # roteiro pela metade postaria texto errado: não gravo nem apago o que já havia
-        log.warning("%s: gravação descartada (falta %s, marcas estranhas %s, vídeo %s)",
-                    rede, a["faltando"] or "nada", a["estranhas"] or "nenhuma", a["tem_arquivo"])
+    if not a["tem_arquivo"]:
+        log.warning("%s: gravação não salva, a escolha do vídeo não foi anotada", rede)
         return {"ok": False, "passos": len(limpos), **a}
-    texto = gerar(rede, limpos, url_inicial, confirmacao, a["publicar_em"])
-    destino = arquivo_roteiro(cfg, rede)
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    destino.write_text(texto, encoding="utf-8")
+    texto = gerar(rede, limpos, url_inicial, confirmacao, a["publicar_em"], a["publicar_incerto"], texto_inicial)
+    # o mesmo filtro do roteiro editado à mão: o que eu não consigo executar não vai para o disco
+    _, erros = roteiro.analisar(texto, rede)
+    if erros:
+        log.warning("%s: gravação descartada, o roteiro sairia com erro: %s", rede, "; ".join(erros[:3]))
+        return {"ok": False, "passos": len(limpos), **a, "erros": erros, "texto": texto}
+    destino = gravar_roteiro(cfg, rede, texto)
+    if a["faltando"] or a["estranhas"]:
+        log.warning("%s: roteiro salvo mesmo sem todas as marcas (campos sem identificação %s, "
+                    "marcas desconhecidas %s)", rede, a["faltando"] or "nenhum", a["estranhas"] or "nenhuma")
     log.info("%s: roteiro de %d passos escrito em %s", rede, len(limpos), destino)
     return {"ok": True, "passos": len(limpos), "papeis": sorted({p["papel"] for p in limpos if p.get("papel")}),
-            **a, "arquivo": str(destino), "texto": texto}
+            **a, "arquivo": str(destino), "texto": texto, "resumo": roteiro.resumo(texto, rede)}
 
 
 def carregar(cfg: Config, rede: str) -> str | None:

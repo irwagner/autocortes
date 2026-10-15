@@ -36,8 +36,8 @@ def fontes_disponiveis(cfg: Config) -> list[dict]:
         caminho = pasta / arquivo
         if caminho.exists():
             saida.append({"arquivo": caminho.as_posix(), "nome": nome})
-    atual = str(cfg["edicao"]["fonte_arquivo"])
-    if not any(Path(f["arquivo"]) == Path(atual) for f in saida):
+    atual = str(cfg["edicao"]["fonte_arquivo"]).strip()
+    if atual and not any(Path(f["arquivo"]) == Path(atual) for f in saida):
         saida.append({"arquivo": atual, "nome": str(cfg["edicao"]["fonte_nome"]), "personalizada": True})
     return saida
 
@@ -134,17 +134,33 @@ def comando_inicializacao() -> str:
     return f'"{pythonw}" "{RAIZ / "AutoCortes.pyw"}"'
 
 
-def inicializacao_ativa() -> bool:
+def _valor_inicializacao() -> str:
     if os.name != "nt":
-        return False
+        return ""
     import winreg
 
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, CHAVE_RUN) as chave:
             valor, _ = winreg.QueryValueEx(chave, NOME_RUN)
-        return bool(valor)
+        return str(valor or "")
     except OSError:
-        return False
+        return ""
+
+
+def inicializacao_ativa() -> bool:
+    """Liga com o Windows, e apontando para esta instalação.
+
+    Uma entrada de uma pasta antiga (o AutoCortes mudou de lugar, ou a .venv foi refeita em
+    outro Python) não abre nada: ela aparece como desligada, e ligar de novo corrige.
+    """
+    valor = _valor_inicializacao()
+    return bool(valor) and valor.strip().lower() == comando_inicializacao().lower()
+
+
+def inicializacao_de_outra_pasta() -> bool:
+    """Existe a entrada "AutoCortes" na inicialização, mas ela aponta para outro lugar."""
+    valor = _valor_inicializacao()
+    return bool(valor) and valor.strip().lower() != comando_inicializacao().lower()
 
 
 def definir_inicializacao(ativo: bool) -> None:

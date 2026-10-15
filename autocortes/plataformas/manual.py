@@ -64,7 +64,8 @@ class ViaManual(Plataforma):
     def verificar(self) -> str:
         return "postagem à mão (as tarefas aparecem no Início do painel)"
 
-    def publicar(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None) -> Resultado:
+    def publicar(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None,
+                 entrega=None) -> Resultado:
         raise ErroPublicacao(f"O {ROTULOS[self.nome]} é postado à mão: use a tarefa do painel", "bloqueio")
 
 

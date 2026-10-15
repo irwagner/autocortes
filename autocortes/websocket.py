@@ -4,6 +4,9 @@ Usado em dois lugares: o DevTools do navegador (`ws://`, texto) e a voz da Micro
 (`wss://`, texto e áudio binário). Só o necessário: texto, binário, ping e continuação.
 Sem compressão: a extensão permessage-deflate não é anunciada, então o servidor responde
 sem compressão.
+
+Todo erro de rede sai como `ErroWebsocket` (nunca um OSError cru). Depois de um erro no meio
+de uma leitura, a conexão é fechada: o fluxo de quadros ficaria fora de sincronia.
 """
 
 from __future__ import annotations
@@ -19,6 +22,8 @@ __all__ = ["ErroWebsocket", "Websocket"]
 
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"  # constante do protocolo
 TEXTO, BINARIO = 0x1, 0x2
+MAX_MENSAGEM = 64 * 1024 * 1024  # uma captura de tela do navegador tem poucos MB; mais que isto é defeito
+MAX_CABECALHO = 64 * 1024
 
 
 class ErroWebsocket(Exception):
@@ -40,20 +45,29 @@ class Websocket:
         host = partes.hostname or ""
         caminho = (partes.path or "/") + (f"?{partes.query}" if partes.query else "")
         self.rotulo = rotulo
+        self._buffer = b""
+        self._fechado = False
+        self._sock: socket.socket | None = None
         try:
             self._sock = socket.create_connection((host, porta), timeout=20)
             if segura:
                 contexto = ssl.create_default_context()
                 self._sock = contexto.wrap_socket(self._sock, server_hostname=host)
         except (OSError, ssl.SSLError) as e:
+            self._soltar()
             raise ErroWebsocket(f"não consegui falar com {rotulo} ({e})") from e
-        self._sock.settimeout(timeout)
         try:
-            self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        except OSError:
-            pass
-        self._buffer = b""
+            self._sock.settimeout(timeout)
+            try:
+                self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+            self._handshake(host, porta, caminho, cabecalhos or {})
+        except BaseException:
+            self._soltar()  # handshake recusado ou caído: o socket não fica aberto à toa
+            raise
 
+    def _handshake(self, host: str, porta: int, caminho: str, cabecalhos: dict) -> None:
         chave = base64.b64encode(os.urandom(16)).decode()
         linhas = [
             f"GET {caminho} HTTP/1.1",
@@ -63,9 +77,12 @@ class Websocket:
             f"Sec-WebSocket-Key: {chave}",
             "Sec-WebSocket-Version: 13",
         ]
-        for nome, valor in (cabecalhos or {}).items():
+        for nome, valor in cabecalhos.items():
             linhas.append(f"{nome}: {valor}")
-        self._sock.sendall(("\r\n".join(linhas) + "\r\n\r\n").encode("latin-1"))
+        try:
+            self._sock.sendall(("\r\n".join(linhas) + "\r\n\r\n").encode("latin-1"))
+        except OSError as e:
+            raise ErroWebsocket(f"não consegui falar com {self.rotulo} ({e})") from e
 
         bruto = self._ler_ate(b"\r\n\r\n").decode("latin-1")
         primeira, _, resto = bruto.partition("\r\n")
@@ -77,32 +94,60 @@ class Websocket:
         if "101" not in primeira:
             partes_status = primeira.split(" ")
             status = int(partes_status[1]) if len(partes_status) > 1 and partes_status[1].isdigit() else 0
-            raise ErroWebsocket(f"{rotulo} recusou a conexão ({primeira})", status, recebidos)
+            raise ErroWebsocket(f"{self.rotulo} recusou a conexão ({primeira})", status, recebidos)
         esperado = base64.b64encode(hashlib.sha1((chave + GUID).encode()).digest()).decode()
         if recebidos.get("sec-websocket-accept", "").strip() != esperado:
-            raise ErroWebsocket(f"resposta inválida de {rotulo} (Sec-WebSocket-Accept)")
+            raise ErroWebsocket(f"resposta inválida de {self.rotulo} (Sec-WebSocket-Accept)")
+
+    def _soltar(self) -> None:
+        """Fecha o socket sem conversa (depois de erro)."""
+        self._fechado = True
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
 
     # ---- leitura de bytes
+    def _receber_bloco(self, tamanho: int) -> bytes:
+        if self._fechado or self._sock is None:
+            raise ErroWebsocket(f"a conexão com {self.rotulo} já foi fechada")
+        try:
+            bloco = self._sock.recv(tamanho)
+        except (TimeoutError, socket.timeout) as e:  # noqa: UP041 (o ssl ainda levanta socket.timeout)
+            self._soltar()
+            raise ErroWebsocket(f"{self.rotulo} não respondeu no tempo esperado") from e
+        except OSError as e:
+            self._soltar()
+            raise ErroWebsocket(f"a conexão com {self.rotulo} caiu ({e})") from e
+        if not bloco:
+            self._soltar()
+            raise ErroWebsocket(f"{self.rotulo} encerrou a conexão")
+        return bloco
+
     def _ler_ate(self, marca: bytes) -> bytes:
         while marca not in self._buffer:
-            bloco = self._sock.recv(65536)
-            if not bloco:
-                raise ErroWebsocket(f"{self.rotulo} encerrou a conexão")
-            self._buffer += bloco
+            if len(self._buffer) > MAX_CABECALHO:
+                raise ErroWebsocket(f"resposta inválida de {self.rotulo} (cabeçalho grande demais)")
+            self._buffer += self._receber_bloco(65536)
         cabeca, self._buffer = self._buffer.split(marca, 1)
         return cabeca + marca
 
     def _ler_exato(self, n: int) -> bytes:
-        while len(self._buffer) < n:
-            bloco = self._sock.recv(max(65536, n - len(self._buffer)))
-            if not bloco:
-                raise ErroWebsocket(f"{self.rotulo} encerrou a conexão")
-            self._buffer += bloco
-        dados, self._buffer = self._buffer[:n], self._buffer[n:]
+        partes = [self._buffer] if self._buffer else []
+        juntos = len(self._buffer)
+        while juntos < n:
+            bloco = self._receber_bloco(max(65536, n - juntos))
+            partes.append(bloco)
+            juntos += len(bloco)
+        tudo = b"".join(partes)
+        dados, self._buffer = tudo[:n], tudo[n:]
         return dados
 
     # ---- quadros
     def _enviar_quadro(self, opcode: int, dados: bytes) -> None:
+        if self._fechado or self._sock is None:
+            raise ErroWebsocket(f"a conexão com {self.rotulo} já foi fechada")
         cabeca = bytes([0x80 | opcode])
         n = len(dados)
         if n < 126:
@@ -116,6 +161,7 @@ class Websocket:
         try:
             self._sock.sendall(cabeca + mascara + corpo)
         except OSError as e:
+            self._soltar()
             raise ErroWebsocket(f"não consegui enviar para {self.rotulo} ({e})") from e
 
     def enviar(self, texto: str) -> None:
@@ -124,20 +170,19 @@ class Websocket:
     def receber_quadro(self) -> tuple[int, bytes]:
         """Uma mensagem completa: (opcode, dados). Junta continuação e responde aos pings."""
         partes: list[bytes] = []
+        total = 0
         tipo = TEXTO
         while True:
-            try:
-                b1, b2 = self._ler_exato(2)
-            except TimeoutError as e:
-                raise ErroWebsocket(f"{self.rotulo} não respondeu no tempo esperado") from e
-            except socket.timeout as e:  # noqa: UP041 (o ssl ainda levanta socket.timeout)
-                raise ErroWebsocket(f"{self.rotulo} não respondeu no tempo esperado") from e
+            b1, b2 = self._ler_exato(2)
             fim, opcode = b1 & 0x80, b1 & 0x0F
             mascarado, tamanho = b2 & 0x80, b2 & 0x7F
             if tamanho == 126:
                 tamanho = int.from_bytes(self._ler_exato(2), "big")
             elif tamanho == 127:
                 tamanho = int.from_bytes(self._ler_exato(8), "big")
+            if tamanho > MAX_MENSAGEM or total + tamanho > MAX_MENSAGEM:
+                self._soltar()
+                raise ErroWebsocket(f"{self.rotulo} mandou uma mensagem grande demais ({tamanho} bytes)")
             mascara = self._ler_exato(4) if mascarado else b""
             dados = self._ler_exato(tamanho) if tamanho else b""
             if mascarado:
@@ -150,11 +195,17 @@ class Websocket:
             if opcode == 0x8:  # fechamento: os 2 primeiros bytes são o código, o resto é a razão
                 codigo = int.from_bytes(dados[:2], "big") if len(dados) >= 2 else 0
                 razao = dados[2:].decode("utf-8", "replace").strip()
+                try:  # o protocolo pede que o fechamento seja respondido com o mesmo código
+                    self._enviar_quadro(0x8, dados[:2])
+                except ErroWebsocket:
+                    pass
+                self._soltar()
                 detalhe = f" (código {codigo}{': ' + razao if razao else ''})" if codigo else ""
                 raise ErroWebsocket(f"{self.rotulo} fechou a conexão{detalhe}", codigo)
             if opcode in (TEXTO, BINARIO):
                 tipo = opcode
             partes.append(dados)
+            total += len(dados)
             if fim:
                 return tipo, b"".join(partes)
 
@@ -166,14 +217,12 @@ class Websocket:
         return dados.decode("utf-8", "replace")
 
     def fechar(self) -> None:
-        try:
-            self._enviar_quadro(0x8, b"")
-        except ErroWebsocket:
-            pass
-        try:
-            self._sock.close()
-        except OSError:
-            pass
+        if not self._fechado:
+            try:
+                self._enviar_quadro(0x8, b"")
+            except ErroWebsocket:
+                pass
+        self._soltar()
 
     def __enter__(self) -> "Websocket":
         return self

@@ -109,6 +109,8 @@ const ICONES = {
   interruptor: '<rect x="2" y="6" width="20" height="12" rx="6"/><circle cx="16" cy="12" r="3"/>',
   grafico: '<path d="M3 21h18M7 17V10M12 17V5M17 17v-4"/>',
   busca: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  paleta: '<path d="M12 3a9 9 0 1 0 0 18c1 0 1.6-.7 1.6-1.6 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6h1.9A4.8 4.8 0 0 0 21 10.9C21 6.5 17 3 12 3z"/><circle cx="7.5" cy="12" r="1" fill="currentColor"/><circle cx="9" cy="7.8" r="1" fill="currentColor"/><circle cx="13.5" cy="6.8" r="1" fill="currentColor"/><circle cx="17" cy="9.8" r="1" fill="currentColor"/>',
+  pessoas: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.5a6.5 6.5 0 0 1 3 5.5"/>',
 };
 function ic(nome, classe = "") {
   return raw(`<svg class="ic ${classe}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${ICONES[nome] || ""}</svg>`);
@@ -217,18 +219,21 @@ function consultaDaRota() {
 }
 
 /* ------------------------------------------------------------ estados */
+// "pulado" junta o que a rede recusou e o que você pulou: o motivo fica no histórico do corte
 const ESTADO_POST = {
   publicado: ["Publicado", "ok"], simulado: ["Simulado", "info"], falhou: ["Falhou", "erro"],
-  pulado: ["Recusado", "aviso"], interrompido: ["Interrompido", "aviso"], enviando: ["Enviando", "acento"],
-  aguardando: ["Postar à mão", "acento"],
+  pulado: ["Pulado", "aviso"], interrompido: ["Interrompido", "aviso"], enviando: ["Enviando", "acento"],
+  aguardando: ["Postar à mão", "acento"], conferir: ["A conferir", "aviso"], ensaio: ["Ensaio", "info"],
 };
 const estadoPost = (estado) => ESTADO_POST[estado] || [estado || "?", "neutro"];
 const ESTADO_HORARIO = {
   agendado: ["Agendado", "neutro"], pendente: ["Agora", "acento"], perdido: ["Não postado", "aviso"], pausado: ["Pausado", "aviso"],
 };
+// "Na fila" fica só para o corte pronto: o filme novo está esperando a análise
 const ESTADO_FILME = {
-  novo: ["Na fila", "neutro"], analisando: ["Analisando", "acento"], analisado: ["Analisado", "ok"],
+  novo: ["Esperando análise", "neutro"], analisando: ["Analisando", "acento"], analisado: ["Analisado", "ok"],
   erro: ["Erro", "erro"], ausente: ["Arquivo não encontrado", "aviso"], ignorado: ["Ignorado", "neutro"],
+  criando: ["Virando vídeo", "acento"],
 };
 const ESTADO_CORTE = {
   candidato: ["Trecho encontrado", "neutro"], renderizando: ["Editando", "acento"], revisao: ["Aguardando aprovação", "aviso"],
@@ -307,11 +312,15 @@ async function ocupado(botao, trabalho) {
   try { return await trabalho(); } finally { botao.classList.remove("carregando"); botao.disabled = false; }
 }
 
-const modal = { aberto: false, aoFechar: null, foco: null };
-function abrirModal({ titulo, corpo = "", largura = 640, aoFechar = null }) {
+/* protegido: função que diz se a janela tem algo não salvo (Esc, clique fora e o X perguntam antes de fechar).
+   aoSalvar: o que o Ctrl+S faz com a janela aberta (sem ele, o Ctrl+S não salva as Configurações por trás). */
+const modal = { aberto: false, aoFechar: null, foco: null, protegido: null, aoSalvar: null };
+function abrirModal({ titulo, corpo = "", largura = 640, aoFechar = null, protegido = null, aoSalvar = null }) {
   fecharModal(true);
   modal.foco = document.activeElement;
   modal.aoFechar = aoFechar;
+  modal.protegido = protegido;
+  modal.aoSalvar = aoSalvar;
   montar($("#modal-raiz"), h`<div class="modal-fundo" data-fundo="modal"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-titulo" style="width:min(${largura}px, 96vw)"><div class="modal-topo"><h2 id="modal-titulo">${titulo}</h2><button class="btn fantasma icone" data-acao="fechar-modal" aria-label="Fechar">${ic("x")}</button></div><div class="modal-corpo" id="modal-corpo">${corpo}</div></div></div>`);
   modal.aberto = true;
   setTimeout(() => {
@@ -326,6 +335,8 @@ function fecharModal(silencioso = false) {
   modal.aberto = false;
   const fn = modal.aoFechar;
   modal.aoFechar = null;
+  modal.protegido = null;
+  modal.aoSalvar = null;
   document.querySelectorAll("#modal-raiz video").forEach((v) => { try { v.pause(); } catch (e) { /* ignora */ } });
   montar($("#modal-raiz"), "");
   if (fn) { try { fn(); } catch (e) { console.error(e); } }
@@ -333,6 +344,62 @@ function fecharModal(silencioso = false) {
 }
 const corpoModal = () => $("#modal-corpo");
 function tituloModal(texto) { const el = $("#modal-titulo"); if (el) el.textContent = texto; }
+
+/** Fechar pelo Esc, pelo clique fora ou pelo X: pergunta antes se a janela tem algo não salvo. */
+async function pedirFecharModal() {
+  if (!modal.aberto) return true;
+  let protegido = false;
+  try { protegido = Boolean(modal.protegido && modal.protegido()); } catch (e) { console.error(e); }
+  if (protegido) {
+    const ok = await confirmar({
+      titulo: "Fechar sem salvar?",
+      texto: "O que você mudou nesta janela ainda não foi salvo e vai se perder.",
+      botao: "Fechar sem salvar",
+      cancelar: "Continuar editando",
+      perigo: true,
+    });
+    if (!ok) return false;
+  }
+  fecharModal();
+  return true;
+}
+
+/** Elementos que recebem o Tab dentro de uma janela (a armadilha de foco usa isto). */
+function focaveis(raiz) {
+  if (!raiz) return [];
+  const seletor = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), '
+    + 'textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), video[controls], summary';
+  return [...raiz.querySelectorAll(seletor)].filter((el) => el.offsetParent !== null || el === document.activeElement);
+}
+
+/** A janela que está por cima agora (a confirmação fica acima da janela comum). */
+function janelaDoTopo() {
+  const confirmacoes = document.querySelectorAll(".modal-fundo.sobreposto .modal");
+  if (confirmacoes.length) return confirmacoes[confirmacoes.length - 1];
+  return modal.aberto ? $("#modal-raiz .modal") : null;
+}
+
+/** Tab e Shift+Tab ficam dentro da janela aberta, em vez de irem para a página por trás. */
+function prenderFoco(ev) {
+  const janela = janelaDoTopo();
+  if (!janela) return false;
+  const lista = focaveis(janela);
+  if (!lista.length) { ev.preventDefault(); return true; }
+  const primeiro = lista[0];
+  const ultimo = lista[lista.length - 1];
+  const atual = document.activeElement;
+  if (!janela.contains(atual)) {
+    ev.preventDefault();
+    (ev.shiftKey ? ultimo : primeiro).focus();
+  } else if (ev.shiftKey && atual === primeiro) {
+    ev.preventDefault();
+    ultimo.focus();
+  } else if (!ev.shiftKey && atual === ultimo) {
+    ev.preventDefault();
+    primeiro.focus();
+  }
+  return true;
+}
 
 function confirmar({ titulo, texto, botao = "Confirmar", perigo = false, cancelar = "Cancelar" }) {
   return new Promise((resolve) => {
@@ -352,7 +419,8 @@ function confirmar({ titulo, texto, botao = "Confirmar", perigo = false, cancela
     });
     document.addEventListener("keydown", tecla, true);
     document.body.appendChild(caixa);
-    caixa.querySelector("[data-resposta=sim]").focus();
+    // ação perigosa abre com o foco em "Cancelar": um Enter a mais não descarta nem exclui nada
+    caixa.querySelector(perigo ? "[data-resposta=nao]" : "[data-resposta=sim]").focus();
   });
 }
 
@@ -424,17 +492,49 @@ async function carregarConfig() {
   return r;
 }
 async function garantirConfig() { if (!App.config || !App.meta) await carregarConfig(); }
-async function salvarConfig() {
-  if (vazio(App.pendente)) return true;
+
+/** As alterações pendentes de algumas seções ("youtube") ou chaves ("geral.simulacao"). */
+function pendentesDe(somente) {
+  const saida = {};
+  for (const caminho of somente) {
+    const v = obter(App.pendente, caminho);
+    if (v === undefined) continue;
+    const partes = caminho.split(".");
+    let o = saida;
+    for (const p of partes.slice(0, -1)) o = o[p] || (o[p] = {});
+    o[partes[partes.length - 1]] = JSON.parse(JSON.stringify(v));
+  }
+  return saida;
+}
+function limparVazios(o) {
+  for (const [k, v] of Object.entries(o)) {
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+      limparVazios(v);
+      if (!Object.keys(v).length) delete o[k];
+    }
+  }
+}
+
+/** Salva as alterações pendentes. Com `somente`, salva só aquelas seções ou chaves: um botão da
+    tela Redes não leva junto o que você ainda estava testando no Estúdio ou nas Configurações. */
+async function salvarConfig(somente = null) {
+  const alteracoes = Array.isArray(somente) ? pendentesDe(somente) : App.pendente;
+  if (vazio(alteracoes)) return true;
   try {
     // o servidor recusa mudanças do visual feitas para outro modelo (trocado em outra janela)
     const modelo = App.config && App.config.edicao ? App.config.edicao.modelo : undefined;
-    const r = await post("/config", { alteracoes: App.pendente, modelo_esperado: App.pendente.edicao ? modelo : undefined });
+    const r = await post("/config", { alteracoes, modelo_esperado: alteracoes.edicao ? modelo : undefined });
     App.config = r.config;
     App.meta = r.meta;
-    App.pendente = {};
+    if (Array.isArray(somente)) {
+      for (const caminho of somente) removerPendente(caminho);
+      limparVazios(App.pendente);
+    } else {
+      App.pendente = {};
+    }
     atualizarBarraSalvar();
-    toast("Configurações salvas");
+    toast(Array.isArray(somente) && contarPendentes()
+      ? "Salvei só esta parte. O resto das alterações continua esperando o Salvar." : "Configurações salvas");
     if (r.reiniciar && r.reiniciar.length) {
       toast(`Feche e abra o AutoCortes de novo para aplicar: ${r.reiniciar.map(rotuloReinicio).join(" e ")}.`, "info", 9000);
     }

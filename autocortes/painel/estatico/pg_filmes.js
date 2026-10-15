@@ -37,7 +37,7 @@ function filmeHtml(f) {
     const pct = atividade && atividade.pct !== null ? atividade.pct : null;
     andamento = h`<div class="filme-progresso"><span class="giro"></span><span>${atividade ? atividade.texto : "Analisando..."}</span>${pct !== null ? h`<div class="barra"><i style="width:${pct}%"></i></div><b>${Math.round(pct)}%</b>` : ""}</div>`;
   } else if (f.status === "novo") {
-    andamento = h`<div class="filme-progresso texto-suave">${ic("relogio")}<span>Na fila para análise${App.estado && !App.estado.motor.rodando ? " (o motor está desligado)" : ""}</span></div>`;
+    andamento = h`<div class="filme-progresso texto-suave">${ic("relogio")}<span>Esperando a análise${App.estado && !App.estado.motor.rodando ? " (o motor está desligado)" : ""}</span></div>`;
   }
   const esgotado = f.esgotado && f.status === "analisado" ? badge(["Todos os trechos aproveitados", "neutro"], true) : "";
   const botoes = [];
@@ -137,7 +137,10 @@ async function enviarArquivos(lista) {
     for (const arquivo of arquivos) {
       const ext = (arquivo.name.match(/\.[^.]+$/) || [""])[0].toLowerCase();
       const linha = linhaEnvio(arquivo.name);
+      // recusado aqui, antes de subir: o servidor teria de ler o arquivo inteiro só para dizer não
       if (!aceitas.has(ext)) { marcarEnvio(linha, "falhou", "Formato não aceito"); continue; }
+      if (!arquivo.size) { marcarEnvio(linha, "falhou", "Arquivo vazio"); continue; }
+      if (arquivo.size > 60 * 1024 ** 3) { marcarEnvio(linha, "falhou", "Grande demais (máximo 60 GB)"); continue; }
       if (await enviarArquivo(arquivo, linha)) ok++;
     }
   } finally {
@@ -242,13 +245,23 @@ App.acoes["filme-dados"] = (el) => {
       <label class="campo"><span>Idioma falado</span><select id="fd-idioma">${IDIOMAS.map(([v, t]) => h`<option value="${v}" ${v === idioma ? raw("selected") : ""}>${t}</option>`)}</select></label>
       <p class="nota">O idioma ajuda a transcrição automática. Para refazer as legendas com o novo idioma, use Reanalisar.</p>
       <div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Cancelar</button><button class="btn primario" data-acao="filme-dados-salvar" data-filme="${f.id}">${ic("check")}Salvar</button></div>`,
+    // o que estava nos campos ao abrir: fechar sem querer com mudança pergunta antes
+    protegido: () => filmeDadosAtuais() !== FilmeDados.base,
+    aoSalvar: () => salvarDadosFilme(f.id),
   });
+  FilmeDados.base = filmeDadosAtuais();
 };
 
-App.acoes["filme-dados-salvar"] = async (el) => {
+const FilmeDados = { base: null };
+function filmeDadosAtuais() {
+  const campos = ["#fd-titulo", "#fd-ano", "#fd-hashtags", "#fd-idioma"].map((s) => $(s));
+  return campos.every(Boolean) ? JSON.stringify(campos.map((c) => c.value)) : FilmeDados.base;
+}
+
+async function salvarDadosFilme(id, el = null) {
   const hashtags = $("#fd-hashtags").value.split(/[\s,;]+/).map((t) => t.trim()).filter(Boolean)
     .map((t) => (t.startsWith("#") ? t : `#${t}`));
-  await ocupado(el, () => post(`/filmes/${el.dataset.filme}/meta`, {
+  await ocupado(el, () => post(`/filmes/${id}/meta`, {
     titulo: $("#fd-titulo").value,
     ano: $("#fd-ano").value,
     hashtags,
@@ -257,7 +270,9 @@ App.acoes["filme-dados-salvar"] = async (el) => {
   fecharModal();
   toast("Dados do filme salvos");
   await carregarFilmes();
-};
+}
+
+App.acoes["filme-dados-salvar"] = (el) => salvarDadosFilme(el.dataset.filme, el);
 
 /* ------------------------------------------------------------ página */
 

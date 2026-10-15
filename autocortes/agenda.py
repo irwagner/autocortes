@@ -46,7 +46,9 @@ PRESETS: dict[str, dict] = {
         "tiktok": ["08:30", "12:00", "15:00", "18:30", "21:00"],
         "instagram": ["09:15", "12:15", "15:15", "19:00", "21:15"],
         "kwai": ["09:00", "12:00", "15:00", "18:30", "21:00"],
-        "bilibili": ["07:00", "08:30", "10:00", "11:00", "12:00"],
+        # 75 min entre um e outro: com 1 h só, a variação sorteada juntava dois horários abaixo do
+        # intervalo mínimo e um deles sumia do dia (18:00 a 23:00 em Pequim)
+        "bilibili": ["07:00", "08:15", "09:30", "10:45", "12:00"],
     },
 }
 
@@ -60,8 +62,13 @@ def dia_permitido(cfg: Config, plataforma: str, dia: date) -> bool:
     return DIAS_SEMANA[dia.weekday()] in cfg.dias(plataforma)
 
 
-def horarios_do_dia(cfg: Config, plataforma: str, dia: date) -> list[datetime]:
-    """Horários reais do dia (com a variação sorteada) respeitando o intervalo mínimo."""
+def horarios_com_chave(cfg: Config, plataforma: str, dia: date) -> list[tuple[datetime, str]]:
+    """Horários reais do dia (com a variação sorteada), respeitando o intervalo mínimo.
+
+    Cada um vem com a chave do horário da agenda ("AAAA-MM-DD HH:MM", antes da variação). É
+    pela chave que a postagem feita fica ligada ao horário: mudar a variação ou o fuso no meio
+    do dia muda a hora sorteada, mas não a chave, e o post já feito continua contando.
+    """
     if not dia_permitido(cfg, plataforma, dia):
         return []
     variacao = float(cfg["agenda"]["variacao_minutos"]) * 60
@@ -71,35 +78,51 @@ def horarios_do_dia(cfg: Config, plataforma: str, dia: date) -> list[datetime]:
         base = datetime.combine(dia, time(hh, mm))
         # mesma semente para o mesmo dia/horário: reiniciar o programa não muda o sorteio
         atraso = random.Random(f"{plataforma}|{dia.isoformat()}|{texto}").uniform(0, variacao) if variacao else 0
-        brutos.append(base + timedelta(seconds=atraso))
+        brutos.append((base + timedelta(seconds=atraso), f"{dia.isoformat()} {hh:02d}:{mm:02d}"))
     minimo = timedelta(minutes=float(cfg["agenda"]["intervalo_minimo_min"]))
-    saida: list[datetime] = []
-    for h in sorted(brutos):
-        if saida and h - saida[-1] < minimo:
+    saida: list[tuple[datetime, str]] = []
+    for h, chave in sorted(brutos):
+        if saida and h - saida[-1][0] < minimo:
             continue
-        saida.append(h)
+        saida.append((h, chave))
     return saida
 
 
-def horarios_entre(cfg: Config, plataforma: str, inicio: datetime, fim: datetime) -> list[datetime]:
-    saida: list[datetime] = []
+def horarios_do_dia(cfg: Config, plataforma: str, dia: date) -> list[datetime]:
+    """Horários reais do dia (com a variação sorteada) respeitando o intervalo mínimo."""
+    return [h for h, _ in horarios_com_chave(cfg, plataforma, dia)]
+
+
+def horarios_entre_com_chave(cfg: Config, plataforma: str, inicio: datetime,
+                             fim: datetime) -> list[tuple[datetime, str]]:
+    saida: list[tuple[datetime, str]] = []
     dia = inicio.date() - timedelta(days=1)  # a variação pode empurrar 23:55 para depois da meia-noite
     while dia <= fim.date():
-        saida.extend(h for h in horarios_do_dia(cfg, plataforma, dia) if inicio <= h < fim)
+        saida.extend((h, c) for h, c in horarios_com_chave(cfg, plataforma, dia) if inicio <= h < fim)
         dia += timedelta(days=1)
     return saida
 
 
-def horario_vigente(cfg: Config, plataforma: str, agora: datetime) -> datetime | None:
-    """Último horário que já chegou e ainda está dentro da tolerância."""
+def horarios_entre(cfg: Config, plataforma: str, inicio: datetime, fim: datetime) -> list[datetime]:
+    return [h for h, _ in horarios_entre_com_chave(cfg, plataforma, inicio, fim)]
+
+
+def horario_vigente_com_chave(cfg: Config, plataforma: str, agora: datetime) -> tuple[datetime, str] | None:
+    """Último horário que já chegou e ainda está dentro da tolerância, com a chave dele."""
     tolerancia = timedelta(minutes=max(5.0, float(cfg["agenda"]["tolerancia_minutos"])))
     vigentes = [
-        h
+        (h, chave)
         for dia in (agora.date() - timedelta(days=1), agora.date())
-        for h in horarios_do_dia(cfg, plataforma, dia)
+        for h, chave in horarios_com_chave(cfg, plataforma, dia)
         if h <= agora <= h + tolerancia
     ]
     return max(vigentes) if vigentes else None
+
+
+def horario_vigente(cfg: Config, plataforma: str, agora: datetime) -> datetime | None:
+    """Último horário que já chegou e ainda está dentro da tolerância."""
+    vigente = horario_vigente_com_chave(cfg, plataforma, agora)
+    return vigente[0] if vigente else None
 
 
 def proximo_horario(cfg: Config, plataforma: str, agora: datetime) -> datetime | None:

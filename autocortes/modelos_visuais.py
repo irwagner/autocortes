@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 from .config import PADRAO, Config, ErroConfig, salvar
-from .util import log
+from .util import escrever_atomico, log
 
 # o que um modelo guarda (o resto do [edicao] é qualidade e áudio, igual para todos)
 CHAVES = (
@@ -101,14 +101,9 @@ def _ler_tudo(cfg: Config) -> tuple[str | None, dict[str, dict]]:
 
 
 def _gravar(cfg: Config, modelos: dict[str, dict], ativo: str) -> None:
-    caminho = arquivo(cfg)
-    caminho.parent.mkdir(parents=True, exist_ok=True)
-    temporario = caminho.with_suffix(".tmp")
-    with open(temporario, "w", encoding="utf-8") as saida:
-        json.dump({"versao": 1, "ativo": ativo, "modelos": modelos}, saida, ensure_ascii=False, indent=1)
-        saida.flush()
-        os.fsync(saida.fileno())  # numa queda de energia fica o arquivo antigo ou o novo, nunca um vazio
-    os.replace(temporario, caminho)
+    texto = json.dumps({"versao": 1, "ativo": ativo, "modelos": modelos}, ensure_ascii=False, indent=1)
+    # temporário com nome único, apagado se algo falhar, e no disco antes da troca (queda de energia)
+    escrever_atomico(arquivo(cfg), texto, sincronizar=True)
 
 
 def listar(cfg: Config) -> dict[str, dict]:

@@ -23,7 +23,7 @@ from . import edicao
 from .config import Config
 from .estoque import Clipe
 from .legendas import Frase, palavras_no_intervalo
-from .midia import ErroMidia, Progresso, base_ffmpeg, caminho_filtro, duracao_arquivo, executar
+from .midia import ErroMidia, base_ffmpeg, duracao_arquivo
 from .util import log
 
 __all__ = ["Trecho", "montar", "planejar"]
@@ -126,12 +126,14 @@ def _entrada_clipe(trecho: Trecho, fps_txt: str, largura: int, altura: int, indi
                       f"crop={largura}:{altura},setsar=1,fps={fps_txt}[v{indice}]")
     else:
         entrada = []
+        # Clipe curto demais (ou de duração desconhecida): repete o arquivo inteiro na entrada.
+        # O filtro loop com size=1 repetia só o primeiro quadro, e o vídeo saía congelado.
+        if not clipe.duracao or clipe.duracao < trecho.corte_em + trecho.duracao + 0.05:
+            entrada += ["-stream_loop", "-1"]
         if trecho.corte_em > 0.05:
             entrada += ["-ss", f"{trecho.corte_em:.3f}"]
         entrada += ["-t", dur, "-i", str(arquivo)]
-        # clipe curto demais: repete até cobrir o trecho
-        laco = "loop=loop=-1:size=1:start=0," if (clipe.duracao or 0) < trecho.duracao else ""
-        filtro = (f"[{indice}:v]{laco}scale={largura}:{altura}:force_original_aspect_ratio=increase,"
+        filtro = (f"[{indice}:v]scale={largura}:{altura}:force_original_aspect_ratio=increase,"
                   f"crop={largura}:{altura},setsar=1,fps={fps_txt},trim=duration={dur},"
                   f"setpts=PTS-STARTPTS[v{indice}]")
     return entrada, filtro
@@ -189,9 +191,9 @@ def montar(cfg: Config, narracao: Path, frases: list[Frase], clipes: list[Clipe]
     info = {"crop": [largura, altura, 0, 0], "video": {"sar": [1, 1], "indice": 0, "fps": fps_txt}}
     g, arquivo_moldura, moldura = edicao.geometria_do_corte(cfg, info, topo)
 
-    # --- legenda e título (ASS), com os tempos que a voz devolveu
+    # --- legenda e título (ASS), com os tempos que a voz devolveu (nome parcial até dar certo)
     destino.parent.mkdir(parents=True, exist_ok=True)
-    ass = destino.with_suffix(".ass")
+    ass = destino.with_name(destino.stem + ".parcial.ass")
     palavras = palavras_no_intervalo(frases, 0.0, dur) if e["legendas"] else []
     estilo = edicao.estilo_legenda(cfg, g)
     ass.write_text(edicao.gerar_ass(estilo, palavras, dur, g.legenda_y, topo, g.topo_y), encoding="utf-8")
@@ -226,11 +228,11 @@ def montar(cfg: Config, narracao: Path, frases: list[Frase], clipes: list[Clipe]
         proximo += 1
 
     # --- o resto do visual é o mesmo dos cortes de filme
-    partes, atual = edicao._filtro_video(cfg, g, "[vbase]null", f":r={fps_txt}:d={dur:.3f}", dur,
-                                         moldura, indice_moldura)
+    partes, atual = edicao.filtro_video(cfg, g, "[vbase]null", f":r={fps_txt}:d={dur:.3f}", dur,
+                                        moldura, indice_moldura)
     filtros += partes
     fade = (f",fade=t=in:st=0:d=0.25,fade=t=out:st={max(0.0, dur - 0.45):.3f}:d=0.45" if e["fade"] else "")
-    filtros.append(f"[{atual}]{edicao._filtro_ass(ass, pasta_fontes)}{fade},format=yuv420p[vout]")
+    filtros.append(f"[{atual}]{edicao.filtro_ass(ass, pasta_fontes)}{fade},format=yuv420p[vout]")
     filtros += _filtro_audio(cfg, indice_narracao, indice_musica, dur)
 
     parcial = destino.with_name(destino.stem + ".parcial.mp4")
@@ -248,28 +250,16 @@ def montar(cfg: Config, narracao: Path, frases: list[Frase], clipes: list[Clipe]
             str(parcial),
         ]
 
-    codec = str(e["codec"])
-    usar_gpu = codec != "libx264" and codec not in edicao._CODECS_FALHOS
-    with TRAVA:
-        prog = Progresso(rotulo, dur, intervalo_seg=15)
-        r = executar(comando(edicao._args_video(cfg, fps, None if usar_gpu else "libx264")), parar=parar,
-                     ao_ler_saida=prog.linha_ffmpeg, baixa_prioridade=cfg["geral"]["prioridade_baixa"])
-        if r.codigo != 0 and usar_gpu:
-            log.warning("O codificador %s falhou (%s). Tentando com o libx264.", codec, r.resumo_erro(2))
-            prog = Progresso(rotulo, dur, intervalo_seg=15)
-            r = executar(comando(edicao._args_video(cfg, fps, "libx264")), parar=parar,
-                         ao_ler_saida=prog.linha_ffmpeg, baixa_prioridade=cfg["geral"]["prioridade_baixa"])
-            if r.codigo == 0:
-                edicao._CODECS_FALHOS.add(codec)
-    if r.codigo != 0:
-        parcial.unlink(missing_ok=True)
-        raise ErroMidia(f"falha na montagem: {r.resumo_erro(6)}")
-
-    obtida = duracao_arquivo(cfg["ferramentas"]["ffprobe"], parcial)
-    if obtida < dur * 0.9:
-        parcial.unlink(missing_ok=True)
-        raise ErroMidia(f"vídeo montado ficou curto ({obtida:.1f}s de {dur:.1f}s)")
-    parcial.replace(destino)
+    try:
+        with TRAVA:
+            obtida = edicao.codificar(cfg, comando, fps, dur, parcial, destino, parar, rotulo,
+                                      intervalo_seg=15, oque="montagem")
+        try:  # a legenda usada fica ao lado do vídeo, como nos cortes de filme
+            ass.replace(destino.with_suffix(".ass"))
+        except OSError as erro:
+            log.debug("Não consegui guardar a legenda de %s: %s", destino.name, erro)
+    finally:
+        ass.unlink(missing_ok=True)
     edicao.gerar_miniatura(cfg, destino, min(dur / 3, 3.0))
     log.info("Vídeo montado: %s (%.1f s, %d clipes)", destino.name, obtida, len(plano.trechos))
     return destino

@@ -41,6 +41,15 @@ from .util import ler_json, log, salvar_json
 
 PASSO_VOLUME = 0.5  # segundos por amostra de volume
 LEGENDAS_TEXTO = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
+# análises seguidas com a transcrição falhando antes de seguir sem legenda
+TENTATIVAS_TRANSCRICAO = 3
+
+
+class ErroTranscricao(ErroMidia):
+    """A transcrição falhou (whisper travou, faltou memória...): o filme volta para a fila e tenta de novo.
+
+    Antes, a falha virava "sem legenda" gravada para sempre, e o filme nunca era transcrito.
+    """
 
 
 @dataclass
@@ -188,10 +197,12 @@ def detectar_tarjas(cfg: Config, caminho: Path, info: dict, parar: threading.Eve
     achou = False
     for fracao_tempo in (0.12, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.82):
         t = info["duracao"] * fracao_tempo
+        # limit em fração (24/255): vale igual para vídeo de 8 e de 10 bits. Em número inteiro, o 24
+        # é lido na escala do formato, e num HDR de 10 bits quase tudo passava por tarja preta
         r = executar(
             base_ffmpeg(cfg["ferramentas"]["ffmpeg"])
             + ["-ss", f"{t:.2f}", "-i", str(caminho), "-map", f"0:{v['indice']}", "-an", "-sn", "-dn",
-               "-frames:v", "24", "-vf", "cropdetect=limit=24:round=2:reset=0", "-f", "null", "-"],
+               "-frames:v", "24", "-vf", "cropdetect=limit=0.094:round=2:reset=0", "-f", "null", "-"],
             parar=parar,
             baixa_prioridade=cfg["geral"]["prioridade_baixa"],
             timeout=300,
@@ -552,6 +563,14 @@ def obter_legendas(cfg: Config, caminho: Path, info: dict, pasta: Path, wav, fal
 
 # ---------------------------------------------------------------- orquestração
 
+def _campo(linha, nome: str):
+    """Um campo da linha do banco (ou de um dict), sem quebrar quando ele não existe."""
+    try:
+        return linha[nome]
+    except (KeyError, IndexError):
+        return None
+
+
 def analisar(cfg: Config, filme, parar: threading.Event | None = None) -> Analise:
     caminho = Path(filme["caminho"])
     if not caminho.exists():
@@ -594,10 +613,13 @@ def analisar(cfg: Config, filme, parar: threading.Event | None = None) -> Analis
 
     falas: list[list[float]] = ler_json(pasta / "fala.json") or []
     frases, meta_transcricao = carregar_transcricao(pasta / "transcricao.json")
+    fonte_escolhida = str(meta.get("fonte") or cfg["transcricao"]["fonte"])
     try:
         precisa_fala = not (pasta / "fala.json").exists()
         precisa_texto = not meta_transcricao
-        if info.get("audio") and precisa_fala:
+        # sem transcrição, a voz detectada só ajudaria na nota dos trechos: não vale baixar o whisper
+        # só para isso (a seleção usa as legendas e o volume)
+        if info.get("audio") and precisa_fala and fonte_escolhida != "nenhuma":
             try:
                 falas = detectar_fala(cfg, obter_wav(), pasta, parar)
             except ferramentas.ErroDownload:
@@ -611,8 +633,15 @@ def analisar(cfg: Config, filme, parar: threading.Event | None = None) -> Analis
                                                        parar)
             except ferramentas.ErroDownload:
                 raise
+            except Interrompido:
+                raise
             except ErroMidia as e:
-                log.warning("Sem legendas para '%s': %s", titulo, e)
+                tentativa = int(_campo(filme, "tentativas") or 0) + 1
+                if tentativa < TENTATIVAS_TRANSCRICAO:
+                    # nada é gravado: na próxima análise a transcrição é tentada de novo
+                    raise ErroTranscricao(f"a transcrição falhou ({e}); tento de novo mais tarde "
+                                          f"(tentativa {tentativa} de {TENTATIVAS_TRANSCRICAO})") from e
+                log.warning("Sem legendas para '%s' depois de %d tentativas: %s", titulo, tentativa, e)
                 frases, fonte, idioma = [], "nenhuma (erro)", None
             salvar_transcricao(pasta / "transcricao.json", frases, fonte, idioma)
             # resumo pequeno para o painel não precisar abrir a transcrição inteira
@@ -636,4 +665,5 @@ def carregar_para_render(cfg: Config, filme_id: int) -> tuple[dict, list[Frase]]
     return info, frases
 
 
-__all__ = ["Analise", "Interrompido", "analisar", "carregar_para_render", "pasta_do_filme", "PASSO_VOLUME"]
+__all__ = ["Analise", "ErroTranscricao", "Interrompido", "analisar", "carregar_para_render", "pasta_do_filme",
+           "PASSO_VOLUME"]
