@@ -11,10 +11,10 @@ Roda no seu PC com Windows, com FFmpeg e whisper.cpp. Os vídeos só saem do com
 [![FFmpeg com libass](https://img.shields.io/badge/FFmpeg-libass-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
 [![whisper.cpp b5130](https://img.shields.io/badge/whisper.cpp-b5130-ff7a2f)](https://github.com/ggml-org/whisper.cpp)
 [![SQLite](https://img.shields.io/badge/SQLite-local-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/)
-[![Windows 10 e 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)](#instalação-e-uso)
-[![Situação: testado em simulação](https://img.shields.io/badge/situa%C3%A7%C3%A3o-testado%20em%20simula%C3%A7%C3%A3o-ffc233)](#situação-atual)
+[![Windows 10 e 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)](#passo-a-passo-instalar-e-usar)
+[![Situação: em uso](https://img.shields.io/badge/situa%C3%A7%C3%A3o-em%20uso-2ea44f)](#situação-atual)
 
-[Como funciona](#como-funciona) · [Instalação](#instalação-e-uso) · [Painel](#painel) · [Redes sociais](#redes-sociais) · [Agenda](#agenda-de-postagens) · [Configuração](#configuração) · [Próximos passos](#pendências-e-próximos-passos)
+**[Passo a passo](#passo-a-passo-instalar-e-usar)** · [Como funciona](#como-funciona) · [Painel](#painel) · [Redes sociais](#redes-sociais) · [Agenda](#agenda-de-postagens) · [Configuração](#configuração) · [Próximos passos](#pendências-e-próximos-passos)
 
 </div>
 
@@ -29,7 +29,7 @@ Roda no seu PC com Windows, com FFmpeg e whisper.cpp. Os vídeos só saem do com
 
 O AutoCortes corta filmes, edita em formato vertical e publica sozinho no **YouTube Shorts**, **TikTok** e **Instagram Reels** (e, se você quiser, na **Página do Facebook** junto com o Instagram), em loop e seguindo uma agenda. No **Kwai** e no **Bilibili**, que não têm API de postagem aberta, ele prepara cada post e você publica pelo app ou pelo site. Você coloca os filmes numa pasta; o sistema analisa cada um, escolhe os melhores trechos, edita com legenda palavra por palavra e posta nos horários de cada rede, sempre com alguns vídeos prontos na fila.
 
-Tudo roda no seu PC com Windows, usando FFmpeg e whisper.cpp. Os vídeos só saem do computador para as redes que você conectar.
+Tudo roda no seu PC com Windows, usando FFmpeg e whisper.cpp. Os vídeos só saem do computador para as redes que você conectar. Para instalar do zero, inclusive a IA local com o Ollama, siga o [passo a passo](#passo-a-passo-instalar-e-usar).
 
 > [!WARNING]
 > Cortes de filmes protegidos geram Content ID, strikes e bloqueio de conta, e as redes tratam trecho de filme com pouca edição como conteúdo não original. Use filmes em domínio público, Creative Commons, próprios ou licenciados. Detalhes em [Direitos autorais e originalidade](#direitos-autorais-e-originalidade).
@@ -140,7 +140,7 @@ Atualizado em outubro de 2026.
 | Edição vertical (legenda, título, barra, áudio) | ✅ Pronta e testada |
 | Envio para YouTube, TikTok e Instagram pela API oficial | 🧪 Pronto; testado contra um servidor simulado, ainda não nas APIs reais |
 | Envio pelo Upload-Post (opcional, por rede) | 🧪 Pronto; testado contra um servidor simulado, ainda não no serviço real |
-| Envio pelo seu navegador (YouTube, TikTok, Instagram, Bilibili) | ⚠️ Mecânica pronta e testada com o Chrome real; cada roteiro só dá para validar com a conta logada, no ensaio |
+| Envio pelo seu navegador (YouTube, TikTok, Instagram, Bilibili) | ✅ Em uso de verdade desde outubro de 2026 no YouTube, no TikTok e no Instagram; o Bilibili ainda não foi validado com a conta logada |
 | "Aprender a postar": grava o roteiro enquanto você posta à mão | ⚠️ Pronto e testado com o Chrome real; a gravação de cada rede depende da conta logada |
 | Roteiro como linguagem simples, editável no painel | ✅ Pronto e testado |
 | Roteiros padrão do YouTube, TikTok e Instagram, que vêm com a instalação | ✅ Tirados dos roteiros que postaram de verdade em outubro de 2026 |
@@ -157,42 +157,144 @@ Atualizado em outubro de 2026.
 | IA escrevendo a pauta, fila de temas e vídeo criado entrando na agenda | ✅ Pronto e testado com o Ollama de verdade (tema → roteiro → vídeo → fila → post) |
 | Tela Criação no painel (pautas, fila de temas, editor e criar na hora) | ✅ Pronta e testada no Edge |
 | Moldura, modelos visuais e aba Estúdio | ✅ Prontos; testados com o episódio de The Great e conferidos quadro a quadro |
-| IA opcional para título, descrição e hashtags | 🧪 Pronta; testada com um servidor que imita o Ollama, ainda não com um modelo real |
+| IA opcional para título, descrição e hashtags | ✅ Pronta e testada com o Ollama de verdade (qwen3 4B, uns 4 s por corte numa Radeon RX 5500 XT) |
 | Métricas dos posts (YouTube e Instagram) | 🧪 Prontas; testadas contra um servidor simulado |
 | `AutoCortes.bat`, `AutoCortes.pyw` e "Iniciar com o Windows" | ✅ Prontos e testados |
 
 ✅ pronto e testado · 🧪 pronto, testado só contra um servidor simulado
 
-Falta a primeira postagem real em cada rede: tudo foi testado em modo simulação ou contra servidores simulados.
+Pelo navegador, o AutoCortes já posta de verdade no YouTube, no TikTok e no Instagram. Pelas APIs oficiais e pelo Upload-Post, ainda falta a primeira postagem real: foram testados contra servidores simulados.
 
-## Instalação e uso
+## Passo a passo: instalar e usar
 
-Requisitos:
+O AutoCortes roda no seu PC: o GitHub só guarda o código. Do zero, a instalação leva uns 15 minutos. O que ele precisa depois (whisper.cpp, modelo de transcrição, yt-dlp) ele baixa sozinho e confere pelo SHA-256.
+
+Você vai precisar de:
 - Windows 10 ou 11, 64 bits
-- Python 3.11 ou mais novo (testado no 3.14)
-- FFmpeg com libass no PATH (testado com o 9.0.2 "full build" do gyan.dev)
-- Internet no primeiro uso, para baixar o whisper.cpp (versão b5130, com SHA-256 conferido) e o modelo de transcrição
+- internet na primeira vez
+- espaço em disco para os filmes e os cortes (o AutoCortes e o modelo de transcrição ocupam menos de 1 GB, e a IA, se você usar, mais uns 7 GB)
+- contas nas redes onde vai postar
+
+### 1. Instale o Python
+
+1. Em [python.org/downloads/windows](https://www.python.org/downloads/windows/), baixe o **Windows installer (64-bit)** do Python 3.14. O AutoCortes pede a 3.11 ou mais nova e foi testado na 3.14.
+2. Na primeira tela do instalador, marque **Add python.exe to PATH** e clique em **Install Now**.
+3. Para conferir, abra o PowerShell (tecla Windows, digite `PowerShell` e tecle Enter) e rode `python --version`. Tem que aparecer `Python 3.14`.
+
+O site também oferece o **Python install manager**, que agora é o recomendado por lá. Se instalar por ele, rode `py install 3.14` no PowerShell depois.
+
+### 2. Instale o FFmpeg
+
+No PowerShell:
 
 ```powershell
-git clone https://github.com/irwagner/AutoCortes.git
-cd AutoCortes
-.\AutoCortes.bat
+winget install Gyan.FFmpeg
 ```
 
-Sem o Git, use **Code > Download ZIP** no GitHub e extraia a pasta.
+Feche o PowerShell, abra de novo e confira com `ffmpeg -version`.
 
-**Para abrir, dê dois cliques no `AutoCortes.bat`.** Na primeira vez ele cria o ambiente do Python, instala as bibliotecas e cria o `config.toml` a partir do `config.example.toml`; depois abre o painel no navegador em `http://127.0.0.1:8777`, já com o motor ligado. A janela preta mostra o registro: fechar a janela (ou usar "Fechar o AutoCortes" no painel) desliga tudo. Se o AutoCortes já estiver aberto, o `.bat` só abre o painel de novo. Quando o `requirements.txt` muda, o `.bat` instala as bibliotecas de novo sozinho; se a pasta `.venv` vier de um Python antigo (ou o Python dela tiver sido desinstalado), ele avisa para apagar a pasta, que é refeita na abertura seguinte.
+Sem o `winget`, baixe o "full build" em [gyan.dev/ffmpeg/builds](https://www.gyan.dev/ffmpeg/builds/) e extraia, por exemplo, em `C:\ffmpeg`. Depois de abrir o AutoCortes (passo 4), informe `C:\ffmpeg\bin\ffmpeg.exe` e `C:\ffmpeg\bin\ffprobe.exe` em Configurações > Sistema > Ferramentas.
+
+### 3. Baixe o AutoCortes
+
+Escolha uma pasta **fora do OneDrive** e com espaço livre, como `C:\AutoCortes` ou `D:\AutoCortes`. É nela que ficam os filmes, os cortes e o banco, e uma pasta sincronizada atrapalha o banco e enche a nuvem de vídeo.
+
+- **Com o Git** (se não tiver, instale com `winget install Git.Git` e abra o PowerShell de novo):
+  ```powershell
+  git clone https://github.com/irwagner/autocortes.git C:\AutoCortes
+  ```
+- **Sem o Git:** no GitHub, clique no botão verde **Code > Download ZIP** e extraia o ZIP. Depois mova a pasta que tem o `AutoCortes.bat` dentro (ela vem como `autocortes-main`) para a pasta escolhida; pode renomear. Não rode nada de dentro do ZIP sem extrair.
+
+Os dois jeitos recebem as [atualizações automáticas](#atualização-automática).
+
+### 4. Abra pela primeira vez
+
+1. Na pasta do AutoCortes, dê dois cliques no **`AutoCortes.bat`**. Se o Windows avisar que o arquivo veio da internet, clique em **Mais informações > Executar assim mesmo** (ou em **Executar**).
+2. Na primeira vez, a janela preta prepara o Python e instala as bibliotecas, o que leva um ou dois minutos. Depois o painel abre no navegador, em `http://127.0.0.1:8777`.
+3. Deixe a janela preta aberta: fechar a janela desliga o AutoCortes. Se fechar a aba do navegador, dois cliques no `.bat` abrem o painel de novo.
+
+Ele começa em **modo simulação**: analisa, edita e segue a agenda, mas não publica nada até você ativar (passo 8).
+
+### 5. Coloque os filmes
+
+- Copie os vídeos para a pasta `filmes`, dentro da pasta do AutoCortes, ou arraste para a tela **Filmes** do painel. Uma legenda `.srt` com o mesmo nome do vídeo (`Filme.srt` ou `Filme.pt-BR.srt`) vai junto e poupa a transcrição.
+- Ou cadastre canais do YouTube em **Filmes > Canais do YouTube**, e os vídeos novos deles chegam sozinhos ([veja como](#canais-do-youtube)).
+- Use só o que você pode postar: filmes em domínio público, Creative Commons, próprios ou licenciados ([por quê](#direitos-autorais-e-originalidade)).
+
+Na primeira análise, o AutoCortes baixa o whisper.cpp e o modelo de transcrição (uns 500 MB). Cada filme é analisado uma vez, e os cortes aparecem em **Cortes**. O visual (moldura, tamanho do vídeo, fonte e cores) se ajusta no **Estúdio**, e os horários de cada rede, na **Agenda**.
+
+### 6. Ligue a IA com o Ollama (opcional)
+
+Sem IA, o título, a descrição e as hashtags saem dos modelos de Configurações > Textos dos posts. Com ela, cada corte ganha textos escritos a partir da fala do trecho, e a tela **Criação** escreve pautas a partir de um tema. Tudo roda no seu PC.
+
+1. Baixe o Ollama em [ollama.com/download](https://ollama.com/download) e instale. Não precisa ser administrador; ele pede o Windows 10 22H2 ou mais novo e uns 4 GB no disco, fora o modelo.
+2. No PowerShell, baixe o modelo (2,5 GB):
+   ```powershell
+   ollama pull qwen3:4b-instruct-2507-q4_K_M
+   ```
+   Confira com `ollama list`: o modelo tem que aparecer na lista.
+3. Deixe o Ollama aberto. Ele fica em segundo plano, com um ícone perto do relógio, e atende em `http://127.0.0.1:11434`.
+4. No painel, em **Configurações > IA**, ligue **Escrever os textos com IA**, clique em **Testar a IA** e salve na barra do rodapé.
+
+Dicas:
+- **C: cheio?** No lugar do passo 1, instale o Ollama em outro disco e guarde os modelos fora do C: com a variável `OLLAMA_MODELS`, antes do `ollama pull`. No PowerShell, na pasta onde o instalador foi baixado:
+  ```powershell
+  cd $HOME\Downloads
+  .\OllamaSetup.exe /DIR="D:\Ollama"
+  setx OLLAMA_MODELS "D:\Ollama\modelos"
+  ```
+  Quando a instalação terminar, feche o Ollama pelo ícone perto do relógio e abra de novo pelo menu Iniciar, para ele usar a pasta nova dos modelos.
+- **Placa de vídeo:** com NVIDIA, deixe o driver atualizado; com AMD, o Ollama usa a placa pelo Vulkan (ou pelo ROCm, nas placas que têm). Sem placa dedicada, ele roda no processador: fica mais devagar, mas funciona, porque os textos são feitos em segundo plano.
+- **Modelo maior:** a aba IA mostra a memória da sua placa e o comando do maior modelo que cabe nela ([tabela](#ia-para-os-textos-opcional)).
+- **No lugar do Ollama:** o LM Studio (`http://127.0.0.1:1234/v1`) ou uma API online também servem. Numa API online, a fala de cada trecho sai do seu PC.
+
+Mais sobre o Ollama no Windows na [documentação oficial](https://docs.ollama.com/windows).
+
+### 7. Conecte as redes
+
+Em **Redes sociais**, escolha a **Forma de envio** de cada rede:
+
+| Forma | Como funciona | Bom saber |
+|---|---|---|
+| API oficial | Você cria as chaves no site de desenvolvedor da rede e conecta a conta. O painel tem o passo a passo de cada uma | No TikTok, sem a auditoria do app, os posts ficam visíveis só para você |
+| Upload-Post (pago) | Um serviço que já tem a aprovação das redes; você cola a chave dele | Posta em público no TikTok, mas o TikTok não está no plano grátis |
+| Navegador (arriscado) | O AutoCortes abre o Chrome (ou o Edge) num perfil separado, você entra na conta uma vez, e ele preenche a página de envio com os roteiros que vêm prontos | Contraria os termos das redes e pode custar a conta: use numa conta que você pode perder |
+| À mão (pelo app) | Cada horário vira uma tarefa no Início, com o vídeo e os textos; você posta e marca "Já postei" | O jeito do Kwai e do Bilibili, e de quem prefere postar pelo celular |
+
+Depois de conectar, clique em **Testar** (no navegador, **Testar a sessão**). Os detalhes de cada rede estão em [Redes sociais](#redes-sociais).
+
+### 8. Ative a publicação real
+
+Com as redes testadas, clique em **Ativar a publicação real**, no topo de Redes sociais. A partir daí, cada rede ativa recebe o próximo corte da fila nos horários da Agenda.
+
+### 9. No dia a dia
+
+- **Deixe aberto:** os posts só saem com o AutoCortes aberto. Em Configurações > Sistema, ligue **Iniciar com o Windows** para ele abrir sozinho quando você entra no Windows, em segundo plano, sem janela e sem abrir o navegador (para ver o painel, abra o `.bat`).
+- **Atualizações:** a cada 2 dias ele confere o GitHub e se atualiza sozinho, quando nada estiver rodando ([como funciona](#atualização-automática)).
+- **Fechar:** use **Fechar o AutoCortes**, na lateral do painel.
+- **O que aconteceu:** a tela **Registro** mostra tudo ao vivo, e o arquivo fica em `dados\logs\autocortes.log`.
+
+### Se algo der errado
+
+| O que aparece | O que fazer |
+|---|---|
+| "Não encontrei o Python" | Instale o Python marcando "Add python.exe to PATH" (passo 1) e abra o `.bat` de novo |
+| "A pasta .venv foi criada com um Python antigo" | Apague a pasta `.venv`, dentro da pasta do AutoCortes, e abra o `.bat` de novo. Ela é refeita, e nada do AutoCortes se perde |
+| "Não consegui instalar as bibliotecas" | Confira a internet. Se continuar, apague a pasta `.venv` e abra o `.bat` de novo |
+| "O FFmpeg não está no PATH" | Instale o FFmpeg (passo 2) e abra o `.bat` de novo, ou informe o caminho em Configurações > Sistema |
+| "Não consegui abrir a porta 8777" | Outro programa usa a porta: troque `porta`, em `[painel]`, no `config.toml` da pasta do AutoCortes |
+| O painel não abriu no navegador | Abra `http://127.0.0.1:8777` à mão |
+| "Testar a IA" falha | Confira se o Ollama está aberto (ícone perto do relógio) e se o modelo do painel tem o mesmo nome que aparece no `ollama list` |
+
+### Mais sobre a abertura
+
+Na primeira vez, o `AutoCortes.bat` cria o ambiente do Python (a pasta `.venv`), instala as bibliotecas e cria o `config.toml` a partir do `config.example.toml`; depois abre o painel já com o motor ligado. Se o AutoCortes já estiver aberto, o `.bat` só abre o painel de novo. Quando o `requirements.txt` muda, ele instala as bibliotecas de novo sozinho; se a `.venv` vier de um Python antigo (ou o Python dela tiver sido desinstalado), ele avisa para apagar a pasta. Se algo impedir a abertura pelo "Iniciar com o Windows", aparece uma caixa com o motivo.
 
 Com o AutoCortes aberto, os comandos do terminal que editam, criam ou postam (`analisar`, `renderizar`, `reanalisar`, `criar` e `postar`) recusam rodar na mesma pasta de dados: os dois processos pegariam o mesmo corte.
 
-**Iniciar com o Windows:** ligue em Configurações > Sistema. O AutoCortes passa a abrir em segundo plano quando você entra no Windows, pelo `AutoCortes.pyw`, sem janela e sem abrir o navegador. Para ver o painel, abra o `AutoCortes.bat`. Se algo impedir a abertura, aparece uma caixa com o motivo.
+### Pelo terminal
 
-Para publicar de verdade:
-1. Em Redes sociais, siga o passo a passo de cada rede e conecte as contas (ou escolha o envio pelo Upload-Post).
-2. Clique em Testar em cada rede.
-3. Clique em "Ativar a publicação real" no topo de Redes sociais.
-
-Pelo terminal também funciona:
+Também funciona sem o painel:
 
 ```powershell
 .venv\Scripts\python -m autocortes init        # cria o config.toml e as pastas
