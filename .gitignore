@@ -24,6 +24,9 @@ filmes/
 _teste*
 # capturas de tela de sessões de automação (têm o nome das contas)
 .playwright-cli/
+# atualização pelo GitHub: o estado dela e o ZIP baixado (instalação por ZIP)
+.atualizacao.json
+.atualizacao/
 
 # cópia solta da moldura CineLink (a usada fica em molduras/)
 /template.png

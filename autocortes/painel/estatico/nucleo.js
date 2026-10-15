@@ -16,6 +16,9 @@ const App = {
   offline: false,
   encerrado: false,
   enviosAtivos: false,
+  // fechando para atualizar pelo GitHub: a faixa avisa e a página se recarrega quando ele abrir de novo
+  atualizando: false,
+  timerRecarga: null,
   ativa(token) { return token === this.navegacao; },
 };
 
@@ -280,10 +283,16 @@ const post = (caminho, corpo = {}) => api(caminho, corpo);
 
 function mostrarFaixa(tipo) {
   const el = $("#faixa");
-  if (tipo === "offline") {
+  // fechado para atualizar: o "sem conexão" é esperado, e a página volta sozinha
+  if (tipo === "offline" && App.atualizando) tipo = "atualizando";
+  if (tipo === "atualizando") {
+    montar(el, h`<div class="faixa info" role="status">${ic("refazer")}<span>Atualizando o AutoCortes. Ele fecha, troca a versão e abre de novo, e esta página se recarrega sozinha (leva um ou dois minutos).</span></div>`);
+  } else if (tipo === "offline") {
     montar(el, h`<div class="faixa">${ic("alerta")}<span>Não consegui falar com o AutoCortes. Se você fechou a janela dele, abra de novo pelo <b>AutoCortes.bat</b>.</span><button class="btn pequeno" data-acao="reconectar">Tentar de novo</button></div>`);
   } else if (tipo === "sessao") {
-    montar(el, h`<div class="faixa">${ic("alerta")}<span>O AutoCortes foi reiniciado. Recarregue a página para continuar.</span><button class="btn pequeno" data-acao="recarregar">Recarregar</button></div>`);
+    const texto = App.atualizando ? "O AutoCortes abriu de novo." : "O AutoCortes foi reiniciado.";
+    montar(el, h`<div class="faixa">${ic("alerta")}<span>${texto} Recarregue a página para continuar (ela se recarrega sozinha quando nada estiver por salvar).</span><button class="btn pequeno" data-acao="recarregar">Recarregar</button></div>`);
+    recarregarQuandoPuder();
   } else {
     montar(el, "");
   }
@@ -292,6 +301,24 @@ function marcarOffline(sim) {
   if (sim === App.offline) return;
   App.offline = sim;
   mostrarFaixa(sim ? "offline" : "");
+}
+/** Depois de o AutoCortes abrir de novo (a sessão da página não vale mais): recarrega quando não houver
+ *  nada por salvar, nem uma janela aberta, nem um envio de arquivo. Antes, confere se ele responde. */
+async function recarregarQuandoPuder() {
+  clearTimeout(App.timerRecarga);
+  const ocupada = contarPendentes() || App.enviosAtivos || modal.aberto || document.querySelector(".modal-fundo.sobreposto");
+  if (!ocupada && !App.encerrado) {
+    try {
+      const r = await fetch("/saude", { cache: "no-store" });
+      if (r.ok) {
+        location.reload();
+        return;
+      }
+    } catch (e) {
+      // ainda abrindo: tenta de novo daqui a pouco
+    }
+  }
+  App.timerRecarga = setTimeout(recarregarQuandoPuder, 3000);
 }
 
 /* ------------------------------------------------------------ avisos e janelas */

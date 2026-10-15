@@ -56,7 +56,10 @@ PREFIXO_EXCLUINDO = "_excluindo-"
 PORTA_PAINEL_BASE = 8778
 PORTA_NAVEGADOR_BASE = 9223
 MAX_PERFIS = 20
-INSTALACAO_PADRAO = {"max_simultaneos": 2}
+# max_simultaneos: perfis trabalhando juntos (0 = sem limite). atualizar_*: a atualização pelo
+# GitHub (atualizacao.py), que é da instalação inteira e só o principal faz
+INSTALACAO_PADRAO = {"max_simultaneos": 2, "atualizar_sozinho": True, "atualizar_a_cada_dias": 2}
+MAX_DIAS_ATUALIZACAO = 30
 # nomes de pasta que o painel usa para outra coisa
 RESERVADOS = {"principal"}
 # nome do perfil: sem os caracteres que não valem em nome de pasta no Windows
@@ -138,11 +141,18 @@ def instalacao() -> dict:
             valor = secao.get("max_simultaneos")
             if isinstance(valor, int) and not isinstance(valor, bool) and 0 <= valor <= MAX_PERFIS:
                 dados["max_simultaneos"] = valor
+        secao = bruto.get("atualizacao")
+        if isinstance(secao, dict):
+            if isinstance(secao.get("automatica"), bool):
+                dados["atualizar_sozinho"] = secao["automatica"]
+            dias = secao.get("a_cada_dias")
+            if isinstance(dias, int) and not isinstance(dias, bool) and 1 <= dias <= MAX_DIAS_ATUALIZACAO:
+                dados["atualizar_a_cada_dias"] = dias
     return dados
 
 
 def salvar_instalacao(alteracoes: dict) -> dict:
-    """Grava o `perfis.toml` (só a chave conhecida; 0 = sem limite)."""
+    """Grava o `perfis.toml` (só as chaves conhecidas)."""
     import tomlkit
 
     dados = instalacao()
@@ -154,6 +164,16 @@ def salvar_instalacao(alteracoes: dict) -> dict:
         if not 0 <= valor <= MAX_PERFIS:
             raise ErroConfig(f"Quantos perfis ao mesmo tempo: use de 0 (sem limite) a {MAX_PERFIS}")
         dados["max_simultaneos"] = valor
+    if "atualizar_sozinho" in alteracoes:
+        dados["atualizar_sozinho"] = bool(alteracoes["atualizar_sozinho"])
+    if "atualizar_a_cada_dias" in alteracoes:
+        try:
+            dias = int(alteracoes["atualizar_a_cada_dias"])
+        except (TypeError, ValueError) as e:
+            raise ErroConfig("Conferir a atualização a cada: informe um número de dias") from e
+        if not 1 <= dias <= MAX_DIAS_ATUALIZACAO:
+            raise ErroConfig(f"Conferir a atualização a cada: use de 1 a {MAX_DIAS_ATUALIZACAO} dias")
+        dados["atualizar_a_cada_dias"] = dias
 
     from tomlkit.exceptions import ParseError
 
@@ -169,6 +189,12 @@ def salvar_instalacao(alteracoes: dict) -> dict:
         tabela.comment("Quantos perfis podem trabalhar ao mesmo tempo (0 = sem limite)")
         doc["perfis"] = tabela
     doc["perfis"]["max_simultaneos"] = dados["max_simultaneos"]
+    if "atualizacao" not in doc:
+        tabela = tomlkit.table()
+        tabela.comment("Atualização pelo GitHub: confere a cada N dias e, com tudo parado, atualiza e abre de novo")
+        doc["atualizacao"] = tabela
+    doc["atualizacao"]["automatica"] = dados["atualizar_sozinho"]
+    doc["atualizacao"]["a_cada_dias"] = dados["atualizar_a_cada_dias"]
     escrever_atomico(ARQUIVO_INSTALACAO, tomlkit.dumps(doc))
     return dados
 
@@ -335,8 +361,9 @@ def situacao(p: Perfil) -> dict:
         if saude is None:
             continue
         if str(saude.get("id") or "") == p.id:
+            # trabalhando: editando, analisando, postando ou baixando agora (a atualização espera)
             return {"rodando": True, "outro": False, "desde": saude.get("desde"), "motor": saude.get("motor"),
-                    "porta": porta}
+                    "porta": porta, "trabalhando": bool(saude.get("ocupado"))}
         if porta == p.porta:
             estranho = saude
     if estranho is not None:  # alguém responde na porta do config, mas com outra pasta de dados
@@ -527,8 +554,11 @@ def _executavel() -> Path:
     return Path(sys.executable)
 
 
-def iniciar(p: Perfil) -> dict:
-    """Abre o perfil num processo próprio (painel na porta dele, sem abrir o navegador)."""
+def iniciar(p: Perfil, motor: bool = True) -> dict:
+    """Abre o perfil num processo próprio (painel na porta dele, sem abrir o navegador).
+
+    motor=False abre com o motor desligado (a atualização reabre cada perfil como ele estava).
+    """
     if p.erro:
         raise ErroConfig(f"O config do perfil '{p.nome}' tem um problema: {p.erro}")
     estado = situacao(p)
@@ -553,6 +583,8 @@ def iniciar(p: Perfil) -> dict:
             )
     limpar_pedido(p)
     argumentos = [str(_executavel()), "-m", "autocortes", "--config", str(p.config), "painel", "--sem-navegador"]
+    if not motor:
+        argumentos.append("--motor-desligado")
     try:
         subprocess.Popen(
             argumentos, cwd=str(RAIZ), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,

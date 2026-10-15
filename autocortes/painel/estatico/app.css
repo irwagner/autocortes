@@ -142,6 +142,7 @@ img { display: block; }
   border: 1px solid rgba(248, 113, 113, .35); background: rgba(248, 113, 113, .09); color: #fecaca;
 }
 .faixa .btn { margin-left: auto; }
+.faixa.info { border-color: rgba(96, 165, 250, .35); background: rgba(96, 165, 250, .09); color: #bfdbfe; }
 
 /* ------------------------------------------------------------ elementos */
 .card {

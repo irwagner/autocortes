@@ -62,9 +62,6 @@ if errorlevel 1 (
   echo.
 )
 
-"%PY%" -m autocortes painel %*
-if errorlevel 1 (
-  echo.
-  pause
-)
-endlocal
+rem O cmd lê este arquivo aos pedaços, e a atualização pelo GitHub pode trocá-lo com o painel aberto:
+rem por isso o fim fica numa linha só, que o cmd lê inteira antes de o painel abrir.
+"%PY%" -m autocortes painel %* || (echo. & pause & endlocal & exit /b 1) & endlocal & exit /b 0

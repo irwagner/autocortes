@@ -50,6 +50,7 @@ const CFG_REDESENHA = new Set(["geral.simulacao", "edicao.codec", "transcricao.f
 
 const PgConfig = {
   aba: "geral",
+  atualizacao: null, // /api/atualizacao: a versão instalada e a do GitHub (aba Sistema)
   modelosIa: null,
   iaResultado: null,
   baixando: 0,
@@ -281,6 +282,9 @@ function cfgAbaSistema() {
     m.inicializacao_outra
       ? h`<p class="aviso-inline">${ic("alerta")}A inicialização do Windows aponta para outra pasta do AutoCortes (ele mudou de lugar?). Ligue a chave acima para ela abrir esta instalação.</p>`
       : "",
+    secao("Atualização"),
+    h`<div id="sis-atualizacao">${cfgAtualizacaoHtml()}</div>`,
+    secao("Painel"),
     campo({ chave: "painel.abrir_navegador", tipo: "switch", rotulo: "Abrir o painel no navegador", ajuda: "Quando o AutoCortes é aberto pelo AutoCortes.bat." }),
     campo({ chave: "painel.porta", tipo: "numero", min: 1024, max: 65535, rotulo: "Porta do painel", ajuda: "O painel só aceita conexões deste computador. Vale depois de fechar e abrir o AutoCortes." }),
     cfgAvisoReinicio(),
@@ -460,7 +464,106 @@ function cfgDepoisDeDesenhar() {
     inicializacao._pronto = true;
     inicializacao.addEventListener("change", () => cfgAlternarInicializacao(inicializacao));
   }
+  if ($("#sis-atualizacao")) {
+    cfgLigarAtualizacao();
+    cfgCarregarAtualizacao().catch(erroToast); // a versão pode ter mudado desde a última vez
+  }
 }
+
+/* ------------------------------------------------------------ atualização pelo GitHub (Sistema) */
+
+function cfgCommit(c) {
+  if (!c || !c.sha) return "?";
+  const data = c.data ? new Date(c.data) : null;
+  return `${c.sha.slice(0, 7)}${data && !Number.isNaN(data.getTime()) ? ` de ${data.toLocaleDateString("pt-BR")}` : ""}`;
+}
+
+function cfgAtualizacaoHtml() {
+  const a = PgConfig.atualizacao;
+  if (!a) return h`<p class="nota">Conferindo a versão...</p>`;
+  const o = a.opcoes || {};
+  const linhas = [
+    linhaCampo("Atualizar sozinho pelo GitHub", `A cada ${plural(o.atualizar_a_cada_dias, "dia", "dias")} eu confiro se há versão nova em github.com/${a.repositorio} e, quando nada está sendo editado nem postado e ninguém mexe no painel há 15 min, atualizo e abro de novo, com os perfis que estavam abertos. Vale para a instalação inteira${a.principal ? "" : ", e quem confere é o perfil principal (com ele fechado, não há atualização sozinha)"}.`,
+      h`<label class="switch"><input type="checkbox" id="sis-atualizar" ${o.atualizar_sozinho ? raw("checked") : ""} aria-label="Atualizar sozinho pelo GitHub"><span></span></label>`),
+    linhaCampo("Conferir a cada", "", h`<input type="number" class="curto" id="sis-atualizar-dias" min="1" max="30" step="1" value="${o.atualizar_a_cada_dias}" aria-label="Conferir a atualização a cada quantos dias"><span class="sufixo">dias</span>`),
+  ];
+  const modo = { git: "clone do git", zip: "pasta baixada em ZIP", sem_git: "clone do git, sem o programa git" }[a.modo] || a.modo;
+  const situacao = [h`Instalada: <b>${cfgCommit(a.local)}</b> (${modo})`];
+  if (a.verificado_em) situacao.push(` · conferido ${fmtRelativo(a.verificado_em)}`);
+  if (a.proxima && a.proxima * 1000 > Date.now()) situacao.push(` · próxima conferência ${fmtRelativo(a.proxima)}`);
+  linhas.push(h`<p class="nota">${situacao}</p>`);
+  if (a.disponivel && a.remoto) {
+    const quando = a.falhou
+      ? `A instalação dela falhou aqui ${fmtRelativo(a.falhou.em)} (${a.falhou.erro || "veja o registro"}): tento de novo sozinho na próxima conferência, ou agora pelo botão.`
+      : o.atualizar_sozinho ? "Eu instalo sozinho na próxima folga, ou agora pelo botão." : "Instale pelo botão quando quiser.";
+    linhas.push(h`<div class="aviso-rede">${ic("baixar")}<span>Versão nova: <b>${cfgCommit(a.remoto)}</b>, “${a.remoto.mensagem || ""}”. ${quando}</span></div>`);
+  } else if (a.motivo) {
+    linhas.push(h`<p class="aviso-inline">${ic("info")}Não atualizo sozinho: ${a.motivo}.</p>`);
+  } else if (a.verificado_em && !a.erro) {
+    linhas.push(h`<p class="nota">${ic("ok")}Em dia com o GitHub.</p>`);
+  }
+  if (a.erro) linhas.push(h`<p class="aviso-inline">${ic("alerta")}${a.erro}</p>`);
+  if (a.aplicado && a.aplicado.para) {
+    linhas.push(h`<p class="nota">Última atualização: ${cfgCommit(a.aplicado.de)} para ${cfgCommit(a.aplicado.para)}${a.aplicado_em ? `, ${fmtRelativo(a.aplicado_em)}` : ""}.</p>`);
+  }
+  linhas.push(h`<div class="linha-botoes"><button type="button" class="btn" data-acao="sis-procurar">${ic("busca")}Procurar agora</button>${a.disponivel ? h`<button type="button" class="btn primario" data-acao="sis-atualizar-agora">${ic("baixar")}Atualizar agora</button>` : ""}</div>`);
+  return linhas;
+}
+
+async function cfgCarregarAtualizacao() {
+  PgConfig.atualizacao = await api("/atualizacao");
+  if (App.nomePagina === "config" && PgConfig.aba === "sistema") {
+    montarSeMudou($("#sis-atualizacao"), cfgAtualizacaoHtml());
+    cfgLigarAtualizacao();
+  }
+}
+
+function cfgLigarAtualizacao() {
+  const chave = $("#sis-atualizar");
+  if (chave && !chave._pronto) {
+    chave._pronto = true;
+    chave.addEventListener("change", () => cfgSalvarAtualizacao({ atualizar_sozinho: chave.checked }, chave));
+  }
+  const dias = $("#sis-atualizar-dias");
+  if (dias && !dias._pronto) {
+    dias._pronto = true;
+    dias.addEventListener("change", () => cfgSalvarAtualizacao({ atualizar_a_cada_dias: Number(dias.value) }, dias));
+  }
+}
+
+async function cfgSalvarAtualizacao(mudanca, campo) {
+  campo.disabled = true;
+  try {
+    PgConfig.atualizacao = await post("/atualizacao/opcoes", mudanca);
+    toast("Atualização: preferência salva (vale para a instalação inteira)");
+  } catch (e) {
+    erroToast(e);
+  } finally {
+    campo.disabled = false;
+    montarSeMudou($("#sis-atualizacao"), cfgAtualizacaoHtml());
+    cfgLigarAtualizacao();
+  }
+}
+
+App.acoes["sis-procurar"] = async (el) => {
+  PgConfig.atualizacao = await ocupado(el, () => post("/atualizacao/verificar"));
+  montarSeMudou($("#sis-atualizacao"), cfgAtualizacaoHtml());
+  cfgLigarAtualizacao();
+  const a = PgConfig.atualizacao;
+  toast(a.erro ? "Não consegui conferir agora" : a.disponivel ? "Há uma versão nova" : "Em dia com o GitHub", a.erro ? "erro" : "info");
+};
+
+App.acoes["sis-atualizar-agora"] = async (el) => {
+  const ok = await confirmar({
+    titulo: "Atualizar o AutoCortes agora?",
+    texto: "Eu fecho os perfis abertos, instalo a versão nova e abro tudo de novo, como estava. Leva um minuto, e esta janela se recarrega sozinha. O que você ainda não salvou aqui se perde.",
+    botao: "Atualizar agora",
+  });
+  if (!ok) return;
+  await ocupado(el, () => post("/atualizacao/aplicar"));
+  App.atualizando = true;
+  mostrarFaixa("atualizando");
+};
 
 async function cfgAlternarInicializacao(caixa) {
   const pedido = caixa.checked;

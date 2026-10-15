@@ -100,6 +100,11 @@ async function buscarEstado() {
   try {
     App.estado = await api("/estado");
     Estado.sessaoInvalida = false;
+    if (App.estado.atualizando && !App.atualizando) {
+      // a atualização automática começou (ou outra janela pediu): avisa antes de ele fechar
+      App.atualizando = true;
+      mostrarFaixa("atualizando");
+    }
   } catch (err) {
     if (err.status === 403) Estado.sessaoInvalida = true;
     desenharLateral();

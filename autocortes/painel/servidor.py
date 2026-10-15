@@ -102,6 +102,10 @@ class Painel:
         # o que o /estado guarda por alguns segundos (api._em_cache); cada POST troca a versão
         self.cache_estado: dict = {}
         self.versao_cache = 0
+        # último clique de alguém no painel (todo POST): a atualização automática espera 15 min sem uso
+        self.ultimo_uso = time.time()
+        # fechando para atualizar (a janela mostra o aviso e se recarrega quando a versão nova abrir)
+        self.atualizando = False
 
     def conectar(self):
         return db.conectar(self.cfg.banco, preparar=False)
@@ -321,6 +325,8 @@ class Tratador(BaseHTTPRequestHandler):
                         "id": perfis.identidade(self.painel.cfg.pasta_dados),
                         "desde": self.painel.iniciado_em,
                         "motor": self.painel.motor.rodando,
+                        # editando, postando, baixando...: a atualização de outro perfil espera
+                        "ocupado": api.ocupado(self.painel),
                     })
                 if caminho.startswith("/static/"):
                     return self._estatico(caminho[len("/static/"):])
@@ -344,6 +350,8 @@ class Tratador(BaseHTTPRequestHandler):
                 if encontrado is None:
                     raise ErroHttp(404, "Rota não encontrada")
                 funcao, grupos, bruto = encontrado
+                if metodo == "POST":
+                    self.painel.ultimo_uso = time.time()
                 if bruto:
                     self._corpo_lido = False  # a rota lê o corpo (envio de arquivo) e marca quando terminar
                 corpo = {} if (bruto or metodo == "GET") else self.ler_json()
@@ -424,6 +432,10 @@ def iniciar_painel(cfg: Config, abrir_navegador: bool = True, iniciar_motor: boo
     if painel.perfil_principal:
         # os perfis marcados como "abrir junto" sobem em processos próprios, respeitando o limite
         threading.Thread(target=_abrir_outros_perfis, args=(cfg,), name="perfis", daemon=True).start()
+        # a atualização pelo GitHub é da instalação inteira: só o principal confere e troca
+        from .. import atualizacao
+
+        threading.Thread(target=atualizacao.vigiar, args=(painel,), name="atualizacao", daemon=True).start()
     try:
         while not painel.encerrar.wait(1):
             if perfis.pedido_de_encerrar(cfg.pasta_dados):
@@ -455,10 +467,16 @@ def iniciar_painel(cfg: Config, abrir_navegador: bool = True, iniciar_motor: boo
 
 
 def _abrir_outros_perfis(cfg: Config) -> None:
+    from .. import atualizacao
+
     try:
+        # os que estavam abertos antes de uma atualização voltam como estavam (motor ligado ou não)
+        reabertos = atualizacao.reabrir_perfis()
         abertos = perfis.autoiniciar_pendentes(cfg.caminho)
     except Exception as e:  # noqa: BLE001 (um perfil com problema não pode derrubar o principal)
         log.warning("Não consegui abrir os outros perfis: %s", e)
         return
+    if reabertos:
+        log.info("Perfis abertos de novo depois da atualização: %s", ", ".join(reabertos))
     if abertos:
         log.info("Perfis abertos junto: %s", ", ".join(abertos))

@@ -23,7 +23,7 @@ from ..navegador import ErroNavegador
 from ..plataformas import ErroPublicacao, criar
 from ..plataformas import manual as tarefas_manual
 from ..plataformas.navegador import Gravacao
-from ..produtor import EXTENSOES, TRAVA_EDICAO, Produtor, escrever_textos_ia, varrer_biblioteca
+from ..produtor import EXTENSOES, TRAVA_ANALISE, TRAVA_EDICAO, Produtor, escrever_textos_ia, varrer_biblioteca
 from ..publicador import MAX_TENTATIVAS_FACEBOOK, TRAVAS_REDE, Publicador, ler_bloqueios
 from ..textos import fonte_dos_textos, ler_metadados, montar_conteudo, texto_topo, textos_ia, titulo_do_arquivo
 from ..util import ATIVIDADES, LOG_MEMORIA, escrever_atomico, ler_json, log, salvar_json
@@ -214,6 +214,19 @@ def _em_segundo_plano(nome: str, trabalho: Callable[[], None]) -> None:
 def tarefas_rodando() -> list[str]:
     with _TRAVA_TAREFAS:
         return sorted(t.name for t in _TAREFAS if t.is_alive())
+
+
+def ocupado(painel) -> bool:
+    """Este processo está no meio de algo que não pode ser cortado: editando, analisando, criando,
+    postando, baixando dos canais, gravando um roteiro, conectando uma conta ou numa tarefa do painel.
+    Vai no /saude, e a atualização automática espera todos os perfis ficarem livres."""
+    if TRAVA_EDICAO.locked() or TRAVA_ANALISE.locked() or canais.TRAVA.locked():
+        return True
+    if any(trava.locked() for trava in TRAVAS_REDE.values()) or tarefas_rodando():
+        return True
+    if getattr(painel, "gravacoes", None):
+        return True
+    return any(s.estado in ("aguardando", "escolher") for s in getattr(painel, "logins", {}).values())
 
 
 def esperar_tarefas(prazo: float) -> list[str]:
@@ -489,6 +502,8 @@ def estado(ctx: Contexto):
     return {
         "versao": __version__,
         "agora": time.time(),
+        # fechando para atualizar: a janela avisa e se recarrega sozinha quando a versão nova abrir
+        "atualizando": bool(getattr(ctx.painel, "atualizando", False)),
         "motor": {"rodando": motor.rodando, "parando": motor.parando, "desde": motor.iniciado_em},
         "simulacao": cfg.simulacao,
         "pausado": bool(cfg["agenda"]["pausado"]),
@@ -2188,6 +2203,50 @@ def encerrar(ctx: Contexto):
     log.info("Encerramento pedido pelo painel")
     threading.Timer(0.3, ctx.painel.encerrar.set).start()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- atualização pelo GitHub
+
+@rota("GET", r"/atualizacao")
+def ver_atualizacao(ctx: Contexto):
+    from .. import atualizacao
+
+    return atualizacao.situacao(ctx.painel.perfil_principal)
+
+
+@rota("POST", r"/atualizacao/verificar")
+def procurar_atualizacao(ctx: Contexto):
+    from .. import atualizacao
+
+    atualizacao.verificar()
+    return atualizacao.situacao(ctx.painel.perfil_principal)
+
+
+@rota("POST", r"/atualizacao/aplicar")
+def aplicar_atualizacao(ctx: Contexto):
+    """Atualiza agora: fecha os perfis abertos, troca a versão e abre de novo (a janela se recarrega)."""
+    from .. import atualizacao
+
+    situacao = atualizacao.situacao(ctx.painel.perfil_principal)
+    _exigir(situacao["disponivel"], "Não há versão nova para instalar. Procure de novo.")
+    motivo = atualizacao.motivo_para_esperar(ctx.painel, contar_uso=False)
+    _exigir(motivo is None, f"Agora não dá: {motivo}. Tente de novo em alguns minutos.", 409)
+    atualizacao.iniciar_troca(ctx.painel)
+    return {"ok": True}
+
+
+@rota("POST", r"/atualizacao/opcoes")
+def opcoes_atualizacao(ctx: Contexto):
+    from .. import atualizacao
+
+    corpo = {k: v for k, v in (ctx.corpo or {}).items() if k in ("atualizar_sozinho", "atualizar_a_cada_dias")}
+    try:
+        perfis.salvar_instalacao(corpo)
+    except ErroConfig as e:
+        raise ErroHttp(400, str(e)) from e
+    except OSError as e:
+        raise ErroHttp(500, f"Não consegui gravar o perfis.toml: {e}") from e
+    return atualizacao.situacao(ctx.painel.perfil_principal)
 
 
 # ---------------------------------------------------------------- criação (pautas e temas)

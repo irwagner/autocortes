@@ -23,6 +23,8 @@ Comandos principais:
   criar --tema "..."    a IA escreve a pauta do assunto e gera o vídeo
 
 Comandos manuais:
+  atualizar [--aplicar] confere se há versão nova no GitHub; com --aplicar (e o AutoCortes
+                        fechado), instala. O painel faz isso sozinho a cada 2 dias
   baixar                baixa whisper.cpp e modelos agora
   analisar [--filme N]  analisa filmes novos (ou o filme N) sem postar
   renderizar [-n N]     edita os próximos N cortes
@@ -201,6 +203,29 @@ def cmd_rodar(args) -> int:
     cfg = _carregar(args)
     conciliar_config(cfg)  # nome do modelo visual trocado à mão no config.toml
     return rodar(cfg)
+
+
+def cmd_atualizar(args) -> int:
+    from . import atualizacao
+
+    _carregar(args)  # o registro vai para o log do perfil principal
+    if args.aplicar:
+        return atualizacao.executar_troca(args.depois_de_fechar)
+    s = atualizacao.verificar()
+    local, remoto = s.get("local") or {}, s.get("remoto") or {}
+    print(f"Instalação ({atualizacao.modo()}): {str(local.get('sha') or '?')[:7]} {local.get('mensagem') or ''}".rstrip())
+    if remoto:
+        print(f"GitHub ({atualizacao.REPOSITORIO}): {str(remoto.get('sha') or '?')[:7]} {remoto.get('mensagem') or ''}".rstrip())
+    if s.get("erro"):
+        print(f"Não consegui conferir: {s['erro']}")
+        return 1
+    if s.get("disponivel"):
+        print("Há versão nova. Instale pelo painel (Configurações > Sistema) ou com: python -m autocortes atualizar --aplicar")
+    elif s.get("motivo"):
+        print(f"Não atualizo sozinho: {s['motivo']}")
+    else:
+        print("Em dia.")
+    return 0
 
 
 def cmd_painel(args) -> int:
@@ -590,6 +615,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--filme", type=int)
     p.add_argument("--limite", type=int, default=50)
     p.set_defaults(func=cmd_cortes)
+    p = sub.add_parser("atualizar", help="confere se há versão nova no GitHub (--aplicar instala)")
+    p.add_argument("--aplicar", action="store_true", help="instala a versão nova (com o AutoCortes fechado)")
+    # usado pelo painel: ele fecha os perfis e este espera as travas soltarem, depois abre de novo
+    p.add_argument("--depois-de-fechar", action="store_true", help=argparse.SUPPRESS)
+    p.set_defaults(func=cmd_atualizar)
 
     args = parser.parse_args(argv)
     if not getattr(args, "func", None):
