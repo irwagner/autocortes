@@ -51,7 +51,7 @@ Transcrição com o whisper.cpp no seu PC, cada palavra encaixada na voz detecta
 <td width="33%" valign="top">
 
 **📱 Vertical pronto para postar**<br>
-1080x1920 com fundo desfocado ou moldura, nome do filme e "Parte N" no topo, barra de progresso, fade e áudio em -14 LUFS.
+1080x1920 com fundo desfocado ou moldura, nome do filme e "Parte N" no topo, barra de progresso, final suave e áudio em -14 LUFS. O primeiro quadro já sai com imagem, porque ele vira a capa do post.
 
 </td>
 </tr>
@@ -132,7 +132,7 @@ flowchart LR
 
 ## Situação atual
 
-Atualizado em setembro de 2026.
+Atualizado em outubro de 2026.
 
 | Parte | Situação |
 |---|---|
@@ -143,11 +143,14 @@ Atualizado em setembro de 2026.
 | Envio pelo seu navegador (YouTube, TikTok, Instagram, Bilibili) | ⚠️ Mecânica pronta e testada com o Chrome real; cada roteiro só dá para validar com a conta logada, no ensaio |
 | "Aprender a postar": grava o roteiro enquanto você posta à mão | ⚠️ Pronto e testado com o Chrome real; a gravação de cada rede depende da conta logada |
 | Roteiro como linguagem simples, editável no painel | ✅ Pronto e testado |
+| Roteiros padrão do YouTube, TikTok e Instagram, que vêm com a instalação | ✅ Tirados dos roteiros que postaram de verdade em outubro de 2026 |
 | Instagram também na Página do Facebook (opcional) | 🧪 Pronto, pela API oficial e pelo Upload-Post; testado contra um servidor simulado |
 | Kwai, Bilibili e postagem à mão em qualquer rede | ✅ Pronto e testado: tarefas no Início com vídeo, textos por rede, "Já postei" e pasta sincronizada |
 | YouTube só com Shorts (vertical ou quadrado, até o limite de duração) | ✅ Pronto e testado |
 | Agenda por rede, fila e planejador | ✅ Pronto e testado de ponta a ponta em simulação |
-| Painel no navegador (10 telas, API local com 65 rotas) | ✅ Pronto e testado no Edge |
+| Painel no navegador (10 telas, API local com 76 rotas) | ✅ Pronto e testado no Edge |
+| Canais do YouTube: baixa sozinho os vídeos novos para a pasta de filmes | ✅ Pronto e testado (o yt-dlp de verdade num canal público; as regras e a fila, com um yt-dlp falso) |
+| Atualização pelo GitHub a cada 2 dias, com tudo parado | 🧪 Pronta; testada de ponta a ponta com um repositório local no lugar do GitHub (fecha, troca, abre de novo com os perfis e volta sozinha se a versão nova não abrir) |
 | Perfis de nicho: vários nichos na mesma instalação, cada um com suas contas | ✅ Pronto e testado (dois perfis abertos ao mesmo tempo, de verdade) |
 | Vídeos criados do zero: narração, imagens de fundo e legenda no tempo da voz | ✅ Pronto e testado de ponta a ponta (narração no serviço real) |
 | Pauta escrita à mão (`pautas/*.txt`) | ✅ Pronta e testada |
@@ -158,7 +161,7 @@ Atualizado em setembro de 2026.
 | Métricas dos posts (YouTube e Instagram) | 🧪 Prontas; testadas contra um servidor simulado |
 | `AutoCortes.bat`, `AutoCortes.pyw` e "Iniciar com o Windows" | ✅ Prontos e testados |
 
-✅ pronto e testado · 🧪 pronto, testado só contra um servidor simulado
+✅ pronto e testado · 🧪 pronto, testado só contra um servidor (ou repositório) simulado
 
 Falta a primeira postagem real em cada rede: tudo foi testado em modo simulação ou contra servidores simulados.
 
@@ -213,8 +216,18 @@ Comandos, todos no formato `.venv\Scripts\python -m autocortes <comando>`:
 | `cortes [--filme N]` | lista os cortes e as notas |
 | `reanalisar N [--tudo]` | refaz a análise de um filme |
 | `postar <rede> [--corte N] [--real]` | publica um corte agora, fora da agenda; numa rede à mão, cria a tarefa |
+| `atualizar [--aplicar]` | confere se há versão nova no GitHub; com `--aplicar` e o AutoCortes fechado, instala |
 
 Opções gerais: `--config <arquivo>` usa outra configuração e `--detalhado` registra os comandos do FFmpeg no log.
+
+### Atualização automática
+
+A cada 2 dias o AutoCortes confere se há versão nova em [github.com/irwagner/autocortes](https://github.com/irwagner/autocortes). Quando há, ele espera uma folga (nada sendo editado, analisado, postado ou baixado em nenhum perfil, e ninguém mexendo no painel há 15 min) e se atualiza sozinho: anota os perfis abertos e se o motor de cada um estava ligado, fecha todos, troca a versão, instala as bibliotecas se o `requirements.txt` mudou e abre tudo de novo como estava. A janela do painel avisa e se recarrega quando ele volta; se houver algo por salvar nela, ela espera você. Quem confere é o perfil principal, e a opção vale para a instalação inteira: fica em Configurações > Sistema > Atualização, onde também dá para procurar e atualizar na hora.
+
+- **Clonado com o git:** `git fetch` e `git merge --ff-only`. Só avança se nenhum arquivo do AutoCortes foi mudado na pasta e se não há commit seu que falte no GitHub. Nesses casos o painel diz o motivo, e você atualiza à mão (`git pull`).
+- **Baixado em ZIP:** baixa o ZIP do commit novo e troca só os arquivos que vieram nele, com uma cópia dos antigos em `.atualizacao/anterior`. O que é seu (`config.toml`, `dados/`, `perfis/`, `filmes/`, `pautas/`, `.venv/` e as imagens de `molduras/`) não está no ZIP e não é tocado; um arquivo do próprio AutoCortes que você mudou é trocado pelo novo.
+- **Se a versão nova não abrir** em 2 minutos, ou as bibliotecas não instalarem, a anterior volta sozinha. A mesma versão só é tentada de novo sozinha na conferência seguinte; o botão tenta na hora.
+- Aberto pelo `AutoCortes.bat`, a janela preta fecha na atualização e o AutoCortes volta em segundo plano, como no "Iniciar com o Windows": o painel continua no mesmo endereço, e "Fechar o AutoCortes" desliga.
 
 ## Painel
 
@@ -234,12 +247,12 @@ Abre no navegador pelo `AutoCortes.bat`. A lateral mostra se o motor está ligad
 - **Início:** avisos do que falta configurar, os posts **a conferir** (a rede recebeu o vídeo e não confirmou: você diz se saiu, e nada é repetido até lá), as tarefas de postagem à mão (com o número no menu), cortes na fila, dias de conteúdo, posts de hoje, próximas postagens, o que está sendo feito agora (com progresso), últimas postagens, desempenho dos últimos 7 dias e a situação de cada rede.
 - **Agenda:** calendário de 7 ou 14 dias com cada horário e o corte previsto, dias de conteúdo por rede, pausa geral, horários e dias de cada rede, presets e regras (variação, tolerância, intervalo, limites e tentativas).
 - **Cortes:** abas por situação (aguardando aprovação, na fila, encontrados, publicados e descartados), filtro por filme e aprovar todos. O detalhe de cada corte tem o vídeo, por que o trecho foi escolhido, os textos do post (editar, gerar com IA, ver como o post sai), a situação em cada rede (e na Página do Facebook) com "Postar agora", "Postar à mão" ou "Ver a tarefa", e o histórico.
-- **Filmes:** enviar filmes e legendas arrastando para a página, situação e progresso da análise, reanalisar, ignorar e editar título, ano, hashtags e idioma.
+- **Filmes:** enviar filmes e legendas arrastando para a página, situação e progresso da análise, reanalisar, ignorar e editar título, ano, hashtags e idioma. A aba **Canais do YouTube** guarda os canais que mandam vídeos novos sozinhos ([veja abaixo](#canais-do-youtube)), com os downloads de cada um.
 - **Redes sociais:** modo simulação ou publicação real, forma de envio de cada rede (API oficial, Upload-Post, pelo navegador ou à mão), conectar (YouTube e TikTok pelo navegador, Instagram colando o token), testar e desconectar, com passo a passo e as opções dos posts (duração máxima do YouTube, Página do Facebook, tags do Bilibili), mais a pasta sincronizada da postagem à mão. Nas redes pelo navegador, "Aprender a postar" grava o roteiro com log ao vivo, desfazer e recomeçar, e "Ver o roteiro" abre o editor da [linguagem de roteiro](#aprender-a-postar-e-o-roteiro).
 - **Estúdio:** o visual dos cortes numa tela de celular. Arraste o vídeo, o título e a legenda para cima e para baixo (ou use as setas do teclado), escolha ou envie a moldura, o tamanho do vídeo (Menor, Inteiro com o quadro todo, Padrão de 1,25x e Maior de 1,7x, ou o valor exato), o fundo, a fonte, o tamanho e as cores do título e da legenda, a barra e o fade. "O que os apps cobrem" mostra as faixas onde ficam os botões e a descrição das redes, e "Como vai sair" mostra o quadro gerado pelo mesmo editor dos cortes.
 - **Criação:** as pautas dos [vídeos feitos do zero](#vídeos-criados-do-zero) e a fila de temas. Escrever a pauta à mão ou pedir o roteiro à IA, editar o texto, criar o vídeo na hora e ver o que cada pauta já rendeu.
 - **Perfis:** vários nichos na mesma instalação ([veja abaixo](#perfis-vários-nichos-de-uma-vez)), cada um com sua pasta, suas contas e seu tema. Criar, abrir, fechar, ajustar portas e excluir, com o limite de quantos trabalham ao mesmo tempo.
-- **Configurações:** abas Geral, Cortes, Vídeo (qualidade e volume), Criação, Textos dos posts, IA, Transcrição e Sistema, com exemplo do post, teste da IA, download do modelo de transcrição e iniciar com o Windows. As alterações ficam pendentes numa barra no rodapé até você salvar (Ctrl+S também salva). Os botões de Redes sociais (Conectar, Testar, Aprender a postar) salvam só o que é daquela rede.
+- **Configurações:** abas Geral, Cortes, Canais (as regras do download), Vídeo (qualidade e volume), Criação, Textos dos posts, IA, Transcrição e Sistema, com exemplo do post, teste da IA, download do modelo de transcrição, iniciar com o Windows e a [atualização pelo GitHub](#atualização-automática). As alterações ficam pendentes numa barra no rodapé até você salvar (Ctrl+S também salva). Os botões de Redes sociais (Conectar, Testar, Aprender a postar) salvam só o que é daquela rede.
 - **Janelas:** o editor do roteiro, da pauta, dos dados do filme e dos textos do corte perguntam antes de fechar com algo não salvo (Esc, clique fora, X ou troca de tela), e o Ctrl+S dentro deles salva o que está na janela.
 - **Registro:** mensagens ao vivo, com busca, filtro de avisos e erros e cópia.
 
@@ -269,13 +282,29 @@ Cada perfil roda no **seu próprio processo**, com o painel numa porta própria.
 
 ### Moldura e modelos visuais
 
-Um **modelo visual** é um conjunto com nome de tudo que define a cara do corte: moldura, tamanho e altura do vídeo, fundo, título, legenda, barra e fade. O modelo em uso vale para os próximos cortes editados; os que já estão prontos continuam como saíram (para refazer um com o visual novo, use Editar de novo na página Cortes). Cada corte guarda o nome do modelo com que foi editado, e o detalhe dele mostra.
+Um **modelo visual** é um conjunto com nome de tudo que define a cara do corte: moldura, tamanho e altura do vídeo, fundo, título, legenda, barra e final suave. O modelo em uso vale para os próximos cortes editados; os que já estão prontos continuam como saíram. Para refazer um com o visual novo, use Editar de novo no detalhe do corte; para refazer todos os da fila, use **Refazer a fila** em Cortes > Na fila (um de cada vez, e cada um volta para o mesmo lugar). Cada corte guarda o nome do modelo com que foi editado, e o detalhe dele mostra.
+
+**Capa do post.** Quando a capa não é escolhida no envio (pelo navegador, à mão e no YouTube), o TikTok e o Instagram usam o primeiro quadro do vídeo. Por isso o corte não escurece no começo, só no fim: o primeiro quadro já tem o filme, o título e a moldura. Pelas APIs do TikTok e do Instagram, a capa é o quadro em `capa_ms` (1 s por padrão). Cortes editados antes de outubro de 2026 começam pretos; o Refazer a fila resolve.
 
 A **moldura** é uma imagem PNG em pé (9:16, como 1080x1920) com a área do vídeo transparente. O AutoCortes acha essa área sozinho, põe o filme e os textos dentro dela e desenha a moldura por cima. As molduras ficam na pasta `molduras/` (dá para enviar pelo Estúdio). O filme passa uns pixels por baixo da borda, para não sobrar fresta. Se o arquivo sumir, não abrir ou não tiver área transparente, os cortes saem sem moldura e o Início avisa.
 
 Na posição automática, a legenda fica abaixo do vídeo quando cabe na faixa que os guias de anúncio consideram livre (até y=1248); senão, fica sobre a parte de baixo do vídeo. Com "Onde fica: Sempre abaixo do vídeo", ela sai do vídeo mesmo passando dessa faixa: na prática a descrição dos apps começa mais embaixo, mas confira no celular.
 
 Os modelos ficam em `dados/modelos_visuais.json`; o modelo em uso é o próprio `[edicao]` do `config.toml`. Troque de modelo pelo Estúdio. Se o nome for trocado à mão no `config.toml` pelo de outro modelo, o painel aplica o visual dele ao abrir; um nome novo só renomeia o modelo em uso. Se o arquivo dos modelos estragar, ele é guardado como `modelos_visuais.invalido-<data>.json` em vez de ser apagado.
+
+## Canais do YouTube
+
+Em vez de pôr cada vídeo na pasta à mão, você cadastra canais do YouTube em **Filmes > Canais do YouTube**, e o AutoCortes baixa sozinho os vídeos novos deles para a pasta de filmes. Dali em diante cada vídeo é um filme como os outros: análise, cortes, fila e agenda.
+
+> [!WARNING]
+> Use só canais **seus ou que autorizam cortes**, e dê o crédito nos posts: `{canal}` e `{link_original}` valem nos modelos de texto. Baixar vídeo de terceiros sem permissão viola os termos do YouTube e os direitos de quem fez, e os cortes podem levar reivindicação ou derrubar a conta. O painel pergunta isso ao adicionar cada canal.
+
+- **Quando:** com o motor ligado e "Baixar sozinho" ligado, os canais ativos são olhados a cada 6 h. "Olhar agora" (um canal) e "Olhar todos agora" funcionam mesmo com o "Baixar sozinho" desligado.
+- **Quais vídeos:** os mais novos da aba Vídeos do canal (os Shorts ficam em outra aba e nunca entram), publicados há no máximo 1 mês, de 5 min a 4 h, até 2 por canal por vez, e sem as palavras que você escolher no título. As lives que já terminaram entram se você ligar. Tudo isso fica em **Configurações > Canais**, e mudar uma regra vale na próxima olhada.
+- **Quanto:** enquanto houver 3 vídeos baixados esperando a análise, o AutoCortes não baixa mais, e para se o disco da pasta de filmes ficar com menos de 20 GB livres.
+- **Como:** pelo [yt-dlp](https://github.com/yt-dlp/yt-dlp) oficial, baixado na primeira vez com o SHA-256 conferido e atualizado sozinho a cada 3 dias (o YouTube muda, e versões velhas param de baixar). Ele precisa de um JavaScript para falar com o YouTube: vale o Deno ou o Node.js 22+ que você já tiver; sem eles, o Deno é baixado (também conferido). Até 1080p por padrão, com H.264 e AAC primeiro, e as legendas em português que o canal publicou (as automáticas não), que poupam a transcrição.
+- **Onde:** `filmes/YouTube/<canal>/`. O vídeo só aparece na pasta inteiro (ele baixa numa pasta escondida no mesmo disco), com um `.json` ao lado com o título, o canal e o link. Cada vídeo é baixado uma vez só; o que falha é tentado de novo até 3 vezes, e a lista de downloads tem "Tentar de novo".
+- **Sem login:** nada de cookies, conta ou proxy. Vídeo com restrição de idade ou só para membros fica de fora, e se o YouTube pedir para confirmar que não é um robô (ou limitar os pedidos), os downloads param por 12 h e o Início avisa.
 
 ## Vídeos criados do zero
 
@@ -517,6 +546,8 @@ conferir "foi publicado"
 
 Alvo entre **aspas** é procurado pelo texto que aparece na tela (`innerText`, `aria-label` ou `title`, em qualquer elemento, palavra inteira); **sem aspas** é seletor CSS. Alternativas vão separadas por ` ou `, e a primeira que existir na página vence. Ao salvar, o roteiro é conferido linha a linha: erro de escrita, roteiro sem `video`, sem `publicar` (ou com ele antes do vídeo), `opcional` no vídeo ou no publicar e texto entre aspas no lugar do campo não gravam, e o painel aponta a linha. O que funciona, mas é arriscado, aparece como aviso: seletor genérico demais (`button`, `div > div ...`, que casa com quase tudo), falta de `conferir`, clique que parece publicar fora do `publicar` e campo da rede sem preenchimento automático (sem a marca, o texto digitado na gravação fica fixo e se repete em todo post).
 
+**Roteiros padrão.** A instalação traz roteiros prontos para o YouTube Studio, o TikTok Studio e o Instagram em português, na pasta `roteiros/`. São os que postaram os vídeos do AutoCortes em outubro de 2026. Enquanto um perfil não tem roteiro próprio, vale o padrão, e o cartão da rede mostra "roteiro padrão". Gravar ou salvar no editor cria o seu em `dados/roteiros/<rede>.txt`, que passa a valer no lugar dele; "Voltar ao roteiro padrão" apaga o seu. Os padrões chegam junto com as [atualizações](#atualização-automática), então quando uma rede muda a página, a correção vale para quem ainda usa o padrão. Eles não têm linha `conferir`, porque o texto de confirmação de cada rede não foi conferido: o post termina como publicado, com uma observação. O Bilibili não tem roteiro padrão e usa os passos fixos.
+
 ### Postagem à mão (Kwai, Bilibili e qualquer rede)
 
 Kwai e Bilibili só têm essa forma de envio, e YouTube, TikTok e Instagram podem usar também (`envio = "manual"`). No horário da agenda nada é enviado: o AutoCortes cria uma **tarefa** no Início com o vídeo e os textos já no formato da rede.
@@ -602,7 +633,7 @@ Tudo fica no `config.toml`, criado a partir do `config.example.toml`. O painel g
 | `[youtube]` `[tiktok]` `[instagram]` | ativar, forma de envio (`envio = "oficial"`, `"upload_post"`, `"navegador"` ou `"manual"`), credenciais, privacidade, horários e dias de cada rede; no YouTube, a duração máxima dos Shorts (`max_segundos`); no Instagram, a Página do Facebook (`pagina_facebook`, `facebook_pagina_id`) |
 | `[kwai]` `[bilibili]` | ativar (desligados por padrão), horários e dias; o Kwai só aceita `"manual"` e o Bilibili, `"navegador"` ou `"manual"`; no Bilibili, as tags fixas |
 
-Variáveis dos textos: `{filme}`, `{ano}`, `{ano_parenteses}`, `{parte}`, `{frase}` (melhor fala do corte) e `{hashtags}`; nos modelos com IA, também `{titulo_ia}` e `{descricao_ia}`.
+Variáveis dos textos: `{filme}`, `{ano}`, `{ano_parenteses}`, `{parte}`, `{frase}` (melhor fala do corte) e `{hashtags}`; nos modelos com IA, também `{titulo_ia}` e `{descricao_ia}`. Nos vídeos baixados de um [canal do YouTube](#canais-do-youtube), `{canal}` e `{link_original}` dão o crédito do vídeo original (nos filmes da pasta, ficam vazios).
 
 Por filme, opcional:
 - **Legenda:** `Filme.srt` ou `Filme.pt-BR.srt` ao lado do vídeo é usada no lugar da transcrição, mesmo com áudio dublado. Legendas "forced", de outro vídeo (`Filme.2.srt`) ou em outro idioma (`Filme.en.srt`) são ignoradas.
@@ -632,9 +663,10 @@ AutoCortes/
 ├── autocortes/             código (detalhes abaixo)
 ├── filmes/                 coloque os filmes aqui
 ├── molduras/               molduras PNG usadas no Estúdio
+├── roteiros/               roteiros padrão do envio pelo navegador (YouTube, TikTok e Instagram)
 ├── dados/                  banco, cache da análise, cortes, logins e logs
 ├── modelos/                modelos do Whisper e do detector de voz
-├── ferramentas/whisper/    whisper.cpp baixado automaticamente
+├── ferramentas/            whisper.cpp, yt-dlp e Deno, baixados automaticamente
 ├── docs/                   banner e capturas do README
 ├── config.example.toml     modelo de configuração comentado
 ├── config.toml             sua configuração (não compartilhe)
@@ -660,7 +692,9 @@ AutoCortes/
 | `voz.py` | narração com o tempo de cada palavra (para a legenda) |
 | `estoque.py` | imagens e clipes de fundo (pasta própria, Pexels ou Pixabay), com crédito |
 | `montagem.py` | monta o vídeo criado (clipes, voz, música) e passa pelo mesmo editor dos cortes |
-| `ferramentas.py` | download do whisper.cpp e dos modelos |
+| `ferramentas.py` | download do whisper.cpp, dos modelos, do yt-dlp e do Deno, com o SHA-256 conferido |
+| `canais.py` | canais do YouTube: lista os vídeos novos, aplica as regras e baixa para a pasta de filmes |
+| `atualizacao.py` | atualização pelo GitHub: confere, espera a folga, fecha, troca a versão, abre de novo e volta se precisar |
 | `analise.py` | tarjas, cenas, volume, voz e legendas |
 | `legendas.py` | leitura de SRT e Whisper, ajuste pela voz e legenda animada (ASS) |
 | `selecao.py` | nota e escolha dos trechos |
@@ -690,15 +724,17 @@ As rotas `/api` exigem o cabeçalho `X-AutoCortes` com o token da sessão; a mí
 | Agenda | `GET /api/plano?dias=7`, `POST /api/agenda/pausa` |
 | Configuração | `GET` e `POST /api/config`, `POST /api/previa`, `POST /api/ferramentas/baixar`, `POST /api/ia/testar` e `/api/ia/modelos` |
 | Estúdio | `GET /api/estudio`, `POST /api/estudio/geometria`, `POST /api/modelos/usar`, `/criar`, `/renomear` e `/excluir`, `POST /api/molduras/enviar` |
-| Cortes | `GET /api/cortes?aba=`, `GET /api/cortes/{id}`, `POST /api/cortes/{id}/acao`, `/textos` e `/postar` (`rede` pode ser `facebook`; numa rede à mão devolve a tarefa), `POST /api/cortes/aprovar-todos` |
+| Cortes | `GET /api/cortes?aba=`, `GET /api/cortes/{id}`, `POST /api/cortes/{id}/acao`, `/textos` e `/postar` (`rede` pode ser `facebook`; numa rede à mão devolve a tarefa), `POST /api/cortes/aprovar-todos` e `/refazer-fila` |
 | Postagem à mão | `GET /api/tarefas/{id}` (vídeo, textos da rede e passos), `POST /api/tarefas/{id}/feito` (link opcional) e `/pular` |
 | A conferir | `POST /api/postagens/{id}/conferir` (`saiu` true ou false, link opcional) |
 | Criação | `GET /api/pautas` (com o arquivo da fila de temas e a versão dele), `POST /api/pautas/nova`, `POST /api/pautas/temas` (409 se a fila mudou), `GET` e `POST /api/pautas/{id}`, `POST /api/pautas/{id}/acao` |
 | Roteiro | `GET` e `POST /api/redes/{rede}/roteiro`, `POST .../roteiro/apagar`, `GET` e `POST .../gravar`, `POST .../gravar/fim`, `/cancelar`, `/desfazer` e `/recomecar` |
 | Perfis | `GET /api/perfis`, `POST /api/perfis/novo` e `/opcoes`, `POST /api/perfis/{slug}/abrir`, `/fechar`, `/salvar` e `/excluir`, `GET .../conteudo` |
 | Filmes | `GET /api/filmes`, `POST /api/filmes/enviar`, `/varrer`, `/{id}/acao` e `/{id}/meta` |
+| Canais do YouTube | `GET /api/canais`, `POST /api/canais/novo`, `/verificar` (um canal ou todos) e `/{id}/acao` (`pausar`, `ativar`, `remover`), `POST /api/downloads/{id}/acao` (`tentar`) |
 | Redes | `GET /api/redes`, `GET` e `POST /api/redes/{rede}/login`, `POST .../cancelar`, `/testar` e `/desconectar`, `POST /api/redes/instagram/conta` |
 | Sistema | `GET /api/logs?desde=`, `POST /api/sistema/abrir`, `/inicializacao` e `/encerrar` |
+| Atualização | `GET /api/atualizacao`, `POST /api/atualizacao/verificar`, `/aplicar` (409 se algo está trabalhando) e `/opcoes` |
 | Mídia | `GET /media/corte/{id}.mp4` e `.jpg` (com Range), `GET /media/previa.jpg` |
 
 Ações de corte: `aprovar`, `descartar`, `restaurar`, `reeditar`, `editar_agora`, `recriar` (vídeo criado), `priorizar`, `normal`, `gerar_textos` e `limpar_textos_ia`; descartar, reeditar e recriar esperam o envio em andamento terminar (409). Ações de filme: `reanalisar`, `reanalisar_tudo`, `ignorar`, `reativar`, `mostrar` (as quatro primeiras só em filme, não em pauta). Ações de pauta: `criar_agora`, `escrever_com_ia`, `excluir`, `mostrar`.
@@ -720,6 +756,11 @@ Ciclo de vida no banco:
 | `dados/tokens/` | logins das redes, cifrados para o seu usuário do Windows |
 | `dados/logs/autocortes.log` | registro, com até 5 arquivos de 5 MB |
 | `<[manual].pasta>/<Rede>/` | cópia do vídeo (`nome-parte05-tarefa12.mp4`) e dos textos (`.txt`) de cada tarefa à mão, apagada quando ela é resolvida |
+| `dados/roteiros/<rede>.txt` | o seu roteiro de envio pelo navegador (gravado ou editado), que vale no lugar do padrão de `roteiros/` |
+| `filmes/YouTube/<canal>/` | vídeos baixados dos canais, cada um com um `.json` (título, canal e link) |
+| `ferramentas/yt-dlp/` | yt-dlp e, se preciso, o Deno |
+| `.atualizacao.json` | situação da atualização pelo GitHub (versão instalada, última conferência, falhas); na instalação por ZIP, `.atualizacao/` guarda o ZIP baixado e a cópia dos arquivos trocados |
+| `perfis.toml` | opções da instalação inteira: perfis ao mesmo tempo e a atualização (`[atualizacao]`, `automatica` e `a_cada_dias`) |
 
 ## Segurança
 
@@ -730,6 +771,8 @@ Ciclo de vida no banco:
 - Os tokens ficam em `dados/tokens/*.json` cifrados com a proteção de dados do Windows (DPAPI): só o seu usuário, neste PC, consegue abrir. Copiar a pasta para outro PC ou outro usuário pede para conectar as contas de novo. As chaves de API do `config.toml` continuam em texto: não compartilhe a pasta `dados/` nem o `config.toml` (os dois já estão no `.gitignore`). Os logs escondem tokens.
 - O envio de molduras aceita só PNG de verdade (confere a assinatura e o tamanho declarado, até 8192 px de lado), com área transparente, e nunca grava por cima de outra moldura.
 - O whisper.cpp vem do GitHub oficial, e os modelos do Whisper e do detector de voz vêm do Hugging Face, todos com SHA-256 e tamanho conferidos. Outra `whisper_versao` sem hash conhecido é recusada: para usar outra, instale à mão e informe os caminhos.
+- O yt-dlp e o Deno também vêm dos GitHubs oficiais com o SHA-256 conferido na primeira vez. Depois, o yt-dlp se atualiza pelo próprio `yt-dlp -U`, que confere a assinatura das versões novas; com `[ferramentas].ytdlp_atualizar = false` ele fica parado na versão baixada.
+- A atualização do AutoCortes só vem de `github.com/irwagner/autocortes`, ramo `main`: no clone, pelo `git` (só avanço sem conflito, nunca por cima de uma mudança sua); no ZIP, pelo `codeload.github.com`, sem gravar nada fora da pasta da instalação nem nas pastas que são suas.
 - As pastas de filmes e de dados não podem ficar vazias nem uma dentro da outra, e a varredura nunca entra numa pasta de dados (deste ou de outro perfil): o AutoCortes não recorta os próprios cortes.
 
 ## Decisões técnicas
@@ -742,6 +785,8 @@ Ciclo de vida no banco:
 - **Postagem à mão:** a tarefa é uma postagem com status `aguardando`, então a fila, o intervalo mínimo e o calendário funcionam como nas outras redes.
 - **Envio pelo navegador:** DevTools em vez de Selenium ou Playwright, para não trazer dependência nova; o cliente WebSocket vive em `websocket.py` (a biblioteca padrão do Python não tem um), e a narração usa o mesmo. A busca de elementos entra no shadow DOM, sem o que o YouTube Studio seria inalcançável. O arquivo vai pelo `DOM.setFileInputFiles` a partir do objeto, que funciona com o campo escondido e dentro do shadow DOM.
 - **Configuração:** gravada com `tomlkit`, que preserva os comentários do `config.toml`.
+- **Canais do YouTube:** yt-dlp em vez do feed RSS (que só traz os 15 vídeos mais novos e não diz a duração) ou da API de dados do YouTube (que pede chave e não baixa). O `.exe` dele é um lançador que abre outro processo: cancelar mata a árvore inteira (`taskkill /T`), senão o download continuava sozinho.
+- **Atualização:** troca a versão só com tudo fechado, porque o Python carrega partes do código na hora em que usa, e um processo com metade do código antigo e metade do novo quebraria no meio de uma edição ou de um envio. O fim do `AutoCortes.bat` fica numa linha só: o `cmd` lê o arquivo aos pedaços enquanto roda, e um `.bat` trocado no meio fazia ele executar o resto de outras linhas.
 - **Área segura:** textos só entre y=288 e y=1248 (em 1920), com no máximo 696 px de largura centrada, fora da barra superior, dos botões laterais e da descrição dos apps. As medidas vêm dos guias de anúncio do [Instagram](https://www.facebook.com/business/ads-guide/update/video/instagram-reels), do [TikTok](https://ads.tiktok.com/help/article/tiktok-auction-in-feed-ads) e do [YouTube](https://support.google.com/google-ads/answer/9128498?hl=en), porque não há guia oficial para posts comuns.
 
 ## Testes feitos
@@ -792,6 +837,13 @@ Não há framework de testes: cada rodada usa scripts temporários numa pasta pr
 - **Correções que os testes acharam:** a legenda encostava na barra de progresso com zoom de 1,25 e o título cobria o topo do filme; editar de novo um corte o mandava para o fim da fila (a Parte 2 saía antes da Parte 1); um corte descartado podia voltar a ser escolhido numa nova análise; e alguns detalhes de layout do painel.
 - **Melhorias da pesquisa:** posição dos textos em cinco formatos (2,39:1, 1,85:1, 16:9, 4:3 e vertical), vídeo renderizado com título comprido e conferido quadro a quadro, volta automática para o `libx264`, divisão dos blocos da legenda, nota de abertura, limite de 5 hashtags e reel de teste do Instagram. Login em duas etapas (usado pelo painel) do YouTube e do TikTok contra o servidor simulado. Seleção de 2h10 em 0,2 s.
 - **Capturas do README** (setembro de 2026): um filme de exemplo de 5 min gerado por script (quatro ilustrações com movimento, 26 falas com a voz do Windows e legenda `.srt`) foi analisado e editado pelo próprio AutoCortes em simulação, e o painel foi capturado no Edge sem janela, sem erros no console.
+- **Capa, canais, roteiros padrão e atualização** (outubro de 2026):
+  - Capa: o primeiro quadro do corte tinha brilho 0 (o fade de entrada), e as redes usam esse quadro como capa. Sem o fade de entrada, ele sai com o filme, sem moldura e com ela; o fim continua escurecendo.
+  - Canais com um yt-dlp falso (endereços aceitos e recusados; regras de data, duração, membros, agendado e palavras; limite por canal; nunca baixar duas vezes; erro com nova tentativa; yt-dlp velho que se atualiza e tenta de novo; fila cheia; pausa de 12 h; download que caiu no meio) e com o yt-dlp de verdade num canal público: listou, baixou em H.264 e AAC e o vídeo entrou na pasta com o `.json`.
+  - Roteiros padrão: vale o padrão sem roteiro no perfil, o do perfil vale no lugar dele, e apagar o seu volta ao padrão.
+  - Atualização (58 checagens): clone do git em dia, atrás, com arquivo mudado, com commit local e em outro ramo; ZIP sem tocar no que é seu, sem gravar fora da pasta, apagando só o que saiu do repositório, e desfazer; bibliotecas instaladas só quando o `requirements.txt` muda, e a versão anterior de volta quando elas falham. De ponta a ponta (25 checagens), com o painel e o atualizador de verdade e um repositório local no lugar do GitHub: o principal e um segundo perfil fecharam, a versão trocou e os dois abriram de novo com o motor como estavam; uma versão quebrada de propósito voltou sozinha para a anterior.
+  - `AutoCortes.bat` trocado com ele aberto: o fim antigo executava linhas do arquivo novo; o fim em uma linha, não.
+  - Painel no Edge sem janela: Filmes > Canais do YouTube, Configurações > Canais e > Sistema, o roteiro padrão em Redes sociais, Refazer a fila, a faixa de atualização e a recarga sozinha (que espera quando há algo por salvar), sem erros no console.
 
 </details>
 
