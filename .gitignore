@@ -36,3 +36,6 @@ molduras/*.png
 molduras/*.jpg
 molduras/*.jpeg
 molduras/*.webp
+
+# workflows: planos, registros de teste e capturas de tela
+.agents/
