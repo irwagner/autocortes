@@ -344,16 +344,22 @@ input[type=range] { accent-color: var(--acento); }
 .rotulo-campo { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--suave); font-weight: 700; margin: 14px 0 8px; }
 .linha-botoes { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
-.barra-salvar {
+.barra-salvar, .barra-selecao {
   position: fixed; left: calc(var(--lateral) + 34px); right: 34px; bottom: 20px; z-index: 30;
   display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px 12px 20px;
   background: rgba(24, 29, 40, .97); border: 1px solid var(--borda-2); border-radius: 14px; box-shadow: var(--sombra);
   transform: translateY(160%); transition: transform .25s ease, visibility .25s; max-width: 1472px;
   visibility: hidden; /* escondida de verdade: sem isso os botões ainda recebem o foco do Tab */
 }
-.barra-salvar.visivel { transform: none; visibility: visible; }
+.barra-salvar.visivel, .barra-selecao.visivel { transform: none; visibility: visible; }
 .barra-salvar span { display: flex; align-items: center; gap: 10px; font-weight: 600; }
 .barra-salvar span .ic { color: var(--acento); }
+/* seleção em lote da tela Cortes: ganha linhas em tela estreita e fica acima da barra do Salvar */
+.barra-selecao { flex-wrap: wrap; row-gap: 10px; padding: 10px 12px 10px 18px; }
+body:has(.barra-salvar.visivel) .barra-selecao { bottom: 96px; }
+.corsel-lado { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.corsel-contagem { font-weight: 650; margin-right: 6px; }
+.corsel-acoes { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-left: auto; }
 
 /* ------------------------------------------------------------ agenda */
 .semana { display: grid; grid-template-columns: repeat(7, minmax(128px, 1fr)); gap: 10px; overflow-x: auto; padding-bottom: 4px; }
@@ -429,6 +435,14 @@ input[type=range] { accent-color: var(--acento); }
 .capa .play { position: absolute; inset: 0; display: grid; place-items: center; opacity: 0; transition: opacity .15s; background: rgba(0, 0, 0, .28); }
 .capa .play .ic { width: 46px; height: 46px; color: #fff; filter: drop-shadow(0 4px 12px rgba(0, 0, 0, .6)); }
 .capa:hover .play { opacity: 1; }
+/* modo de seleção: a caixa fica por cima da capa, e o clique no cartão marca em vez de abrir */
+.corte.corte-sel { position: relative; user-select: none; }
+.corte.corte-sel .info { cursor: pointer; }
+.corte.corte-sel .capa .play { display: none; }
+.corte.corte-sel .capa .parte { left: 46px; }
+.corte.corte-sel-marcado, .corte.corte-sel-marcado:hover { border-color: var(--acento); box-shadow: 0 0 0 2px rgba(255, 182, 39, .5); }
+.corte-marca { position: absolute; left: 8px; top: 8px; z-index: 2; width: 32px; height: 32px; display: grid; place-items: center; background: rgba(0, 0, 0, .72); border-radius: 9px; cursor: pointer; }
+.corte-marca input { width: 18px; height: 18px; margin: 0; accent-color: var(--acento); cursor: pointer; }
 .corte .info { padding: 11px 12px 12px; display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 0; }
 .corte .titulo { font-weight: 650; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .corte .meta { color: var(--suave); font-size: 12px; }
@@ -450,6 +464,8 @@ input[type=range] { accent-color: var(--acento); }
 .detalhe-corte { display: grid; grid-template-columns: minmax(240px, 330px) minmax(0, 1fr); gap: 24px; }
 .detalhe-video { background: #000; border-radius: 14px; overflow: hidden; aspect-ratio: 9 / 16; position: relative; border: 1px solid var(--borda); align-self: start; }
 .detalhe-video video { width: 100%; height: 100%; display: block; background: #000; }
+/* o aviso do vídeo apagado ocupa duas linhas: centrado e com folga das bordas */
+.detalhe-video .capa-vazia small { text-align: center; padding: 0 24px; line-height: 1.5; }
 .detalhe-cabeca { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .detalhe-cabeca h3 { margin: 0; font-size: 19px; letter-spacing: -.01em; }
 .detalhe-meta { color: var(--suave); margin: 4px 0 12px; font-size: 13px; }
@@ -590,6 +606,11 @@ input[type=search].busca { width: 240px; }
 .toasts { position: fixed; right: 20px; bottom: 20px; z-index: 60; display: flex; flex-direction: column; gap: 10px; max-width: min(420px, 92vw); transition: bottom .25s ease; }
 /* com a barra Salvar/Descartar à vista, os avisos sobem e não cobrem os botões dela */
 body:has(.barra-salvar.visivel) .toasts { bottom: 96px; }
+/* a barra da seleção muda de altura (--corsel-altura vem do pg_cortes.js): avisos e fim da página sobem junto */
+body:has(.barra-selecao.visivel) .toasts { bottom: calc(var(--corsel-altura, 58px) + 32px); }
+body:has(.barra-salvar.visivel):has(.barra-selecao.visivel) .toasts { bottom: calc(var(--corsel-altura, 58px) + 108px); }
+body:has(.barra-selecao.visivel) .principal { padding-bottom: calc(var(--corsel-altura, 58px) + 60px); }
+body:has(.barra-salvar.visivel):has(.barra-selecao.visivel) .principal { padding-bottom: calc(var(--corsel-altura, 58px) + 136px); }
 .toast {
   display: flex; gap: 11px; align-items: flex-start; padding: 12px 15px; border-radius: 13px; background: #1b2130; border: 1px solid var(--borda-2);
   box-shadow: var(--sombra); animation: subir .2s ease; transition: opacity .3s, transform .3s; white-space: pre-line; line-height: 1.45;
@@ -627,7 +648,7 @@ body:has(.barra-salvar.visivel) .toasts { bottom: 96px; }
   .principal { padding: 22px 20px 110px; }
   .grade-2, .config-layout, .detalhe-corte { grid-template-columns: minmax(0, 1fr); }
   .detalhe-video { max-width: 320px; margin: 0 auto; width: 100%; }
-  .barra-salvar { left: calc(var(--lateral) + 16px); right: 16px; }
+  .barra-salvar, .barra-selecao { left: calc(var(--lateral) + 16px); right: 16px; }
   .linha-campo { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .linha-campo .controle { justify-content: flex-start; }
 }

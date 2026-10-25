@@ -1110,6 +1110,10 @@ def listar_cortes(ctx: Contexto):
         "filmes": filmes,
         "ativas": ativas,
         "facebook": _facebook_ligado(cfg),
+        # a tela só oferece a seleção em lote quando a API tem a rota dela: com o AutoCortes antigo ainda
+        # aberto, a página nova (lida do disco) mandaria o "Editar de novo" para o refazer-fila de antes,
+        # que não conhece "ids" e refaria a fila inteira
+        "lote": True,
     }
 
 
@@ -1194,19 +1198,23 @@ def _resolver_tarefas_do_corte(ctx: Contexto, corte_id: int, pular: str | None =
     _resolver_tarefas(ctx.cfg, ctx.conn, corte_id, pular)
 
 
-@rota("POST", r"/cortes/(\d+)/acao")
-def acao_corte(ctx: Contexto, corte_id):
+def _aplicar_acao(ctx: Contexto, c: sqlite3.Row, acao, registrar: bool = True) -> None:
+    """Aplica uma ação a um corte. É a regra única do botão do corte e da seleção em lote (/cortes/lote).
+
+    registrar=False cala a linha de cada corte no registro: o lote escreve uma linha só, com o resumo.
+    Nenhuma ação apaga a linha do corte (o histórico das postagens iria junto, e o trecho voltaria a
+    ser escolhido numa nova análise).
+    """
     conn = ctx.conn
-    c = _corte(conn, corte_id)
-    status, acao = c["status"], ctx.corpo.get("acao")
+    status = c["status"]
     criado = c["filme_tipo"] == "pauta"  # vídeo criado do zero: quem regera é a pauta, não o editor de cortes
     if criado and acao in ("reeditar", "editar_agora", "restaurar"):
         raise ErroHttp(400, "Este vídeo foi criado de uma pauta: use \"Criar de novo\" para gerar outro")
-    if acao in ("descartar", "reeditar", "recriar"):
+    if acao in ("descartar", "reeditar", "recriar", "apagar_video"):
         # o arquivo está subindo para uma rede agora: apagar no meio não desfaz o post
-        _exigir(not conn.execute("SELECT 1 FROM postagens WHERE corte_id=? AND status='enviando' LIMIT 1",
-                                 (c["id"],)).fetchone(),
-                "Este vídeo está sendo enviado agora. Espere o envio terminar.", 409)
+        if conn.execute("SELECT 1 FROM postagens WHERE corte_id=? AND status='enviando' LIMIT 1",
+                        (c["id"],)).fetchone():
+            raise ErroHttp(409, "Este vídeo está sendo enviado agora. Espere o envio terminar.", {"motivo": "enviando"})
     if acao == "recriar":
         _exigir(criado, "Só vídeo criado de uma pauta pode ser gerado de novo")
         _exigir(status in ("revisao", "pronto", "erro", "descartado"),
@@ -1219,18 +1227,21 @@ def acao_corte(ctx: Contexto, corte_id):
             "WHERE id=? AND status != 'criando'",
             (time.time(), c["filme_id"]),
         )
-        log.info("Pauta '%s' vai gerar outro vídeo (o corte %s foi descartado)", c["filme_titulo"], c["id"])
-        return _corte_detalhe(ctx, c["id"])
+        if registrar:
+            log.info("Pauta '%s' vai gerar outro vídeo (o corte %s foi descartado)", c["filme_titulo"], c["id"])
+        return
     if acao == "aprovar":
         _exigir(status == "revisao", "Só cortes aguardando aprovação podem ser aprovados")
         conn.execute("UPDATE cortes SET status='pronto' WHERE id=?", (c["id"],))
-        log.info("Corte %s aprovado pelo painel", c["id"])
+        if registrar:
+            log.info("Corte %s aprovado pelo painel", c["id"])
     elif acao == "descartar":
         _exigir(status in ("candidato", "revisao", "pronto", "erro"), "Este corte não pode ser descartado agora")
         _apagar_arquivos(c["arquivo"])
         conn.execute("UPDATE cortes SET status='descartado', arquivo=NULL WHERE id=?", (c["id"],))
         _resolver_tarefas_do_corte(ctx, c["id"], pular="corte descartado")
-        log.info("Corte %s descartado pelo painel", c["id"])
+        if registrar:
+            log.info("Corte %s descartado pelo painel", c["id"])
     elif acao == "restaurar":
         _exigir(status in ("descartado", "erro"), "Este corte não está descartado")
         # volta para o fim da fila quando for editado de novo
@@ -1261,8 +1272,28 @@ def acao_corte(ctx: Contexto, corte_id):
     elif acao == "limpar_textos_ia":
         # marca em vez de apagar: o motor não escreve de novo sozinho (o botão "Gerar com IA" ainda escreve)
         conn.execute("UPDATE cortes SET ia_textos=? WHERE id=?", (json.dumps({"descartado": True}), c["id"]))
+    elif acao == "apagar_video":
+        # libera o disco de um corte publicado: o corte, o caminho do arquivo e o histórico ficam, como no
+        # apagar_apos_postar (o caminho guardado deixa apagar depois um vídeo que ficou para trás)
+        _exigir(status == "concluido", "Só o vídeo de um corte publicado pode ser apagado")
+        video = Path(c["arquivo"]) if c["arquivo"] else None
+        _exigir(video is not None and video.exists(), "O vídeo deste corte já foi apagado")
+        # a mesma regra da rota de mídia: um banco copiado de outro lugar não apaga nada fora deste perfil
+        _exigir(_dentro(video, ctx.cfg.pasta_dados), "O vídeo fica fora da pasta de dados deste perfil: não apago")
+        _apagar_arquivos(c["arquivo"])
+        if video.exists():
+            raise ErroHttp(409, "O vídeo está aberto em outro programa. Feche e tente de novo.",
+                           {"motivo": "arquivo_aberto"})
+        if registrar:
+            log.info("Vídeo do corte %s apagado pelo painel (o corte e o histórico ficam)", c["id"])
     else:
         raise ErroHttp(400, "Ação desconhecida")
+
+
+@rota("POST", r"/cortes/(\d+)/acao")
+def acao_corte(ctx: Contexto, corte_id):
+    c = _corte(ctx.conn, corte_id)
+    _aplicar_acao(ctx, c, ctx.corpo.get("acao"))
     return _corte_detalhe(ctx, c["id"])
 
 
@@ -1271,6 +1302,68 @@ def aprovar_todos(ctx: Contexto):
     n = ctx.conn.execute("UPDATE cortes SET status='pronto' WHERE status='revisao'").rowcount
     log.info("%d corte(s) aprovados pelo painel", n)
     return {"aprovados": n}
+
+
+# o que a seleção da tela Cortes aplica de uma vez (o "Editar de novo" vai pelo /cortes/refazer-fila)
+ACOES_LOTE = ("descartar", "restaurar", "aprovar", "priorizar", "normal", "apagar_video")
+MAX_LOTE = 500
+ROTULO_LOTE = {
+    "descartar": "descartados", "restaurar": "restaurados", "aprovar": "aprovados",
+    "priorizar": "com prioridade", "normal": "sem prioridade", "apagar_video": "com o vídeo apagado",
+}
+
+
+def _ids_do_pedido(valor) -> list[int]:
+    """Os cortes escolhidos na tela: de 1 a MAX_LOTE números de corte, sem repetição."""
+    _exigir(isinstance(valor, list) and 1 <= len(valor) <= MAX_LOTE, f'Mande de 1 a {MAX_LOTE} cortes em "ids"')
+    # true, 3.0 e "3" não são números de corte; fora do intervalo o SQLite nem aceita o número (viraria erro 500)
+    _exigir(all(type(i) is int and 0 < i < 2**63 for i in valor), 'Cada item de "ids" é o número de um corte')
+    _exigir(len(set(valor)) == len(valor), 'Há cortes repetidos em "ids"')
+    return list(valor)
+
+
+@rota("POST", r"/cortes/lote")
+def acao_em_lote(ctx: Contexto):
+    """A mesma ação em vários cortes de uma vez (a seleção da tela Cortes).
+
+    Cada corte passa pela regra do botão dele (_aplicar_acao) e fica confirmado na hora: o que um
+    corte não deixa (está sendo enviado, a situação não permite, não existe) vai em "falhas" e não
+    impede os outros.
+    """
+    acao = ctx.corpo.get("acao")
+    _exigir(acao in ACOES_LOTE, "Ação desconhecida")
+    ids = _ids_do_pedido(ctx.corpo.get("ids"))
+    conn = ctx.conn
+    ordem = ids
+    if acao == "priorizar":
+        # cada um ganha a maior prioridade + 1: indo do último da fila para o primeiro, os escolhidos
+        # passam na frente de todos sem trocar a ordem que já tinham entre eles
+        linhas = {r["id"]: r for r in conn.execute(
+            f"SELECT id, prioridade, fila_em FROM cortes WHERE id IN ({_marc(ids)})", ids)}
+
+        def lugar(i: int) -> tuple:
+            r = linhas.get(i)
+            return (-r["prioridade"], r["fila_em"] or 0, i) if r is not None else (0, 0, i)
+
+        ordem = sorted(ids, key=lugar, reverse=True)
+    feitos: set[int] = set()
+    falhas: dict[int, dict] = {}
+    for corte_id in ordem:
+        try:
+            _aplicar_acao(ctx, _corte(conn, corte_id), acao, registrar=False)
+        except ErroHttp as e:
+            falhas[corte_id] = {"id": corte_id, "erro": str(e), **e.extra}
+        else:
+            feitos.add(corte_id)
+    feitos_lista = [i for i in ids if i in feitos]
+    falhas_lista = [falhas[i] for i in ids if i in falhas]
+    if falhas_lista:
+        motivos = list(dict.fromkeys(f["erro"] for f in falhas_lista))
+        log.info("%d corte(s) %s pelo painel, de uma vez; %d não: %s%s", len(feitos_lista), ROTULO_LOTE[acao],
+                 len(falhas_lista), "; ".join(motivos[:3]), " ..." if len(motivos) > 3 else "")
+    else:
+        log.info("%d corte(s) %s pelo painel, de uma vez", len(feitos_lista), ROTULO_LOTE[acao])
+    return {"acao": acao, "feitos": feitos_lista, "falhas": falhas_lista}
 
 
 def _soltar_para_reeditar(cfg, conn: sqlite3.Connection, corte_id: int, parar: threading.Event,
@@ -1309,16 +1402,27 @@ def _soltar_para_reeditar(cfg, conn: sqlite3.Connection, corte_id: int, parar: t
 def refazer_fila(ctx: Contexto):
     """Edita de novo, com o visual em uso, os cortes que esperam na fila (e em revisão).
 
+    Com "ids" (o "Editar de novo" da seleção na tela Cortes), só esses; os escolhidos que não estão
+    na fila nem aguardando aprovação voltam em "fora". Sem "ids", a fila inteira.
     Um de cada vez: só o corte que está sendo editado sai da fila, e ele volta para o mesmo lugar.
     Vídeo criado de pauta fica de fora (quem gera outro é a Criação).
     """
     _exigir(not any(t.name == "refazer-fila" and t.is_alive() for t in threading.enumerate()),
             "A fila já está sendo refeita", 409)
+    escolhidos = _ids_do_pedido(ctx.corpo["ids"]) if "ids" in ctx.corpo else None
     ids = [r["id"] for r in ctx.conn.execute(
         "SELECT c.id FROM cortes c JOIN filmes f ON f.id = c.filme_id "
         "WHERE c.status IN ('revisao', 'pronto') AND f.tipo = 'filme' AND c.arquivo IS NOT NULL "
         "ORDER BY c.prioridade DESC, c.fila_em, c.id")]
-    _exigir(bool(ids), "Não há cortes na fila para refazer")
+    fora: list[int] = []
+    if escolhidos is not None:
+        na_fila = set(ids)
+        fora = [i for i in escolhidos if i not in na_fila]
+        pedidos = set(escolhidos)
+        ids = [i for i in ids if i in pedidos]  # na ordem da fila
+        _exigir(bool(ids), "Nenhum dos cortes escolhidos está na fila ou aguardando aprovação")
+    else:
+        _exigir(bool(ids), "Não há cortes na fila para refazer")
     painel = ctx.painel
 
     def trabalho():
@@ -1328,19 +1432,29 @@ def refazer_fila(ctx: Contexto):
             for n, corte_id in enumerate(ids, 1):
                 if painel.encerrar.is_set():
                     break
-                ATIVIDADES.definir(f"Refazendo a fila com o visual atual: corte {n} de {len(ids)}")
+                ATIVIDADES.definir(f"Editando de novo os cortes escolhidos: corte {n} de {len(ids)}"
+                                   if escolhidos is not None else
+                                   f"Refazendo a fila com o visual atual: corte {n} de {len(ids)}")
                 if not _soltar_para_reeditar(painel.cfg, conn, corte_id, painel.encerrar):
                     continue  # saiu da fila, foi postado ou está subindo agora
                 corte = conn.execute("SELECT * FROM cortes WHERE id=?", (corte_id,)).fetchone()
                 if corte is not None and Produtor(painel.cfg, painel.encerrar).renderizar(conn, corte):
                     feitos += 1
-            log.info("Fila refeita com o visual atual: %d de %d corte(s) editados de novo", feitos, len(ids))
+            if escolhidos is not None:
+                log.info("Cortes escolhidos editados de novo com o visual atual: %d de %d", feitos, len(ids))
+            else:
+                log.info("Fila refeita com o visual atual: %d de %d corte(s) editados de novo", feitos, len(ids))
         finally:
             conn.close()
 
+    # o pedido vai para o registro antes de a edição começar (senão o fim podia aparecer antes dele)
+    if escolhidos is not None:
+        log.info("Editando de novo %d corte(s) escolhidos com o visual atual (pedido pelo painel)%s", len(ids),
+                 f"; {len(fora)} ficaram de fora (não estão na fila nem aguardando aprovação)" if fora else "")
+    else:
+        log.info("Refazendo %d corte(s) da fila com o visual atual (pedido pelo painel)", len(ids))
     _em_segundo_plano("refazer-fila", trabalho)
-    log.info("Refazendo %d corte(s) da fila com o visual atual (pedido pelo painel)", len(ids))
-    return {"cortes": len(ids)}
+    return {"cortes": len(ids), "ids": ids, "fora": fora}
 
 
 @rota("POST", r"/cortes/(\d+)/textos")

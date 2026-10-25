@@ -18,6 +18,8 @@ const SINAIS = [
 ];
 
 const PgCortes = { aba: null, filme: "", dados: null };
+// seleção em lote: os marcados sobrevivem ao redesenho ao vivo e saem ao trocar de aba ou de filtro
+const corSel = { ativo: false, ids: new Set(), emCurso: null };
 
 /* ------------------------------------------------------------ lista */
 
@@ -37,30 +39,44 @@ function acaoRapida(c, tipo, icone, titulo, classe = "") {
 
 function cardCorteHtml(c, ativas, facebook) {
   const editando = c.status === "renderizando";
+  // publicado e sem o arquivo: o vídeo foi apagado para liberar espaço (o corte e o histórico ficam)
+  const apagado = c.status === "concluido";
   const capa = c.miniatura
     ? h`<img src="${midia(c.miniatura)}" alt="" loading="lazy">`
-    : h`<div class="capa-vazia">${editando ? h`<span class="giro"></span>` : ic("tesoura")}<small>${editando ? "Editando..." : "Ainda não editado"}</small></div>`;
+    : h`<div class="capa-vazia">${editando ? h`<span class="giro"></span>` : ic(apagado ? "lixo" : "tesoura")}<small>${editando ? "Editando..." : apagado ? "Vídeo apagado" : "Ainda não editado"}</small></div>`;
+  const sel = corSel.ativo;
   const acoes = [];
-  if (c.status === "revisao") acoes.push(acaoRapida(c, "aprovar", "check", "Aprovar", "sucesso"));
-  if (c.status === "candidato") acoes.push(acaoRapida(c, "editar_agora", "varinha", "Editar agora"));
-  if (["candidato", "revisao", "pronto"].includes(c.status)) {
-    acoes.push(c.prioridade > 0
-      ? acaoRapida(c, "normal", "estrela", "Tirar a prioridade", "ativo")
-      : acaoRapida(c, "priorizar", "estrela", "Postar antes dos outros"));
+  if (!sel) { // na seleção, o clique no cartão marca: os botões rápidos saem
+    if (c.status === "revisao") acoes.push(acaoRapida(c, "aprovar", "check", "Aprovar", "sucesso"));
+    if (c.status === "candidato") acoes.push(acaoRapida(c, "editar_agora", "varinha", "Editar agora"));
+    if (["candidato", "revisao", "pronto"].includes(c.status)) {
+      acoes.push(c.prioridade > 0
+        ? acaoRapida(c, "normal", "estrela", "Tirar a prioridade", "ativo")
+        : acaoRapida(c, "priorizar", "estrela", "Postar antes dos outros"));
+    }
+    if (["descartado", "erro"].includes(c.status) && !c.criado) acoes.push(acaoRapida(c, "restaurar", "refazer", "Restaurar"));
   }
-  if (["descartado", "erro"].includes(c.status) && !c.criado) acoes.push(acaoRapida(c, "restaurar", "refazer", "Restaurar"));
   // vídeo criado de uma pauta não tem trecho de origem nem nota de seleção
   const meta = c.criado
     ? ["criado do zero", ...(c.detalhes && c.detalhes.clipes ? [`${c.detalhes.clipes} clipes`] : [])]
     : [`${fmtTempo(c.inicio)}–${fmtTempo(c.fim)}`, `nota ${fmtNum(c.pontuacao, 2)}`];
   if (c.visualizacoes) meta.push(`${fmtNum(c.visualizacoes)} views`);
-  return h`<article class="corte">
-    <div class="capa" data-acao="abrir-corte" data-corte="${c.id}" role="button" tabindex="0" aria-label="Abrir ${c.filme}${c.parte ? `, parte ${c.parte}` : ""}">
+  const marcado = sel && corSel.ids.has(c.id);
+  // a caixa fica fora de qualquer data-acao (o preventDefault do clique global desfaria a marcação);
+  // na seleção, o clique na capa ou no texto marca em vez de abrir o detalhe, e só a caixa recebe o Tab
+  const caixa = sel
+    ? h`<label class="corte-marca"><input type="checkbox" data-corte="${c.id}" ${marcado ? raw("checked") : ""} aria-label="${corSelRotuloCaixa(c)}"></label>`
+    : "";
+  const capaTopo = sel
+    ? h`<div class="capa" data-acao="cortes-sel-cartao" data-corte="${c.id}">`
+    : h`<div class="capa" data-acao="abrir-corte" data-corte="${c.id}" role="button" tabindex="0" aria-label="Abrir ${c.filme}${c.parte ? `, parte ${c.parte}` : ""}">`;
+  return h`<article class="corte${sel ? " corte-sel" : ""}${marcado ? " corte-sel-marcado" : ""}" data-corte="${c.id}">
+    ${caixa}${capaTopo}
       ${capa}${c.parte ? h`<span class="parte">Parte ${c.parte}</span>` : ""}<span class="tempo">${fmtDuracao(c.duracao)}</span>
       ${c.prioridade > 0 ? h`<span class="prio" title="Com prioridade">${ic("estrela")}</span>` : ""}
       ${c.video ? h`<span class="play">${ic("play")}</span>` : ""}
     </div>
-    <div class="info">
+    <div class="info"${sel ? h` data-acao="cortes-sel-cartao" data-corte="${c.id}"` : ""}>
       <div class="titulo" title="${c.filme}">${c.filme}</div>
       <div class="meta">${meta.join(" · ")}</div>
       <div class="frase">${c.frase ? `“${c.frase}”` : h`<span class="texto-suave">Sem fala</span>`}</div>
@@ -76,11 +92,17 @@ function cortesHtml(r) {
   const aba = ABAS_CORTES.find(([id]) => id === r.aba);
   const opcoesFilme = [["", "Todos os filmes"], ...r.filmes.map((f) => [String(f.id), f.titulo])];
   let acoesAba = "";
-  if (r.aba === "revisao" && r.itens.length) {
+  // na seleção, as ações ficam na barra do rodapé: o "Aprovar todos" aprova todos do banco, sem olhar
+  // a seleção nem o filtro, e se confundiria com o "Aprovar" dos escolhidos
+  if (!corSel.ativo && r.aba === "revisao" && r.itens.length) {
     acoesAba = h`<button class="btn sucesso" data-acao="aprovar-todos">${ic("check")}Aprovar todos</button>`;
-  } else if (r.aba === "fila" && r.itens.some((c) => !c.criado)) {
+  } else if (!corSel.ativo && r.aba === "fila" && r.itens.some((c) => !c.criado)) {
     acoesAba = h`<button class="btn" data-acao="refazer-fila" title="Edita de novo os cortes da fila com o modelo visual em uso">${ic("refazer")}Refazer a fila</button>`;
   }
+  // só com a API que conhece a seleção (lote: true, ver listar_cortes no api.py)
+  const selecionar = r.lote && r.itens.length
+    ? h`<button type="button" class="btn${corSel.ativo ? " ativo" : ""}" id="cortes-selecionar" data-acao="cortes-selecionar" aria-pressed="${corSel.ativo ? "true" : "false"}" title="${corSel.ativo ? "Sair da seleção (Esc)" : "Marcar alguns cortes ou todos e aplicar uma ação de uma vez"}">${ic("selecionar")}Selecionar</button>`
+    : "";
   let lista;
   if (r.itens.length) {
     lista = h`<div class="grade-cortes">${r.itens.map((c) => cardCorteHtml(c, r.ativas, r.facebook))}</div>`;
@@ -97,7 +119,7 @@ function cortesHtml(r) {
   }
   return h`<div class="barra-ferramentas">
       <div class="abas" role="tablist">${abas.map(([id, rotulo]) => h`<button type="button" role="tab" class="aba ${r.aba === id ? "ativa" : ""}" aria-selected="${r.aba === id}" data-acao="cortes-aba" data-aba="${id}">${rotulo}<span class="n">${r.contagem[id] || 0}</span></button>`)}</div>
-      <div class="grupo-botoes">${acoesAba}<select class="filtro" id="cortes-filme" aria-label="Filtrar por filme">${opcoesFilme.map(([v, t]) => h`<option value="${v}" ${v === PgCortes.filme ? raw("selected") : ""}>${t}</option>`)}</select></div>
+      <div class="grupo-botoes">${acoesAba}${selecionar}<select class="filtro" id="cortes-filme" aria-label="Filtrar por filme">${opcoesFilme.map(([v, t]) => h`<option value="${v}" ${v === PgCortes.filme ? raw("selected") : ""}>${t}</option>`)}</select></div>
     </div>
     <p class="nota descricao-aba">${aba ? aba[2] : ""}</p>
     ${lista}`;
@@ -108,22 +130,13 @@ async function carregarCortes(token = App.navegacao) {
   if (PgCortes.filme) params.set("filme", PgCortes.filme);
   const r = await api(`/cortes?${params}`);
   if (!App.ativa(token) || App.nomePagina !== "cortes") return;
+  corSelPodar(r);
   PgCortes.dados = r;
-  const el = $("#conteudo");
-  const rolagem = window.scrollY;
-  montar(el, cortesHtml(r));
-  window.scrollTo(0, rolagem);
-  const filtro = $("#cortes-filme");
-  if (filtro) {
-    filtro.addEventListener("change", () => {
-      PgCortes.filme = filtro.value;
-      history.replaceState(null, "", PgCortes.filme ? `#/cortes?filme=${PgCortes.filme}` : "#/cortes");
-      carregarCortes().catch(erroToast);
-    });
-  }
+  corSelRedesenhar();
 }
 
 App.acoes["cortes-aba"] = async (el) => {
+  if (el.dataset.aba !== PgCortes.aba) corSelLimpar(); // outra aba, outra lista: a seleção recomeça
   PgCortes.aba = el.dataset.aba;
   await carregarCortes();
 };
@@ -180,6 +193,13 @@ App.paginas.cortes = {
   async recarregar() {
     await carregarCortes();
   },
+  sair() {
+    // a barra da seleção fica no body: sem isto ela continuaria à vista nas outras telas
+    corSel.ativo = false;
+    corSel.ids.clear();
+    corSel.emCurso = null;
+    corSelDesenharBarra();
+  },
   aoEstado(e, antes) {
     if (!PgCortes.dados || modal.aberto) return;
     const mudou = !antes
@@ -189,6 +209,344 @@ App.paginas.cortes = {
       || (e.ultimas[0] && e.ultimas[0].id) !== (antes.ultimas[0] && antes.ultimas[0].id);
     if (mudou) carregarCortes().catch(() => {});
   },
+};
+
+/* ------------------------------------------------------------ seleção em lote */
+
+// cada ação vale só para os cortes em que faz sentido: as mesmas regras dos botões do cartão e do detalhe
+const corSelRegras = {
+  aprovar: (c) => c.status === "revisao",
+  priorizar: (c) => ["revisao", "pronto"].includes(c.status) && !(c.prioridade > 0),
+  normal: (c) => ["revisao", "pronto"].includes(c.status) && c.prioridade > 0,
+  reeditar: (c) => ["revisao", "pronto"].includes(c.status) && !c.criado,
+  restaurar: (c) => ["erro", "descartado"].includes(c.status) && !c.criado,
+  apagar_video: (c) => c.status === "concluido" && Boolean(c.video),
+  descartar: (c) => ["candidato", "revisao", "pronto", "erro"].includes(c.status),
+};
+// ordem na barra: [ação, rótulo, ícone, classe, dica]
+const corSelBotoes = [
+  ["aprovar", "Aprovar", "check", "sucesso", ""],
+  ["priorizar", "Priorizar", "estrela", "", "Saem antes dos outros na fila"],
+  ["normal", "Tirar a prioridade", "estrela", "", ""],
+  ["reeditar", "Editar de novo", "refazer", "", "Refaz o vídeo com o modelo visual em uso"],
+  ["restaurar", "Restaurar", "refazer", "", "Voltam para os trechos encontrados"],
+  ["apagar_video", "Apagar os vídeos", "lixo", "perigo", "Libera espaço no disco: os posts e o histórico ficam"],
+  ["descartar", "Descartar", "lixo", "perigo", ""],
+];
+const corSelFeito = {
+  descartar: (n) => (n === 1 ? "1 corte descartado" : `${fmtNum(n)} cortes descartados`),
+  restaurar: (n) => (n === 1 ? "1 corte restaurado: voltou para os trechos encontrados" : `${fmtNum(n)} cortes restaurados: voltaram para os trechos encontrados`),
+  aprovar: (n) => (n === 1 ? "1 corte aprovado: entrou na fila" : `${fmtNum(n)} cortes aprovados: entraram na fila`),
+  priorizar: (n) => (n === 1 ? "1 corte vai sair antes dos outros" : `${fmtNum(n)} cortes vão sair antes dos outros`),
+  normal: (n) => `Prioridade removida de ${plural(n, "corte", "cortes")}`,
+  apagar_video: (n) => (n === 1 ? "1 vídeo apagado" : `${fmtNum(n)} vídeos apagados`),
+  reeditar: (n) => (n === 1 ? "Editando de novo 1 corte em segundo plano. Acompanhe no Início."
+    : `Editando de novo ${fmtNum(n)} cortes em segundo plano, um de cada vez. Acompanhe no Início.`),
+};
+// recusas que o servidor marca com um motivo: [um corte, vários]
+const corSelMotivos = {
+  enviando: ["está sendo enviado agora", "estão sendo enviados agora"],
+  arquivo_aberto: ["está com o vídeo aberto em outro programa", "estão com o vídeo aberto em outro programa"],
+  fora: ["não está mais na fila nem aguardando aprovação", "não estão mais na fila nem aguardando aprovação"],
+};
+
+function corSelRotuloCaixa(c) {
+  return c.parte ? `Selecionar a Parte ${c.parte} de ${c.filme}` : `Selecionar o trecho de ${fmtTempo(c.inicio)} a ${fmtTempo(c.fim)} de ${c.filme}`;
+}
+
+/** Os cortes marcados que estão na lista mostrada, na ordem da tela. */
+function corSelItens() {
+  const itens = (PgCortes.dados && PgCortes.dados.itens) || [];
+  return itens.filter((c) => corSel.ids.has(c.id));
+}
+
+/** Lista nova (redesenho ao vivo, recarga): continuam marcados só os cortes que ainda estão nela. */
+function corSelPodar(r) {
+  if (!corSel.ativo) return;
+  if (!r.lote || !r.itens.length) {
+    corSel.ativo = false;
+    corSel.ids.clear();
+    return;
+  }
+  const presentes = new Set(r.itens.map((c) => c.id));
+  for (const id of [...corSel.ids]) if (!presentes.has(id)) corSel.ids.delete(id);
+}
+
+/** Desenha a lista carregada (grade e barra). O foco volta para a mesma caixa ou para o Selecionar. */
+function corSelRedesenhar() {
+  const r = PgCortes.dados;
+  const el = $("#conteudo");
+  if (r && el) {
+    const ativo = document.activeElement;
+    let foco = null;
+    if (ativo && el.contains(ativo)) {
+      if (ativo.id === "cortes-selecionar") foco = "#cortes-selecionar";
+      else if (ativo.matches(".corte-marca input")) foco = `.corte-marca input[data-corte="${ativo.dataset.corte}"]`;
+    }
+    const rolagem = window.scrollY;
+    montar(el, cortesHtml(r));
+    window.scrollTo(0, rolagem);
+    const filtro = $("#cortes-filme");
+    if (filtro) {
+      filtro.addEventListener("change", () => {
+        PgCortes.filme = filtro.value;
+        corSelLimpar(); // outro filme, outra lista: a seleção recomeça
+        history.replaceState(null, "", PgCortes.filme ? `#/cortes?filme=${PgCortes.filme}` : "#/cortes");
+        carregarCortes().catch(erroToast);
+      });
+    }
+    if (foco) ($(foco, el) || $("#cortes-selecionar", el) || el).focus({ preventScroll: true });
+  }
+  corSelDesenharBarra();
+}
+
+/** A barra do rodapé fica no body (como a do Salvar): o redesenho ao vivo troca o #conteudo inteiro. */
+function corSelBarra() {
+  let barra = $("#corsel-barra");
+  if (!barra) {
+    barra = elementoDe(h`<div class="barra-selecao" id="corsel-barra" role="region" aria-label="Seleção de cortes"><div class="corsel-lado"><span class="corsel-contagem" id="corsel-contagem" aria-live="polite"></span><span class="corsel-marcar" id="corsel-marcar"></span></div><div class="corsel-acoes" id="corsel-acoes"></div></div>`);
+    document.body.appendChild(barra);
+    // em tela estreita a barra ganha linhas: os avisos e o fim da página sobem junto
+    if (window.ResizeObserver) {
+      new ResizeObserver(() => document.body.style.setProperty("--corsel-altura", `${barra.offsetHeight}px`)).observe(barra);
+    }
+  }
+  return barra;
+}
+
+const corSelChave = (el) => {
+  const b = el.closest("[data-acao]");
+  return b ? `${b.dataset.acao}|${b.dataset.lote || ""}` : null;
+};
+
+function corSelFocar(barra, chave) {
+  const livres = [...barra.querySelectorAll("button")].filter((b) => !b.disabled);
+  const alvo = livres.find((b) => corSelChave(b) === chave) || livres[0];
+  if (alvo) alvo.focus({ preventScroll: true });
+}
+
+/** Quantos estão marcados e as ações que valem para eles, cada uma com a sua contagem. */
+function corSelDesenharBarra(focar = null) {
+  const barra = corSelBarra();
+  const visivel = corSel.ativo && App.nomePagina === "cortes";
+  barra.classList.toggle("visivel", visivel);
+  if (!visivel) return;
+  const ativo = document.activeElement;
+  // os botões são trocados: quem estava com o foco recebe de volta (ou o primeiro que der)
+  const chave = focar || (ativo && ativo !== barra && barra.contains(ativo) ? corSelChave(ativo) : null);
+  const r = PgCortes.dados || { itens: [], total: 0 };
+  const marcados = corSelItens();
+  const n = marcados.length;
+  const todos = r.itens.length;
+  const travar = (sim) => (sim || corSel.emCurso ? raw("disabled") : "");
+  $("#corsel-contagem").textContent = n === 0 ? "Nenhum selecionado" : n === 1 ? "1 selecionado" : `${fmtNum(n)} selecionados`;
+  const dica = r.total > todos ? `Marca os ${fmtNum(todos)} mostrados, de ${fmtNum(r.total)} nesta aba` : `Marca os ${fmtNum(todos)} mostrados`;
+  montarSeMudou($("#corsel-marcar"), h`<button type="button" class="btn pequeno" data-acao="cortes-sel-todos" title="${dica}" ${travar(n >= todos)}>Selecionar todos (${fmtNum(todos)})</button><button type="button" class="btn pequeno fantasma" data-acao="cortes-sel-limpar" ${travar(!n)}>Limpar</button>`);
+  const botoes = [];
+  for (const [acao, rotulo, icone, classe, titulo] of corSelBotoes) {
+    const k = marcados.filter(corSelRegras[acao]).length;
+    if (!k) continue;
+    botoes.push(h`<button type="button" class="btn pequeno ${classe}${corSel.emCurso === acao ? " carregando" : ""}" data-acao="cortes-sel-acao" data-lote="${acao}" ${titulo ? h`title="${titulo}"` : ""} ${travar(false)}>${ic(icone)}${rotulo} (${fmtNum(k)})</button>`);
+  }
+  let aviso = "";
+  if (!n) aviso = h`<span class="nota">Clique nos cartões ou nas caixas para marcar.</span>`;
+  else if (!botoes.length) aviso = h`<span class="nota">Nenhuma ação vale para os selecionados.</span>`;
+  montarSeMudou($("#corsel-acoes"), h`${aviso}${botoes}<button type="button" class="btn pequeno fantasma" data-acao="cortes-sel-sair" title="Sair da seleção (Esc)" ${travar(false)}>Cancelar</button>`);
+  if (chave && !barra.contains(document.activeElement)) corSelFocar(barra, chave);
+}
+
+/** Marca e desmarca no lugar, sem redesenhar a grade (o foco e a rolagem ficam). */
+function corSelAtualizarCartoes() {
+  for (const cartao of document.querySelectorAll("#conteudo article.corte[data-corte]")) {
+    const marcado = corSel.ativo && corSel.ids.has(Number(cartao.dataset.corte));
+    cartao.classList.toggle("corte-sel-marcado", marcado);
+    const caixa = $(".corte-marca input", cartao);
+    if (caixa) caixa.checked = marcado;
+  }
+}
+
+function corSelMarcar(id, marcado) {
+  if (marcado) corSel.ids.add(id);
+  else corSel.ids.delete(id);
+  corSelAtualizarCartoes();
+  corSelDesenharBarra();
+}
+
+function corSelLimpar() {
+  corSel.ids.clear();
+  corSelAtualizarCartoes();
+  corSelDesenharBarra();
+}
+
+/** Sai da seleção (Cancelar, Esc, ou uma ação que deu certo em todos). */
+function corSelSair() {
+  corSel.ativo = false;
+  corSel.ids.clear();
+  corSelRedesenhar();
+  ($("#cortes-selecionar") || $("#conteudo")).focus({ preventScroll: true });
+}
+
+/** A confirmação das ações que apagam ou refazem (null = sem pergunta, como no botão do cartão). */
+async function corSelPergunta(acao, alvo) {
+  const n = alvo.length;
+  const um = n === 1;
+  if (acao === "descartar") {
+    const comVideo = alvo.some((c) => c.video);
+    const postados = alvo.some((c) => Object.keys(c.postagens || {}).length);
+    // o descartar pula todas as tarefas à mão do corte, e ele pode esperar numa tarefa por rede
+    const tarefas = alvo.reduce((n, c) => n + Object.values(c.postagens || {}).filter((p) => p.estado === "aguardando").length, 0);
+    const criados = alvo.filter((c) => c.criado).length;
+    const partes = [comVideo
+      ? (um ? "O vídeo editado sai do disco e este trecho não volta a ser escolhido." : "Os vídeos editados saem do disco e esses trechos não voltam a ser escolhidos.")
+      : (um ? "Este trecho não volta a ser escolhido." : "Esses trechos não voltam a ser escolhidos.")];
+    if (postados) partes.push(`O que já foi postado continua nas redes e no histórico, e as redes que faltavam não recebem mais ${um ? "este corte" : "esses cortes"}.`);
+    if (tarefas) partes.push(tarefas === 1 ? "A tarefa de postagem à mão que estava esperando é pulada." : `As ${fmtNum(tarefas)} tarefas de postagem à mão que estavam esperando são puladas.`);
+    if (!criados) {
+      partes.push(um ? "Dá para restaurar depois em Descartados: o trecho volta para os encontrados." : "Dá para restaurar depois em Descartados: os trechos voltam para os encontrados.");
+    } else if (criados < n) {
+      partes.push("Dá para restaurar depois em Descartados os cortes de filme: os trechos voltam para os encontrados. Vídeo criado de pauta não volta por Restaurar: para gerar outro, use Criar de novo no detalhe dele.");
+    } else {
+      partes.push(um ? "Este vídeo foi criado de uma pauta e não volta por Restaurar: para gerar outro, use Criar de novo no detalhe dele."
+        : "Esses vídeos foram criados de pautas e não voltam por Restaurar: para gerar outros, use Criar de novo no detalhe de cada um.");
+    }
+    return { titulo: um ? "Descartar 1 corte?" : `Descartar ${fmtNum(n)} cortes?`, texto: partes.join(" "), botao: um ? "Descartar" : `Descartar ${fmtNum(n)}`, perigo: true };
+  }
+  if (acao === "apagar_video") {
+    return {
+      titulo: um ? "Apagar o vídeo deste corte?" : `Apagar os vídeos de ${fmtNum(n)} cortes?`,
+      texto: "O vídeo, a legenda e a miniatura saem do disco para liberar espaço. Os posts continuam nas redes, e o corte e o histórico continuam aqui em Publicados. Não dá para desfazer.",
+      botao: um ? "Apagar o vídeo" : `Apagar ${fmtNum(n)} vídeos`,
+      perigo: true,
+    };
+  }
+  if (acao === "reeditar") {
+    await garantirConfig();
+    const modelo = App.config && App.config.edicao ? App.config.edicao.modelo : "";
+    const qual = modelo ? ` (${modelo})` : "";
+    const semSalvar = App.pendente.edicao && !vazio(App.pendente.edicao)
+      ? " As mudanças do visual que ainda não foram salvas não entram: salve antes no Estúdio." : "";
+    return {
+      titulo: um ? "Editar de novo este corte?" : `Editar de novo ${fmtNum(n)} cortes?`,
+      texto: um
+        ? `O vídeo atual é apagado e refeito com o modelo visual em uso${qual}, que você ajusta no Estúdio. Ele volta para o mesmo lugar da fila.${semSalvar}`
+        : `O vídeo atual de cada um é apagado e refeito, um de cada vez, com o modelo visual em uso${qual}, que você ajusta no Estúdio. Cada um volta para o mesmo lugar da fila.${semSalvar}`,
+      botao: "Editar de novo",
+    };
+  }
+  return null; // aprovar, priorizar, tirar a prioridade e restaurar não perguntam
+}
+
+/** O aviso do resultado: quantos mudaram e, agrupados pelo motivo, os que não deram certo. */
+function corSelResultado(acao, feitos, recusados) {
+  const grupos = new Map();
+  for (const f of recusados) {
+    const chave = corSelMotivos[f.motivo] ? f.motivo : String(f.erro || "erro sem detalhes").replace(/\.\s*$/, "");
+    grupos.set(chave, (grupos.get(chave) || 0) + 1);
+  }
+  const falhas = [...grupos].map(([chave, k]) => {
+    const frase = corSelMotivos[chave] ? corSelMotivos[chave][k === 1 ? 0 : 1] : chave.charAt(0).toLowerCase() + chave.slice(1);
+    return `${fmtNum(k)} não: ${frase}`;
+  }).join("; ");
+  const feito = corSelFeito[acao](feitos);
+  if (!recusados.length) toast(feito, acao === "reeditar" ? "info" : "ok", acao === "reeditar" ? 6000 : 4500);
+  else if (feitos) toast(`${feito.replace(/\.$/, "")}. ${falhas}.`, "info", 8000);
+  else toast(`Nenhum corte mudou. ${falhas}.`, "erro", 8000);
+}
+
+function corSelAoMudar(ev) {
+  const caixa = ev.target;
+  if (!corSel.ativo || App.nomePagina !== "cortes" || !caixa.matches || !caixa.matches(".corte-marca input")) return;
+  corSelMarcar(Number(caixa.dataset.corte), caixa.checked);
+}
+
+function corSelTecla(ev) {
+  if (ev.key !== "Escape" || ev.defaultPrevented || !corSel.ativo || corSel.emCurso || App.nomePagina !== "cortes") return;
+  if (modal.aberto || document.querySelector(".modal-fundo.sobreposto")) return; // o Esc fecha a janela, não a seleção
+  ev.preventDefault();
+  corSelSair();
+}
+
+// a caixa não tem data-acao: a marcação chega pelo change, ouvido uma vez para a página inteira
+$("#conteudo").addEventListener("change", corSelAoMudar);
+document.addEventListener("keydown", corSelTecla);
+
+App.acoes["cortes-selecionar"] = () => {
+  if (corSel.emCurso) return;
+  if (corSel.ativo) {
+    corSelSair();
+    return;
+  }
+  corSel.ativo = true;
+  corSel.ids.clear();
+  corSelRedesenhar();
+};
+
+App.acoes["cortes-sel-cartao"] = (el) => {
+  if (!corSel.ativo) return;
+  const id = Number(el.dataset.corte);
+  corSelMarcar(id, !corSel.ids.has(id));
+};
+
+App.acoes["cortes-sel-todos"] = () => {
+  if (!corSel.ativo) return;
+  for (const c of (PgCortes.dados && PgCortes.dados.itens) || []) corSel.ids.add(c.id);
+  corSelAtualizarCartoes();
+  corSelDesenharBarra();
+};
+
+App.acoes["cortes-sel-limpar"] = () => corSelLimpar();
+
+App.acoes["cortes-sel-sair"] = () => corSelSair();
+
+App.acoes["cortes-sel-acao"] = async (el) => {
+  const acao = el.dataset.lote;
+  const regra = corSelRegras[acao];
+  if (!regra || !corSel.ativo || corSel.emCurso) return;
+  const alvo = corSelItens().filter(regra);
+  if (!alvo.length) return;
+  const token = App.navegacao;
+  const pergunta = await corSelPergunta(acao, alvo);
+  if (pergunta && !(await confirmar(pergunta))) return;
+  if (!App.ativa(token) || !corSel.ativo || corSel.emCurso) return; // saiu da tela ou da seleção enquanto perguntava
+  const ids = alvo.map((c) => c.id);
+  const chave = `cortes-sel-acao|${acao}`;
+  // sem o ocupado(): o redesenho da barra troca o botão, e o emCurso já desenha o carregando
+  corSel.emCurso = acao;
+  corSelDesenharBarra(chave);
+  let r;
+  try {
+    r = acao === "reeditar" ? await post("/cortes/refazer-fila", { ids }) : await post("/cortes/lote", { acao, ids });
+  } catch (e) {
+    corSel.emCurso = null;
+    if (App.ativa(token)) {
+      corSelDesenharBarra(chave);
+      carregarCortes().catch(() => {}); // um erro no meio do lote: o que já mudou aparece
+    }
+    throw e;
+  }
+  corSel.emCurso = null;
+  const aceitos = acao === "reeditar" ? r.ids : r.feitos;
+  const recusados = acao === "reeditar" ? r.fora.map((id) => ({ id, motivo: "fora" })) : r.falhas;
+  corSelResultado(acao, aceitos.length, recusados);
+  try {
+    if (!App.ativa(token)) return;
+    const todosForam = !recusados.length;
+    if (todosForam) {
+      corSel.ativo = false; // deu certo em todos: sai da seleção
+      corSel.ids.clear();
+    } else {
+      // os que deram certo saem da seleção; os recusados ficam marcados, para você ver quais foram
+      for (const id of aceitos) corSel.ids.delete(id);
+    }
+    corSelDesenharBarra(todosForam ? null : chave);
+    await carregarCortes().catch((e) => {
+      corSelRedesenhar(); // sem a lista nova, a grade ao menos acompanha a seleção
+      throw e;
+    });
+    if (todosForam && App.ativa(token)) ($("#cortes-selecionar") || $("#conteudo")).focus({ preventScroll: true });
+  } finally {
+    atualizarEstado();
+  }
 };
 
 /* ------------------------------------------------------------ janela de detalhe */
@@ -316,6 +674,10 @@ function videoDetalheHtml(d) {
   if (d.video) {
     const poster = d.miniatura ? h`poster="${midia(d.miniatura)}"` : "";
     return h`<video src="${midia(d.video)}" ${poster} controls playsinline preload="metadata"></video>`;
+  }
+  if (d.status === "concluido") {
+    // publicado e sem o arquivo: apagado para liberar espaço ("Apagar os vídeos" ou apagar_apos_postar)
+    return h`<div class="capa-vazia">${ic("lixo")}<small>O vídeo deste corte foi apagado do disco. Os posts e o histórico continuam.</small></div>`;
   }
   const editando = d.status === "renderizando" || Detalhe.aguardando === "edicao";
   const atividade = App.estado && App.estado.atividades.find((a) => a.chave === `edicao-${d.id}`);

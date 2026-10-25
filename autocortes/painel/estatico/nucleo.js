@@ -114,6 +114,7 @@ const ICONES = {
   busca: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
   paleta: '<path d="M12 3a9 9 0 1 0 0 18c1 0 1.6-.7 1.6-1.6 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.6 1.6-1.6h1.9A4.8 4.8 0 0 0 21 10.9C21 6.5 17 3 12 3z"/><circle cx="7.5" cy="12" r="1" fill="currentColor"/><circle cx="9" cy="7.8" r="1" fill="currentColor"/><circle cx="13.5" cy="6.8" r="1" fill="currentColor"/><circle cx="17" cy="9.8" r="1" fill="currentColor"/>',
   pessoas: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.5a6.5 6.5 0 0 1 3 5.5"/>',
+  selecionar: '<rect x="3.5" y="3.5" width="17" height="17" rx="4"/><path d="m8.5 12.5 2.5 2.5 4.5-5"/>',
 };
 function ic(nome, classe = "") {
   return raw(`<svg class="ic ${classe}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${ICONES[nome] || ""}</svg>`);
