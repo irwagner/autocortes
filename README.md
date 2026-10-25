@@ -148,7 +148,7 @@ Atualizado em outubro de 2026.
 | Kwai, Bilibili e postagem à mão em qualquer rede | ✅ Pronto e testado: tarefas no Início com vídeo, textos por rede, "Já postei" e pasta sincronizada |
 | YouTube só com Shorts (vertical ou quadrado, até o limite de duração) | ✅ Pronto e testado |
 | Agenda por rede, fila e planejador | ✅ Pronto e testado de ponta a ponta em simulação |
-| Painel no navegador (10 telas, API local com 77 rotas) | ✅ Pronto e testado no Edge |
+| Painel no navegador (10 telas, API local com 81 rotas) | ✅ Pronto e testado no Edge |
 | Canais do YouTube: baixa sozinho os vídeos novos para a pasta de filmes | ✅ Pronto e testado (o yt-dlp de verdade num canal público; as regras e a fila, com um yt-dlp falso) |
 | Atualização pelo GitHub a cada 2 dias, com tudo parado | ✅ Pronta e testada: o ciclo inteiro com um repositório local (fecha, troca, abre de novo com os perfis e volta sozinha se a versão nova não abrir), e o clone e o ZIP contra o GitHub de verdade |
 | Perfis de nicho: vários nichos na mesma instalação, cada um com suas contas | ✅ Pronto e testado (dois perfis abertos ao mesmo tempo, de verdade) |
@@ -406,7 +406,14 @@ Em vez de pôr cada vídeo na pasta à mão, você cadastra canais do YouTube em
 - **Quanto:** enquanto houver 3 vídeos baixados esperando a análise, o AutoCortes não baixa mais, e para se o disco da pasta de filmes ficar com menos de 20 GB livres.
 - **Como:** pelo [yt-dlp](https://github.com/yt-dlp/yt-dlp) oficial, baixado na primeira vez com o SHA-256 conferido e atualizado sozinho a cada 3 dias (o YouTube muda, e versões velhas param de baixar). Ele precisa de um JavaScript para falar com o YouTube: vale o Deno ou o Node.js 22+ que você já tiver; sem eles, o Deno é baixado (também conferido). Até 1080p por padrão, com H.264 e AAC primeiro, e as legendas em português que o canal publicou (as automáticas não), que poupam a transcrição.
 - **Onde:** `filmes/YouTube/<canal>/`. O vídeo só aparece na pasta inteiro (ele baixa numa pasta escondida no mesmo disco), com um `.json` ao lado com o título, o canal e o link. Cada vídeo é baixado uma vez só; o que falha é tentado de novo até 3 vezes, e a lista de downloads tem "Tentar de novo".
-- **Sem login:** nada de cookies, conta ou proxy. Vídeo com restrição de idade ou só para membros fica de fora, e se o YouTube pedir para confirmar que não é um robô (ou limitar os pedidos), os downloads param por 12 h e o Início avisa.
+- **Ritmo:** entre um pedido e outro ao YouTube (listar um canal, baixar um vídeo, passar ao próximo), o AutoCortes espera de 10 a 20 s.
+- **Se o YouTube pedir verificação** (confirmar que não é um robô, ou limitar os pedidos): os downloads param por 12 h, e o Início avisa, com a mensagem original do yt-dlp no cartão dos canais. Se o aviso voltar em até 24 h depois do fim da pausa, ou se você insistir com "Olhar agora" durante ela, a pausa seguinte é de 24 h, e depois de 48 h, o máximo. Três dias sem aviso zeram a conta. Durante a pausa, o "Olhar agora" pergunta antes.
+- **Conta separada (opcional):** fica desligada até você conectar uma.
+  - **Como conectar:** em **Filmes > Canais do YouTube > Conta para baixar**, clique em **Entrar numa conta separada**. Abre uma janela do Chrome com um perfil novo e temporário, e você entra numa conta do Google criada só para isso. Quando ela entra, a janela fecha sozinha, os cookies do YouTube e do Google ficam guardados cifrados e o perfil temporário é apagado, para a sessão nunca mais abrir num navegador.
+  - **Quando é usada:** só quando o YouTube pede, pelo aviso de robô ou pela restrição de idade. Cada pedido vai primeiro sem a conta. Depois de um aviso, ela vale no resto da olhada e nas olhadas seguintes, até o fim da pausa que valeria sem ela. Se ela também levar o aviso, ou se o YouTube recusar os cookies, ela fica como "precisa entrar de novo", o Início avisa e a pausa vale. "Esquecer a conta" apaga tudo.
+  - **Riscos:** use uma conta do Google só para isso, nunca a do canal onde você posta. O Google pode suspender essa conta. Baixar continua contra os termos do YouTube. Só canais seus ou que autorizam cortes.
+  - **Fica de fora:** proxy, rodízio de contas, PO token, captcha, os cookies do seu navegador e o perfil das postagens.
+- **Fica de fora:** vídeo só para membros. Vídeo com restrição de idade só baixa com a conta separada: depois de conectar, use "Tentar de novo" na lista de downloads.
 
 ## Vídeos criados do zero
 
@@ -695,7 +702,7 @@ Além dos caminhos abaixo, existe o [envio pelo seu navegador](#postagem-pelo-se
 | Kwai | À mão, pelo app | Não há API de postagem para criadores, envio pelo site nem serviço terceiro que poste no Kwai ([ajuda](https://www.kwai.com/support/general-faq/how-to-publish-works)). |
 | Bilibili | À mão, pelo site | A Open Platform é para empresas chinesas. O site agenda (定时发布). Ferramentas com cookies, como o biliup, violam a cláusula 4.3.15 dos termos ([termos](https://www.bilibili.com/blackboard/protocal/activity-1RIGA-C2-.html)). |
 
-Nenhum serviço terceiro testado (Upload-Post, Zernio, Ayrshare, Buffer, Metricool, Publer) posta no Kwai ou no Bilibili. YouTube, TikTok, Meta e Bilibili vetam acesso automatizado sem permissão nos termos deles, o que inclui o envio pelo navegador: ele existe aqui como escolha consciente, rede por rede, e não é o padrão. APIs privadas e ferramentas que exportam cookies continuam fora.
+Nenhum serviço terceiro testado (Upload-Post, Zernio, Ayrshare, Buffer, Metricool, Publer) posta no Kwai ou no Bilibili. YouTube, TikTok, Meta e Bilibili vetam acesso automatizado sem permissão nos termos deles, o que inclui o envio pelo navegador: ele existe aqui como escolha consciente, rede por rede, e não é o padrão. APIs privadas e ferramentas que postam com cookies exportados continuam fora.
 
 ## Direitos autorais e originalidade
 
@@ -833,7 +840,7 @@ As rotas `/api` exigem o cabeçalho `X-AutoCortes` com o token da sessão; a mí
 | Roteiro | `GET` e `POST /api/redes/{rede}/roteiro`, `POST .../roteiro/apagar`, `GET` e `POST .../gravar`, `POST .../gravar/fim`, `/cancelar`, `/desfazer` e `/recomecar` |
 | Perfis | `GET /api/perfis`, `POST /api/perfis/novo` e `/opcoes`, `POST /api/perfis/{slug}/abrir`, `/fechar`, `/salvar` e `/excluir`, `GET .../conteudo` |
 | Filmes | `GET /api/filmes`, `POST /api/filmes/enviar`, `/varrer`, `/{id}/acao` e `/{id}/meta` |
-| Canais do YouTube | `GET /api/canais`, `POST /api/canais/novo`, `/verificar` (um canal ou todos) e `/{id}/acao` (`pausar`, `ativar`, `remover`), `POST /api/downloads/{id}/acao` (`tentar`) |
+| Canais do YouTube | `GET /api/canais`, `POST /api/canais/novo`, `/verificar` (um canal ou todos; durante a pausa, 409 com `motivo: "pausa"`, e passa com `forcar: true`) e `/{id}/acao` (`pausar`, `ativar`, `remover`), `POST /api/downloads/{id}/acao` (`tentar`); a conta separada: `GET /api/canais/conta`, `POST /api/canais/conta/conectar` (com uma janela aberta, devolve a mesma), `/cancelar` e `/esquecer` |
 | Redes | `GET /api/redes`, `GET` e `POST /api/redes/{rede}/login`, `POST .../cancelar`, `/testar` e `/desconectar`, `POST /api/redes/instagram/conta` |
 | Sistema | `GET /api/logs?desde=`, `POST /api/sistema/abrir`, `/inicializacao` e `/encerrar` |
 | Atualização | `GET /api/atualizacao`, `POST /api/atualizacao/verificar`, `/aplicar` (409 se algo está trabalhando) e `/opcoes` |
@@ -855,7 +862,8 @@ Ciclo de vida no banco:
 | `dados/autocortes.db` | banco SQLite com filmes, cortes e postagens |
 | `dados/analise/<id>/` | cache da análise de cada filme: cenas, volume, voz e transcrição |
 | `dados/cortes/<id>/` | vídeos editados (`nome-do-filme-parte01-c12.mp4`), legendas `.ass` e miniaturas `.jpg` |
-| `dados/tokens/` | logins das redes, cifrados para o seu usuário do Windows |
+| `dados/tokens/` | logins das redes e a conta separada dos canais do YouTube (`canais-youtube.json`), cifrados para o seu usuário do Windows |
+| `dados/chrome-conta-canais/` | perfil temporário da janela da conta separada dos canais: só existe com a janela aberta e é apagado quando ela fecha |
 | `dados/logs/autocortes.log` | registro, com até 5 arquivos de 5 MB |
 | `<[manual].pasta>/<Rede>/` | cópia do vídeo (`nome-parte05-tarefa12.mp4`) e dos textos (`.txt`) de cada tarefa à mão, apagada quando ela é resolvida |
 | `dados/roteiros/<rede>.txt` | o seu roteiro de envio pelo navegador (gravado ou editado), que vale no lugar do padrão de `roteiros/` |
@@ -873,6 +881,7 @@ Ciclo de vida no banco:
 - Os tokens ficam em `dados/tokens/*.json` cifrados com a proteção de dados do Windows (DPAPI): só o seu usuário, neste PC, consegue abrir. Copiar a pasta para outro PC ou outro usuário pede para conectar as contas de novo. As chaves de API do `config.toml` continuam em texto: não compartilhe a pasta `dados/` nem o `config.toml` (os dois já estão no `.gitignore`). Os logs escondem tokens.
 - O envio de molduras aceita só PNG de verdade (confere a assinatura e o tamanho declarado, até 8192 px de lado), com área transparente, e nunca grava por cima de outra moldura.
 - O whisper.cpp vem do GitHub oficial, e os modelos do Whisper e do detector de voz vêm do Hugging Face, todos com SHA-256 e tamanho conferidos. Outra `whisper_versao` sem hash conhecido é recusada: para usar outra, instale à mão e informe os caminhos.
+- A conta separada dos canais do YouTube (opcional) fica cifrada com a DPAPI, só com os cookies de `youtube.com` e `google.com`. Na hora de usar, eles são decifrados num arquivo temporário em `dados/tokens`, só durante a chamada do yt-dlp. O arquivo é relido (o yt-dlp grava ali os cookies renovados), cifrado de novo e apagado, também em erro e cancelamento. O conteúdo e o caminho dele nunca vão para o registro. A janela de conectar usa um perfil temporário, uma porta escolhida na hora e o DevTools só em `127.0.0.1`.
 - O yt-dlp e o Deno também vêm dos GitHubs oficiais com o SHA-256 conferido na primeira vez. Depois, o yt-dlp se atualiza pelo próprio `yt-dlp -U`, que confere a assinatura das versões novas; com `[ferramentas].ytdlp_atualizar = false` ele fica parado na versão baixada.
 - A atualização do AutoCortes só vem de `github.com/irwagner/autocortes`, ramo `main`: no clone, pelo `git` (só avanço sem conflito, nunca por cima de uma mudança sua); no ZIP, pelo `codeload.github.com`, sem gravar nada fora da pasta da instalação nem nas pastas que são suas.
 - As pastas de filmes e de dados não podem ficar vazias nem uma dentro da outra, e a varredura nunca entra numa pasta de dados (deste ou de outro perfil): o AutoCortes não recorta os próprios cortes.
@@ -888,6 +897,7 @@ Ciclo de vida no banco:
 - **Envio pelo navegador:** DevTools em vez de Selenium ou Playwright, para não trazer dependência nova; o cliente WebSocket vive em `websocket.py` (a biblioteca padrão do Python não tem um), e a narração usa o mesmo. A busca de elementos entra no shadow DOM, sem o que o YouTube Studio seria inalcançável. O arquivo vai pelo `DOM.setFileInputFiles` a partir do objeto, que funciona com o campo escondido e dentro do shadow DOM.
 - **Configuração:** gravada com `tomlkit`, que preserva os comentários do `config.toml`.
 - **Canais do YouTube:** yt-dlp em vez do feed RSS (que só traz os 15 vídeos mais novos e não diz a duração) ou da API de dados do YouTube (que pede chave e não baixa). O `.exe` dele é um lançador que abre outro processo: cancelar mata a árvore inteira (`taskkill /T`), senão o download continuava sozinho.
+- **Conta dos canais:** os cookies saem pelo `Storage.getCookies` do DevTools de um Chrome à parte, aberto só para isso. O `--cookies-from-browser` do yt-dlp leria o seu navegador pessoal, e o perfil das postagens está logado na conta do seu canal. Depois que a conta entra, a única aba vai para o `robots.txt` do YouTube e a janela fecha logo depois de exportar, como a wiki do yt-dlp recomenda: uma aba do YouTube aberta continua trocando os cookies, e os exportados deixariam de valer. O arquivo temporário é relido depois de cada chamada porque o yt-dlp grava nele os cookies que o YouTube renovou.
 - **Atualização:** troca a versão só com tudo fechado, porque o Python carrega partes do código na hora em que usa, e um processo com metade do código antigo e metade do novo quebraria no meio de uma edição ou de um envio. O fim do `AutoCortes.bat` fica numa linha só: o `cmd` lê o arquivo aos pedaços enquanto roda, e um `.bat` trocado no meio fazia ele executar o resto de outras linhas.
 - **Área segura:** textos só entre y=288 e y=1248 (em 1920), com no máximo 696 px de largura centrada, fora da barra superior, dos botões laterais e da descrição dos apps. As medidas vêm dos guias de anúncio do [Instagram](https://www.facebook.com/business/ads-guide/update/video/instagram-reels), do [TikTok](https://ads.tiktok.com/help/article/tiktok-auction-in-feed-ads) e do [YouTube](https://support.google.com/google-ads/answer/9128498?hl=en), porque não há guia oficial para posts comuns.
 
@@ -951,6 +961,12 @@ Não há framework de testes: cada rodada usa scripts temporários numa pasta pr
   - Edge sem janela (90 checagens, 0 erros no console, 14 capturas conferidas), com cliques e teclas de verdade: marcar pela caixa, pelo cartão e com Tab + Espaço, Selecionar todos com e sem filtro, trocar de aba e de filtro, o redesenho ao vivo, Esc, as confirmações (inclusive a de um corte esperando à mão em duas redes, que conta as duas tarefas), o resultado com falha e as telas de 1000 e 760 px.
   - No HDD, cada corte é gravado na hora: 200 cortes levaram de 17 a 25 s pela API e 199 levaram de 11 a 101 s pela tela, conforme a disputa pelo disco (um commit do SQLite medido em 150 a 236 ms).
 
+- **Canais do YouTube: ritmo, pausa que cresce e conta separada** (outubro de 2026), sem nenhum pedido ao YouTube nem ao Google:
+  - Testes fixos em `tests/test_canais.py` (47, em cerca de 50 s). Cobrem a pausa que cresce e zera (12, 24 e 48 h, e o registro antigo que estava no banco), a classificação dos erros, a linha do yt-dlp sem segredo e o formato Netscape. Com um yt-dlp falso: o ritmo entre as chamadas, o `--cookies` só na repetição depois do robô ou da idade e só com a conta, a conta no resto da olhada e nas seguintes, o arquivo temporário apagado no sucesso, no erro e no cancelamento, os cookies renovados guardados cifrados, a conta que cai (e, se ela cai ou é esquecida depois de um aviso de robô, a olhada para em vez de seguir sem ela), a conta que passou do robô e segue no resto da olhada mesmo quando aquele vídeo falha por outro motivo, e o registro sem o caminho nem os valores, com o log em DEBUG.
+  - A janela de conectar com o Chrome de verdade, sem janela, num perfil temporário, com o login e o `robots.txt` de um servidor local e os cookies plantados pelo DevTools. A entrada foi vista pelo `LOGIN_INFO`, o arquivo saiu só com `youtube.com` e `google.com` (sem `example.com` nem `notyoutube.com`) e a ida e volta pela DPAPI devolveu os mesmos cookies. O Chrome abriu em 0,5 s, da entrada da conta ao "conectada" foram de 6 a 10 s, e o perfil (443 arquivos) foi apagado em 0,15 s. Cancelar, o prazo e a janela fechada também apagam o perfil.
+  - API num painel de teste (58 checagens): o 409 da pausa e o `forcar`, conectar, a segunda janela que não abre, o `/saude` ocupado, a pausa que vira a janela com a conta, a olhada direto com a conta, cancelar, esquecer, o alerta da conta caída e a pausa de quando a própria conta levou o robô, que entrar de novo não desfaz. Numa rodada à parte (33 checagens), cancelar ou fechar o AutoCortes com a janela de conectar ainda abrindo fecha o Chrome e apaga o perfil temporário.
+  - Edge sem janela (33 checagens, 0 erros no console, 11 capturas conferidas): o cartão nas três situações, as confirmações, a janela de entrar com Cancelar, a pergunta do "Olhar agora", os alertas do Início e a tela de 760 px.
+
 </details>
 
 ## Pendências e próximos passos
@@ -968,6 +984,7 @@ Pendências conhecidas:
 - Os limites de texto do Bilibili (título 80, descrição 250, 10 tags de até 20 caracteres) e o caminho 影视 > 影视剪辑 não têm fonte oficial: conferir no primeiro envio. O Kwai não publica limite de legenda.
 - As métricas da Página do Facebook e dos posts feitos à mão não são lidas.
 - Editar de novo um corte com tarefa à mão apaga a cópia da pasta sincronizada; o vídeo novo fica no painel.
+- **Conta separada dos canais:** o login de verdade no Google e o que o YouTube faz com a conta não foram testados (o teste usou cookies plantados): se ele aceita os cookies, se pede verificação de novo e quanto tempo a conta dura.
 
 Melhorias levantadas na pesquisa, por prioridade:
 

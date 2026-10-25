@@ -507,6 +507,9 @@ body:has(.barra-salvar.visivel) .barra-selecao { bottom: 96px; }
 .canal .grupo-botoes { flex: none; }
 .linha-adicionar { display: flex; gap: 8px; margin-top: 4px; }
 .linha-adicionar input { flex: 1; min-width: 0; }
+.detalhe-ytdlp { margin: 4px 0 0; font: 12px/1.5 Consolas, "Cascadia Mono", monospace; color: var(--suave); word-break: break-word; }
+/* os avisos fixos do cartão "Conta para baixar", dentro do .aviso-rede (ao lado do ícone) */
+.lista-avisos { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
 @media (max-width: 760px) {
   .canal { flex-direction: column; }
   .canal .grupo-botoes { flex-wrap: wrap; }

@@ -246,7 +246,7 @@ function cfgAbaCanais() {
     secao("Programa de download"),
     campo({ chave: "ferramentas.ytdlp_atualizar", tipo: "switch", rotulo: "Atualizar o yt-dlp sozinho", ajuda: "O YouTube muda e versões antigas param de baixar. A cada 3 dias, e depois de um erro de versão velha, o yt-dlp oficial confere se há versão nova." }),
     campo({ chave: "ferramentas.ytdlp", tipo: "texto", rotulo: "yt-dlp próprio", placeholder: "vazio = o oficial, baixado sozinho", ajuda: "Caminho do seu yt-dlp.exe. Com ele, quem atualiza é você." }),
-    h`<p class="nota rodape-card">O yt-dlp precisa de um JavaScript para falar com o YouTube: uso o Node.js 22 ou mais novo, se estiver instalado, ou baixo o Deno (43 MB) na pasta dele. Não uso login, cookies nem proxy: se o YouTube pedir para confirmar que não é um robô, os downloads param por 12 h.</p>`,
+    h`<p class="nota rodape-card">O yt-dlp precisa de um JavaScript para falar com o YouTube: uso o Node.js 22 ou mais novo, se estiver instalado, ou baixo o Deno (43 MB) na pasta dele. Não uso proxy. Se o YouTube pedir para confirmar que não é um robô, os downloads param por 12 h, e por mais tempo se o aviso voltar (até 48 h). Com a conta separada (Filmes > Canais do YouTube), o pedido é repetido com ela em vez de parar.</p>`,
   ];
 }
 

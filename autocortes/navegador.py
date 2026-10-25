@@ -17,6 +17,7 @@ import base64
 import json
 import os
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -835,3 +836,150 @@ class Navegador:
             pass
         finally:
             ws.fechar()
+
+
+# ---------------------------------------------------------------- janela à parte
+
+def porta_livre(evitar=()) -> int:
+    """Uma porta livre em 127.0.0.1, fora das de `evitar` (as do painel e do navegador dos perfis)."""
+    proibidas = {int(p) for p in evitar if p}
+    for _ in range(20):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            porta = int(s.getsockname()[1])
+        if porta not in proibidas:
+            return porta
+    raise ErroNavegador("não achei uma porta livre", "bloqueio")
+
+
+class NavegadorTemporario(Navegador):
+    """Um Chrome à parte, com perfil e porta só dele: nunca a janela nem o perfil das postagens
+    (dados/chrome). A porta é escolhida na hora e o perfil é novo, então não há a conferência de
+    `nosso()`: quem responde na porta é o processo que eu abri."""
+
+    def __init__(self, cfg: Config, perfil: Path, parar: threading.Event | None = None, extras=(), evitar=()):
+        super().__init__(cfg, parar)
+        self.perfil = Path(perfil)
+        if self.perfil.resolve() == (cfg.pasta_dados / "chrome").resolve():
+            raise ErroNavegador("a janela à parte nunca usa o perfil das postagens", "bloqueio")
+        self.conf = dict(cfg["navegador"], visivel=True)  # você precisa ver a janela
+        self.extras = tuple(extras)  # os testes põem --headless=new aqui
+        self.porta = porta_livre({int(cfg["navegador"]["porta"]), int(cfg["painel"]["porta"]), *evitar})
+        self.base = f"http://127.0.0.1:{self.porta}"
+        self.processo: subprocess.Popen | None = None
+
+    @property
+    def vivo(self) -> bool:
+        return self.processo is not None and self.processo.poll() is None
+
+    def abrir(self, url: str = "about:blank", esperar_seg: float = 40) -> None:
+        """Abre a janela no endereço pedido (não faz nada se ela já estiver aberta e respondendo)."""
+        if self.vivo and self.responde():
+            return
+        programa = caminho_programa(self.cfg)
+        self.perfil.mkdir(parents=True, exist_ok=True)
+        argumentos = [
+            str(programa),
+            f"--remote-debugging-port={self.porta}",
+            "--remote-debugging-address=127.0.0.1",  # nunca 0.0.0.0
+            f"--user-data-dir={self.perfil}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-session-crashed-bubble",
+            "--restore-last-session=false",
+            *self.extras,
+            url,
+        ]
+        log.info("Abrindo uma janela à parte do navegador (%s), com o perfil temporário %s", programa.name,
+                 self.perfil)
+        try:
+            self.processo = subprocess.Popen(
+                argumentos, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+            )
+        except OSError as e:
+            raise ErroNavegador(f"não consegui abrir o navegador ({e})", "bloqueio") from e
+        limite = time.monotonic() + esperar_seg
+        while time.monotonic() < limite:
+            if self.parar is not None and self.parar.is_set():
+                raise ErroNavegador("interrompido pelo usuário")
+            if self.processo.poll() is not None:
+                raise ErroNavegador("o navegador fechou logo depois de abrir", "bloqueio")
+            if self.responde():
+                return
+            time.sleep(0.5)
+        raise ErroNavegador(f"o navegador não respondeu na porta {self.porta}", "bloqueio")
+
+    def comando(self, metodo: str, _prazo: float = 15, **params) -> dict:
+        """Um comando do CDP no alvo do navegador (não de uma aba), como o Storage.getCookies."""
+        ws = _Websocket(self._ws_navegador(), timeout=_prazo)
+        try:
+            ws.enviar(json.dumps({"id": 1, "method": metodo, "params": params}))
+            limite = time.monotonic() + _prazo
+            while time.monotonic() < limite:
+                try:
+                    msg = json.loads(ws.receber())
+                except ValueError:
+                    continue
+                if msg.get("id") != 1:
+                    continue  # evento
+                if "error" in msg:
+                    erro = msg["error"] or {}
+                    raise ErroNavegador(f"{metodo}: {erro.get('message') or erro}")
+                return msg.get("result") or {}
+            raise ErroNavegador(f"o navegador não respondeu a {metodo} em {int(_prazo)} s", conexao=True)
+        finally:
+            ws.fechar()
+
+    def cookies(self) -> list[dict]:
+        """Todos os cookies do perfil desta janela."""
+        return self.comando("Storage.getCookies").get("cookies") or []
+
+    def paginas(self) -> list[dict]:
+        try:
+            lista = requests.get(f"{self.base}/json/list", timeout=5).json()
+        except (requests.RequestException, ValueError) as e:
+            raise ErroNavegador(f"não consegui falar com o navegador ({e})", conexao=True) from e
+        return [p for p in lista if isinstance(p, dict) and p.get("type") == "page" and p.get("id")]
+
+    def so_uma_aba(self, url: str, segundos: float = 30) -> None:
+        """Deixa uma aba só, no endereço pedido (fecha as outras)."""
+        paginas = self.paginas()
+        if not paginas:
+            aba = self.nova_aba()
+            try:
+                aba.navegar(url, segundos)
+            finally:
+                aba.fechar()
+            return
+        for outra in paginas[1:]:
+            try:
+                requests.get(f"{self.base}/json/close/{outra['id']}", timeout=5)
+            except requests.RequestException:
+                pass
+        ws = _Websocket(f"ws://127.0.0.1:{self.porta}/devtools/page/{paginas[0]['id']}", timeout=segundos)
+        try:
+            Aba(ws, self.parar, prazo=segundos).navegar(url, segundos)
+        finally:
+            ws.fechar()
+
+    def encerrar(self) -> None:
+        """Fecha a janela (Browser.close) e espera o processo acabar; se ele não acabar, mata a árvore."""
+        if self.processo is None:
+            return
+        super().encerrar()
+        try:
+            self.processo.wait(timeout=10)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.processo.pid)], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
+            self.processo.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            log.warning("Navegador: a janela à parte (porta %s) não fechou", self.porta)

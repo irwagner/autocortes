@@ -163,6 +163,15 @@ def _encerrar(proc: subprocess.Popen) -> None:
             pass
 
 
+def _para_log(cmd: list[str]) -> str:
+    """A linha do comando para o registro, sem o caminho do arquivo de cookies da conta (--cookies)."""
+    partes = list(cmd)
+    for i in range(len(partes) - 1):
+        if partes[i] == "--cookies":
+            partes[i + 1] = "<cookies da conta>"
+    return subprocess.list2cmdline(partes)
+
+
 def executar(
     cmd: Sequence,
     *,
@@ -175,7 +184,7 @@ def executar(
     timeout: float | None = None,
 ) -> ResultadoProcesso:
     cmd = [str(c) for c in cmd]
-    log.debug("Executando: %s", subprocess.list2cmdline(cmd))
+    log.debug("Executando: %s", _para_log(cmd))
     kwargs = {}
     if os.name != "nt" and baixa_prioridade:
         kwargs["preexec_fn"] = lambda: os.nice(10)

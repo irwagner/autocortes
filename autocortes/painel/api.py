@@ -15,8 +15,8 @@ from datetime import date, datetime, time as dtime
 from pathlib import Path
 from typing import Any, Callable
 
-from .. import (__version__, agenda, analise, canais, config, criacao, edicao, ferramentas, gravador, ia, metricas,
-                modelos_visuais, perfis, planejador, roteiro, voz)
+from .. import (__version__, agenda, analise, canais, canais_conta, config, criacao, edicao, ferramentas, gravador,
+                ia, metricas, modelos_visuais, perfis, planejador, roteiro, voz)
 from ..config import ENVIOS, PLATAFORMAS, ROTULOS, ErroConfig
 from ..midia import ErroMidia, Interrompido, base_ffmpeg, executar
 from ..navegador import ErroNavegador
@@ -218,13 +218,17 @@ def tarefas_rodando() -> list[str]:
 
 def ocupado(painel) -> bool:
     """Este processo está no meio de algo que não pode ser cortado: editando, analisando, criando,
-    postando, baixando dos canais, gravando um roteiro, conectando uma conta ou numa tarefa do painel.
-    Vai no /saude, e a atualização automática espera todos os perfis ficarem livres."""
+    postando, baixando dos canais, gravando um roteiro, conectando uma conta (de uma rede, ou a janela
+    da conta separada dos canais) ou numa tarefa do painel. Vai no /saude, e a atualização automática
+    espera todos os perfis ficarem livres."""
     if TRAVA_EDICAO.locked() or TRAVA_ANALISE.locked() or canais.TRAVA.locked():
         return True
     if any(trava.locked() for trava in TRAVAS_REDE.values()) or tarefas_rodando():
         return True
     if getattr(painel, "gravacoes", None):
+        return True
+    conta = getattr(painel, "conta_canais", None)
+    if conta is not None and conta.ativa:
         return True
     return any(s.estado in ("aguardando", "escolher") for s in getattr(painel, "logins", {}).values())
 
@@ -468,12 +472,19 @@ def _alertas(ctx: Contexto, filmes: dict, cortes: dict, cobertura: dict, redes: 
     problema = edicao.problema_moldura(cfg)
     if problema:
         add("erro", f"{problema}: os cortes estão saindo sem ela. Escolha outra no Estúdio.", "estudio")
+    conta_canais = canais_conta.publico(cfg)
+    if conta_canais["situacao"] == "caiu":  # mesmo com o "Baixar sozinho" desligado: o Olhar agora usa a conta
+        add("aviso", f"A conta separada dos canais do YouTube precisa entrar de novo: "
+            f"{conta_canais['motivo'] or 'os cookies dela não servem mais'}. "
+            "Entre de novo em Filmes > Canais do YouTube.", "filmes?aba=canais")
     if cfg["canais"]["ativo"]:
-        pausa_canais = canais.pausa(ctx.conn)
+        pausa_canais = canais.pausa(ctx.conn, cfg)
         if pausa_canais:
             ate = datetime.fromtimestamp(float(pausa_canais["ate"])).strftime("%d/%m %H:%M")
-            add("aviso", f"Os downloads dos canais do YouTube estão pausados até {ate}: {pausa_canais.get('motivo')}",
-                "filmes?aba=canais")
+            texto = f"Os downloads dos canais do YouTube estão pausados até {ate}: {pausa_canais['motivo']}."
+            if pausa_canais["tipo"] == "robo" and conta_canais["situacao"] == "nenhuma":
+                texto += " Para não depender disso, conecte uma conta separada em Filmes > Canais do YouTube (opcional)."
+            add("aviso", texto, "filmes?aba=canais")
     return alertas
 
 
@@ -1888,13 +1899,22 @@ def _canais_json(ctx: Contexto) -> dict:
         "regras": {k: cfg["canais"][k] for k in _REGRAS_CANAIS},
         "verificado_em": canais.ultima_verificacao(conn),
         "proxima": canais.proxima_verificacao(cfg, conn),
-        "pausa": canais.pausa(conn),
+        "pausa": canais.pausa(conn, cfg),
+        "so_conta": canais.janela_so_conta(conn, cfg),
+        "conta": canais_conta.publico(cfg),
+        "conexao": _conexao_conta(ctx.painel),
         "rodando": canais.TRAVA.locked(),
         "motor": ctx.painel.motor.rodando,
         "na_fila": canais.na_fila(conn),
         "pasta": str(canais.pasta_canais(cfg)),
         "ferramenta": ferramentas.situacao_ytdlp(cfg),
     }
+
+
+def _conexao_conta(painel) -> dict | None:
+    """A janela de conectar a conta separada (a última aberta), ou None."""
+    sessao = getattr(painel, "conta_canais", None)
+    return sessao.publico() if sessao is not None else None
 
 
 def _canal(conn: sqlite3.Connection, canal_id) -> sqlite3.Row:
@@ -1936,7 +1956,9 @@ def acao_canal(ctx: Contexto, canal_id):
 
 @rota("POST", r"/canais/verificar")
 def verificar_canais(ctx: Contexto):
-    """Olha os canais agora (todos os ativos, ou um), em segundo plano. Passa por cima da pausa."""
+    """Olha os canais agora (todos os ativos, ou um), em segundo plano. Durante a pausa depois de um
+    aviso do YouTube, responde 409 (motivo "pausa"): só passa com {"forcar": true}, que o painel manda
+    depois de perguntar (insistir costuma estender o bloqueio)."""
     _exigir(not canais.TRAVA.locked(), "Os canais já estão sendo olhados agora", 409)
     so_canal = _int(ctx.corpo.get("canal")) if ctx.corpo.get("canal") not in (None, "") else None
     if so_canal is not None:
@@ -1944,6 +1966,14 @@ def verificar_canais(ctx: Contexto):
     else:
         _exigir(ctx.conn.execute("SELECT 1 FROM canais WHERE ativo=1 LIMIT 1").fetchone() is not None,
                 "Nenhum canal ativo para olhar")
+    forcar = ctx.corpo.get("forcar") is True
+    p = canais.pausa(ctx.conn, ctx.cfg)
+    if p and not forcar:
+        ate = datetime.fromtimestamp(float(p["ate"])).strftime("%d/%m às %H:%M")
+        raise ErroHttp(409, f"Os downloads dos canais estão parados até {ate}: {p['motivo']}", {
+            "motivo": "pausa", "ate": p["ate"], "desde": p["desde"], "tipo": p["tipo"], "aviso": p["motivo"],
+            "detalhe": p["detalhe"], "vezes": p["vezes"],
+        })
     painel = ctx.painel
 
     def trabalho():
@@ -1951,7 +1981,7 @@ def verificar_canais(ctx: Contexto):
             return
         conn = painel.conectar()
         try:
-            resumo = canais.verificar(painel.cfg, conn, painel.encerrar, so_canal=so_canal, forcar=True,
+            resumo = canais.verificar(painel.cfg, conn, painel.encerrar, so_canal=so_canal, forcar=forcar,
                                       ao_baixar=painel.motor.pedir_varredura)
             if resumo["baixados"] and not painel.motor.rodando:
                 # com o motor desligado ninguém varre a pasta: o vídeo já aparece na lista de filmes
@@ -1981,6 +2011,77 @@ def acao_download(ctx: Contexto, download_id):
         conn.execute("DELETE FROM downloads WHERE id=?", (d["id"],))
     else:
         raise ErroHttp(400, "Ação desconhecida")
+    return _canais_json(ctx)
+
+
+# a conta separada para baixar (opcional): só quando o YouTube pede, por robô ou idade
+_TRAVA_CONTA_CANAIS = threading.Lock()  # dois cliques em "Entrar" não abrem duas janelas
+
+
+@rota("GET", r"/canais/conta")
+def ver_conta_canais(ctx: Contexto):
+    return {"conta": canais_conta.publico(ctx.cfg),
+            "conexao": _conexao_conta(ctx.painel) or {"estado": "nenhum", "mensagem": "", "desde": None}}
+
+
+@rota("POST", r"/canais/conta/conectar")
+def conectar_conta_canais(ctx: Contexto):
+    """Abre um Chrome à parte, com perfil novo e temporário, no login do Google. Com uma janela já
+    aberta, devolve a mesma (não abre outra)."""
+    painel = ctx.painel
+    with _TRAVA_CONTA_CANAIS:
+        atual = painel.conta_canais
+        if atual is not None and atual.ativa:
+            return atual.publico()
+        if atual is not None and atual.thread is not None and atual.thread.is_alive():
+            # a janela anterior já foi cancelada, mas ainda está fechando: o perfil temporário é o
+            # mesmo, e o fim dela apagaria a pasta da janela nova
+            atual.thread.join(20)
+        sessao = canais_conta.Conexao(painel.cfg, ao_conectar=lambda: _depois_de_conectar(painel))
+        # já no "abrindo": o fechamento do AutoCortes a cancela e o api.ocupado a conta
+        painel.conta_canais = sessao
+        try:
+            sessao.iniciar()
+        except BaseException as e:
+            if painel.conta_canais is sessao:
+                painel.conta_canais = atual  # a que não abriu não fica no lugar da anterior
+            if isinstance(e, (ErroNavegador, canais_conta.ErroConta)):
+                raise ErroHttp(400, str(e)) from e
+            raise
+    return sessao.publico()
+
+
+def _depois_de_conectar(painel) -> None:
+    """Com a conta conectada, a pausa do aviso de robô vira a janela "só com a conta"."""
+    conn = painel.conectar()
+    try:
+        if canais.conta_reconectada(conn):
+            log.info("Canais: com a conta separada, a pausa do aviso de robô virou a janela em que as olhadas "
+                     "vão direto com ela")
+        if canais.pausa(conn, painel.cfg) is None:
+            # o "conecte uma conta" / "precisa entrar de novo" do canal já não vale até a próxima olhada
+            conn.execute("UPDATE canais SET erro=NULL WHERE erro LIKE '%conecte uma conta separada%' "
+                         "OR erro LIKE '%conta separada precisa entrar de novo%'")
+    finally:
+        conn.close()
+
+
+@rota("POST", r"/canais/conta/cancelar")
+def cancelar_conta_canais(ctx: Contexto):
+    sessao = ctx.painel.conta_canais
+    if sessao is not None:
+        sessao.cancelar()
+    return {"ok": True}
+
+
+@rota("POST", r"/canais/conta/esquecer")
+def esquecer_conta_canais(ctx: Contexto):
+    """Apaga os cookies guardados e o que tiver sobrado da janela temporária (a conta continua no Google)."""
+    sessao = ctx.painel.conta_canais
+    if sessao is not None:
+        sessao.cancelar()
+    canais_conta.esquecer(ctx.cfg)
+    log.info("Canais: conta separada esquecida pelo painel")
     return _canais_json(ctx)
 
 

@@ -94,6 +94,8 @@ class Painel:
         self.encerrar = threading.Event()
         self.logins: dict[str, api.SessaoLogin] = {}
         self.gravacoes: dict = {}  # rede -> Gravacao em andamento (aprender a postar)
+        # canais_conta.Conexao (Filmes > Canais do YouTube > Entrar numa conta separada)
+        self.conta_canais = None
         self.trava_config = threading.RLock()  # as rotas dos modelos seguram a trava e salvam o config dentro
         self.reinicio: dict[str, object] = {}  # "secao.chave" -> valor salvo que vale ao reiniciar
         self.hosts = {f"127.0.0.1:{porta}", f"localhost:{porta}"}
@@ -454,6 +456,8 @@ def iniciar_painel(cfg: Config, abrir_navegador: bool = True, iniciar_motor: boo
             sessao.cancelar()
         for gravacao in list(painel.gravacoes.values()):
             gravacao.cancelar()
+        if painel.conta_canais is not None:
+            painel.conta_canais.cancelar()  # fecha a janela e apaga o perfil temporário
         motor.parar()
         restantes = api.esperar_tarefas(ESPERA_TAREFAS_SEG)
         if restantes:

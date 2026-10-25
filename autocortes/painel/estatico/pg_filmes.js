@@ -315,7 +315,17 @@ function canSituacaoHtml(c) {
   if (c.verificado_em) itens.push(`última ${fmtRelativo(c.verificado_em)}`);
   itens.push(`${plural(c.na_fila, "vídeo baixado esperando", "vídeos baixados esperando")} a análise (no máximo ${c.regras.max_na_fila})`);
   linhas.push(h`<p class="nota">${itens.join(" · ")}</p>`);
-  if (c.pausa) linhas.push(h`<p class="aviso-inline">${ic("alerta")}Pausado até ${fmtQuando(c.pausa.ate)}: ${c.pausa.motivo}</p>`);
+  if (c.pausa) {
+    const p = c.pausa;
+    linhas.push(h`<p class="aviso-inline">${ic("alerta")}Pausado até ${fmtQuando(p.ate)}: ${p.motivo}${p.vezes > 1 ? ` (${p.vezes}º aviso seguido)` : ""}</p>`);
+    if (p.detalhe) linhas.push(h`<p class="detalhe-ytdlp">Mensagem do yt-dlp: ${p.detalhe}</p>`);
+  }
+  if (c.so_conta) {
+    // o aviso foi sem a conta e a conta passou: até o fim, nada para
+    const j = c.so_conta;
+    linhas.push(h`<p class="aviso-inline">${ic("info")}O YouTube pediu verificação sem a conta às ${canHorario(j.desde)}. Até ${canHorario(j.ate)} eu baixo direto com a conta separada.</p>`);
+    if (j.detalhe) linhas.push(h`<p class="detalhe-ytdlp">Mensagem do yt-dlp: ${j.detalhe}</p>`);
+  }
   const f = c.ferramenta || {};
   if (!f.ytdlp) {
     linhas.push(h`<p class="nota">Na primeira olhada eu baixo o yt-dlp (18 MB, conferido pelo SHA-256)${f.js ? "" : " e o Deno (43 MB), que ele usa para falar com o YouTube"}.</p>`);
@@ -385,6 +395,7 @@ function canCorpoHtml(c) {
       <div class="linha-adicionar"><input type="url" id="can-url" placeholder="https://www.youtube.com/@canal" aria-label="Endereço do canal no YouTube" spellcheck="false" autocomplete="off"><button class="btn primario" data-acao="can-adicionar">${ic("mais")}Adicionar</button></div>
       <div class="lista-canais" id="can-lista">${canListaHtml(c)}</div>
     </div>
+    <div id="can-conta">${canContaHtml(c)}</div>
     <div class="card">
       <div class="card-topo"><h3>${ic("baixar")}Downloads</h3></div>
       <p class="nota">Os mais recentes primeiro. Um vídeo nunca é baixado duas vezes.</p>
@@ -406,6 +417,7 @@ async function canCarregar(desenhar = true) {
   montarSeMudou($("#can-situacao"), canSituacaoHtml(c));
   montarSeMudou($("#can-todos"), canBotaoTodos(c));
   montarSeMudou($("#can-lista"), canListaHtml(c));
+  montarSeMudou($("#can-conta"), canContaHtml(c));
   montarSeMudou($("#can-downloads"), canDownloadsHtml(c));
   return c;
 }
@@ -439,9 +451,28 @@ App.acoes["can-adicionar"] = async (el) => {
   toast(valor("canais.ativo") ? "Canal adicionado. Ele é olhado na próxima volta, ou use Olhar agora." : "Canal adicionado. Ligue \"Baixar sozinho\" para ele ser olhado de tempos em tempos.", "ok", 6000);
 };
 
+/** A hora, e o dia quando não é hoje ("18:01 de amanhã"). */
+function canHorario(ts) {
+  const dia = rotuloDia(ts);
+  return dia === "hoje" ? fmtHora(ts) : `${fmtHora(ts)} de ${dia}`;
+}
+
+/** A pergunta do "Olhar agora" durante a pausa (o 409 de motivo "pausa" do servidor). */
+function canTextoPausa(d) {
+  if (d.tipo === "limite") return `O YouTube limitou os pedidos às ${canHorario(d.desde)}, e os downloads estão parados até ${canHorario(d.ate)}. Tentar agora costuma estender o bloqueio. Tentar mesmo assim?`;
+  return `O YouTube pediu verificação às ${canHorario(d.desde)}, e os downloads estão parados até ${canHorario(d.ate)}. Tentar agora costuma estender o bloqueio. Tentar mesmo assim?`;
+}
+
 App.acoes["can-verificar"] = async (el) => {
   const corpo = el.dataset.canal ? { canal: Number(el.dataset.canal) } : {};
-  await ocupado(el, () => post("/canais/verificar", corpo));
+  try {
+    await ocupado(el, () => post("/canais/verificar", corpo));
+  } catch (e) {
+    if (!(e instanceof ErroApi) || e.status !== 409 || e.dados.motivo !== "pausa") throw e;
+    const ok = await confirmar({ titulo: "Os downloads estão parados", texto: canTextoPausa(e.dados), botao: "Tentar mesmo assim", cancelar: "Esperar", perigo: true });
+    if (!ok) return;
+    await ocupado(el, () => post("/canais/verificar", { ...corpo, forcar: true }));
+  }
   toast("Olhando os canais em segundo plano. O que for baixado aparece aqui e na aba Na pasta.", "info", 6000);
   await canCarregar();
   atualizarEstado();
@@ -465,6 +496,125 @@ App.acoes["can-download"] = async (el) => {
   await canCarregar();
   // o pulado volta a passar pelas regras: só é baixado se servir nelas agora (você pode ter mudado a duração)
   toast(d && d.status === "pulado" ? "Ele volta a ser olhado na próxima vez, com as regras de agora" : "Ele volta a ser baixado na próxima olhada do canal", "info", 6000);
+};
+
+/* ------------------------------------------------------------ conta separada para baixar (opcional) */
+
+// a janela "Entrar na conta separada" aberta agora. sessao numera cada uma: a janela antiga, ao
+// fechar, não cancela a conexão que acabou de começar
+const CanConta = { ativo: false, timer: null, sessao: 0 };
+
+/** dd/mm */
+function canData(ts) {
+  const d = new Date(ts * 1000);
+  return `${dois(d.getDate())}/${dois(d.getMonth() + 1)}`;
+}
+
+function canContaBadge(conta) {
+  const s = conta && conta.situacao;
+  return badge(s === "ok" ? ["Conectada", "ok"] : s === "caiu" ? ["Precisa entrar de novo", "erro"] : ["Sem conta", "neutro"]);
+}
+
+function canContaHtml(c) {
+  const conta = (c && c.conta) || { situacao: "nenhuma" };
+  let situacao;
+  if (conta.situacao === "ok") {
+    situacao = h`<p class="nota">Conectada em ${canData(conta.conectada_em)}.${conta.usada_em ? ` Usada pela última vez ${fmtRelativo(conta.usada_em)}.` : " Ainda não precisou ser usada."}</p>`;
+  } else if (conta.situacao === "caiu") {
+    situacao = h`<p class="aviso-inline erro">${ic("erro")}Precisa entrar de novo: ${conta.motivo || "os cookies dela não servem mais"}.</p>`;
+  } else {
+    situacao = h`<p class="nota">Nenhuma conta conectada. Sem ela, quando o YouTube pedir verificação, os downloads param por um tempo.</p>`;
+  }
+  return h`<div class="card">
+      <div class="card-topo"><h3>${ic("chave")}Conta para baixar (opcional)</h3>${canContaBadge(conta)}</div>
+      <p class="nota">Só quando o YouTube pedir para confirmar que não é um robô, ou quando um vídeo tiver restrição de idade, eu repito o mesmo pedido com esta conta. Cada pedido vai primeiro sem ela.</p>
+      ${situacao}
+      <div class="aviso-rede">${ic("alerta")}<ul class="lista-avisos">
+        <li>Use uma conta do Google só para isso, nunca a do canal onde você posta.</li>
+        <li>O Google pode suspender essa conta.</li>
+        <li>Baixar continua contra os termos do YouTube.</li>
+        <li>Só canais seus ou que autorizam cortes.</li>
+      </ul></div>
+      <div class="linha-botoes">
+        <button class="btn${conta.situacao === "ok" ? "" : " primario"}" data-acao="can-conta-entrar">${ic("chave")}Entrar numa conta separada</button>
+        ${conta.situacao !== "nenhuma" ? h`<button class="btn fantasma" data-acao="can-conta-esquecer">${ic("lixo")}Esquecer a conta</button>` : ""}
+      </div>
+    </div>`;
+}
+
+function canPararConexao() {
+  CanConta.ativo = false;
+  clearTimeout(CanConta.timer);
+}
+
+function canConexaoErroHtml(s) {
+  return h`<div class="login-espera">${ic("erro", "grande")}<p class="erro-texto">${s.mensagem}</p><div class="acoes-modal"><button class="btn primario" data-acao="fechar-modal">Fechar</button></div></div>`;
+}
+
+/** Acompanha a janela de conectar até a conta entrar, passar o prazo, dar erro ou ser cancelada. */
+async function canAcompanharConexao(sessao) {
+  if (!CanConta.ativo || CanConta.sessao !== sessao) return;
+  let r;
+  try {
+    r = await api("/canais/conta");
+  } catch (e) {
+    if (CanConta.ativo && CanConta.sessao === sessao) CanConta.timer = setTimeout(() => canAcompanharConexao(sessao), 3000);
+    return;
+  }
+  if (!CanConta.ativo || CanConta.sessao !== sessao) return;
+  const s = r.conexao || {};
+  if (s.estado === "ok") {
+    canPararConexao();
+    fecharModal();
+    toast("Conta separada conectada. Ela só é usada quando o YouTube pedir.", "ok", 7000);
+    await canCarregar();
+    atualizarEstado();
+  } else if (s.estado === "erro" || s.estado === "prazo") {
+    canPararConexao();
+    montar(corpoModal(), canConexaoErroHtml(s));
+  } else if (["abrindo", "aguardando", "salvando"].includes(s.estado)) {
+    const texto = $("#can-conexao-texto");
+    if (texto && s.estado === "salvando") texto.textContent = s.mensagem;
+    CanConta.timer = setTimeout(() => canAcompanharConexao(sessao), 2000);
+  } else {
+    canPararConexao(); // cancelado, ou nenhuma janela
+  }
+}
+
+App.acoes["can-conta-entrar"] = async (el) => {
+  const ok = await confirmar({
+    titulo: "Entrar numa conta separada?",
+    texto: "Vou abrir uma janela do Chrome com um perfil novo e temporário. Use uma conta do Google só para isso, nunca a do canal onde você posta: o Google pode suspender essa conta. Baixar continua contra os termos do YouTube, então use só canais seus ou que autorizam cortes. Quando a conta entrar, a janela fecha sozinha e eu guardo só os cookies do YouTube e do Google, cifrados.",
+    botao: "Abrir a janela",
+  });
+  if (!ok) return;
+  await ocupado(el, () => post("/canais/conta/conectar"));
+  const sessao = ++CanConta.sessao;
+  CanConta.ativo = true;
+  abrirModal({
+    titulo: "Entrar na conta separada",
+    largura: 520,
+    corpo: h`<div class="login-espera"><span class="giro"></span><p id="can-conexao-texto">Entre na conta separada na janela que abriu. Esta janela fecha sozinha quando a conta entrar (até 10 min).</p><p class="nota">Use uma conta do Google só para isso, nunca a do canal onde você posta.</p><div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Cancelar</button></div></div>`,
+    aoFechar: () => {
+      if (CanConta.sessao !== sessao) return; // outra janela já tomou o lugar desta
+      if (CanConta.ativo) post("/canais/conta/cancelar").then(() => canCarregar()).catch(() => {});
+      canPararConexao();
+    },
+  });
+  CanConta.timer = setTimeout(() => canAcompanharConexao(sessao), 2000);
+};
+
+App.acoes["can-conta-esquecer"] = async (el) => {
+  const ok = await confirmar({
+    titulo: "Esquecer a conta separada?",
+    texto: "Eu apago os cookies guardados e o que tiver sobrado da janela temporária. A conta continua existindo no Google. Sem ela, quando o YouTube pedir verificação, os downloads param por um tempo.",
+    botao: "Esquecer a conta",
+    perigo: true,
+  });
+  if (!ok) return;
+  PgFilmes.canais = await ocupado(el, () => post("/canais/conta/esquecer"));
+  await canCarregar();
+  toast("Conta esquecida");
 };
 
 /* ------------------------------------------------------------ página */
