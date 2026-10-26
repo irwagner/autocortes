@@ -466,9 +466,21 @@ def _alertas(ctx: Contexto, filmes: dict, cortes: dict, cobertura: dict, redes: 
             add("aviso", f"Conteúdo para {quanto} de postagem. Adicione mais filmes ou temas na Criação.", "criacao")
         else:
             add("aviso", f"Conteúdo para {quanto} de postagem. Adicione mais filmes.", "filmes")
-    if cfg["transcricao"]["fonte"] != "nenhuma" and not ferramentas.caminho_modelo(cfg).exists():
-        add("info", f"O modelo de transcrição '{cfg['transcricao']['modelo']}' será baixado na primeira análise.",
-            "config?aba=transcricao")
+    if cfg["transcricao"]["fonte"] != "nenhuma":
+        runtime = ferramentas.runtime_whisper(cfg)
+        falha = _falha_runtime(ctx)
+        if not runtime["pronto"]:
+            add("erro", f"Falta o Microsoft Visual C++ x64 ({', '.join(runtime['faltando'])}): sem ele o Whisper e o "
+                "detector de voz não abrem, e os filmes novos esperam na fila de análise. Veja como instalar em "
+                "Configurações > Transcrição.", "config?aba=transcricao")
+        elif falha:
+            add("erro", f"O Windows não abriu o Whisper ou o detector de voz (código 0x{falha['codigo']:08X}): os "
+                "filmes novos esperam e eu tento de novo mais tarde. Veja o que fazer em Configurações > Transcrição.",
+                "config?aba=transcricao")
+        elif not ferramentas.caminho_modelo(cfg).exists():
+            # o download espera o Visual C++: o aviso só aparece quando ele já está no lugar
+            add("info", f"O modelo de transcrição '{cfg['transcricao']['modelo']}' será baixado na primeira análise.",
+                "config?aba=transcricao")
     problema = edicao.problema_moldura(cfg)
     if problema:
         add("erro", f"{problema}: os cortes estão saindo sem ela. Escolha outra no Estúdio.", "estudio")
@@ -581,6 +593,15 @@ def pausar_agenda(ctx: Contexto):
 
 # ---------------------------------------------------------------- configuração
 
+def _falha_runtime(ctx: Contexto) -> dict | None:
+    """O Windows recusou abrir o Whisper ou o detector de voz (código de saída) e o motor espera."""
+    motor = ctx.painel.motor
+    produtor = motor.produtor if motor.rodando else None
+    falha = produtor.falha_runtime() if produtor is not None else None
+    # a falha sem código é a falta das DLLs, que o runtime_whisper já mostra sozinho
+    return falha if falha and falha["codigo"] is not None else None
+
+
 def _meta_config(ctx: Contexto) -> dict:
     cfg = ctx.cfg
     modelos = {
@@ -597,6 +618,8 @@ def _meta_config(ctx: Contexto) -> dict:
         "pastas": {"filmes": str(cfg.pasta_filmes), "dados": str(cfg.pasta_dados), "cortes": str(cfg.pasta_cortes)},
         "modelos": modelos,
         "whisper_instalado": cli.exists() and vad.exists(),
+        # Visual C++ x64 do Whisper: as DLLs que faltam e o "não abriu" do motor (falha)
+        "whisper_runtime": {**ferramentas.runtime_whisper(cfg), "falha": _falha_runtime(ctx)},
         "fontes": sistema.fontes_disponiveis(cfg),
         "inicializacao": sistema.inicializacao_ativa(),
         # a entrada da inicialização é de outra pasta (instalação movida): ligar de novo corrige
@@ -1008,6 +1031,8 @@ def baixar_ferramentas(ctx: Contexto):
     modelo = str(ctx.corpo.get("modelo") or cfg["transcricao"]["modelo"])
     _exigir(bool(re.fullmatch(r"[A-Za-z0-9._-]+", modelo)), "Modelo inválido")
     _exigir(not any(t.name == "baixar" and t.is_alive() for t in threading.enumerate()), "Já existe um download em andamento", 409)
+    runtime = ferramentas.runtime_whisper(cfg)  # sem o Visual C++, o whisper.cpp não abriria: nem baixa
+    _exigir(runtime["pronto"], runtime["mensagem"], 409)
 
     def trabalho():
         try:

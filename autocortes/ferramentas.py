@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import time
 import zipfile
 from pathlib import Path
@@ -49,9 +50,43 @@ ARQUIVO_VAD = ("2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987
 # todo modelo do whisper.cpp (e o do VAD) começa com a marca do formato GGML
 MARCA_GGML = b"lmgg"
 
+# O pacote oficial x64 do Whisper depende do runtime do Visual C++, que não vem no ZIP.
+# Link permanente publicado pela Microsoft: latest-supported-vc-redist.
+URL_VISUAL_CPP = "https://aka.ms/vc14/vc_redist.x64.exe"
+# Tirada da tabela de importação do b5130 (out/2026): o whisper-cli, o detector de voz, whisper.dll,
+# ggml.dll, ggml-base.dll e os ggml-cpu-* (que o ggml carrega na hora) importam estas quatro, todos
+# em x64. O vcomp140 (OpenMP) vem do ggml-base e dos ggml-cpu-*. Nenhum importa concrt140 nem
+# msvcp140_atomic_wait. Outra whisper_versao pede medir de novo.
+DLLS_VISUAL_CPP = ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll", "vcomp140.dll")
+MAQUINA_X64 = 0x8664
+MAQUINA_32_BITS = 0x14C
+# Código de saída de um programa que o Windows nem chegou a abrir. O Python recebe o código sem
+# sinal: 3221225781 = 0xC0000135 (medido com o carregador de verdade e com um .bat que faz
+# "exit /b -1073741515").
+CODIGOS_DLL = {
+    0xC0000135: "falta uma DLL",
+    0xC000007B: "uma DLL é de outra arquitetura (de 32 bits no lugar da de 64)",
+    0xC0000139: "uma DLL é antiga demais (falta uma função nela)",
+}
+# DLLs do próprio whisper.cpp, que vêm no ZIP, ao lado dos executáveis
+DLLS_PACOTE_WHISPER = ("whisper.dll", "ggml.dll", "ggml-base.dll")
+
 
 class ErroDownload(ErroMidia):
     """Falha de rede ao baixar ferramenta/modelo: vale tentar de novo mais tarde."""
+
+
+class ErroRuntimeWhisper(ErroMidia):
+    """Falta (ou o Windows não abre) o Microsoft Visual C++ x64 do Whisper: é do PC, não do filme.
+
+    O filme volta para a fila sem gastar tentativas e espera (`produtor.Produtor.espera_runtime`).
+    `codigo` é o código de saída sem sinal (0xC0000135...), ou None quando veio da conferência prévia.
+    """
+
+    def __init__(self, mensagem: str, *, codigo: int | None = None, faltando=()):
+        super().__init__(mensagem)
+        self.codigo = codigo
+        self.faltando = list(faltando)
 
 
 def baixar(url: str, destino: Path, rotulo: str) -> None:
@@ -110,9 +145,107 @@ def caminhos_whisper(cfg: Config) -> tuple[Path, Path]:
     return cli, vad
 
 
+def _pasta_runtime_windows() -> Path | None:
+    if os.name != "nt" or platform.machine().lower() not in ("amd64", "x86_64"):
+        return None
+    # Um Python de 32 bits vê SysWOW64 no lugar de System32. O Whisper baixado é x64.
+    pasta = "Sysnative" if sys.maxsize < 2**32 and os.environ.get("PROCESSOR_ARCHITEW6432") else "System32"
+    return Path(os.environ.get("SystemRoot", r"C:\Windows")) / pasta
+
+
+def _maquina_pe(caminho: Path) -> int | None:
+    """A máquina do cabeçalho PE (0x8664 = x64, 0x14C = 32 bits), lendo uns 70 bytes. None se não for PE."""
+    try:
+        with open(caminho, "rb") as f:
+            dos = f.read(64)
+            if len(dos) < 64 or dos[:2] != b"MZ":
+                return None
+            f.seek(int.from_bytes(dos[0x3C:0x40], "little"))
+            cabecalho = f.read(6)
+    except OSError:
+        return None
+    if len(cabecalho) < 6 or cabecalho[:4] != b"PE\0\0":
+        return None
+    return int.from_bytes(cabecalho[4:6], "little")
+
+
+def runtime_whisper(cfg: Config) -> dict:
+    """O Microsoft Visual C++ x64 que o whisper.cpp oficial usa, sem executar os EXEs (nem abrir a
+    caixa de DLL ausente do Windows).
+
+    Cada DLL vale ao lado dos EXEs oficiais ou na pasta do sistema, e só uma cópia x64 conta: o
+    carregador pula a de 32 bits ao lado do programa e segue procurando (medido). O PATH fica de
+    fora: um item de rede caído deixaria o /estado lento. Um whisper.cpp informado em [ferramentas]
+    não é conferido, porque pode ser um build estático, sem estas DLLs.
+    """
+    sistema = _pasta_runtime_windows()
+    caminhos = caminhos_whisper(cfg)
+    pastas = {p.parent for p, chave in zip(caminhos, ("whisper_cli", "whisper_vad"))
+              if not cfg["ferramentas"][chave]}
+    necessario = sistema is not None and bool(pastas)
+    faltando: list[str] = []
+    de_32_bits: list[str] = []
+    if necessario:
+        lugares = sorted(pastas) + [sistema]
+        for dll in sorted(DLLS_VISUAL_CPP):
+            maquinas = {_maquina_pe(pasta / dll) for pasta in lugares}
+            if MAQUINA_X64 in maquinas:
+                continue
+            faltando.append(dll)
+            if MAQUINA_32_BITS in maquinas:
+                de_32_bits.append(dll)
+    mensagem = ""
+    if faltando:
+        mensagem = (f"Falta o Microsoft Visual C++ x64 ({', '.join(faltando)}), que o Whisper e o detector de voz "
+                    f"usam. Instale ou repare o pacote oficial da Microsoft em {URL_VISUAL_CPP}: os filmes esperam "
+                    "na fila e são analisados sozinhos quando ele estiver instalado, sem baixar os modelos de novo.")
+        if de_32_bits:
+            mensagem += (f" Encontrei só a versão de 32 bits de {', '.join(de_32_bits)}, que não serve para o "
+                         "Whisper (64 bits).")
+    return {"necessario": necessario, "pronto": not faltando, "faltando": faltando, "de_32_bits": de_32_bits,
+            "url": URL_VISUAL_CPP, "mensagem": mensagem}
+
+
+def conferir_runtime_whisper(cfg: Config) -> None:
+    diagnostico = runtime_whisper(cfg)
+    if not diagnostico["pronto"]:
+        raise ErroRuntimeWhisper(diagnostico["mensagem"], faltando=diagnostico["faltando"])
+
+
+def erro_ao_abrir(cfg: Config, programa, codigo, rotulo: str) -> ErroRuntimeWhisper | None:
+    """O código de saída de quem o Windows nem abriu (DLL que falta, de 32 bits ou antiga demais) vira um
+    erro legível, com o que instalar. Outro código (o programa abriu e falhou) devolve None."""
+    try:
+        status = int(codigo) & 0xFFFFFFFF  # vale com e sem sinal (-1073741515 = 3221225781)
+    except (TypeError, ValueError):
+        return None
+    motivo = CODIGOS_DLL.get(status)
+    if motivo is None:
+        return None
+    programa = Path(programa)
+    cli, vad = caminhos_whisper(cfg)
+    f = cfg["ferramentas"]
+    oficial = (programa == cli and not f["whisper_cli"]) or (programa == vad and not f["whisper_vad"])
+    texto = f"O Windows não abriu {rotulo} ({programa.name}): código 0x{status:08X}, {motivo}. "
+    incompleto = [d for d in DLLS_PACOTE_WHISPER if not (programa.parent / d).is_file()]
+    if not oficial:
+        texto += ("É o whisper.cpp informado em [ferramentas] no config.toml (whisper_cli/whisper_vad): confira se "
+                  "as DLLs dele estão junto. O pacote oficial precisa do Microsoft Visual C++ Redistributable x64 "
+                  f"({URL_VISUAL_CPP}).")
+    elif status == 0xC0000135 and incompleto:
+        texto += (f"Faltam arquivos do próprio whisper.cpp ({', '.join(incompleto)}) em {programa.parent}: apague "
+                  "essa pasta para ele ser baixado de novo na próxima análise (os modelos ficam).")
+    else:
+        texto += f"Instale ou repare o Microsoft Visual C++ Redistributable x64 em {URL_VISUAL_CPP}."
+    texto += (" O filme volta para a fila sem gastar tentativas e é analisado de novo mais tarde (ou na hora, se "
+              "você reabrir o AutoCortes), sem baixar os modelos de novo.")
+    return ErroRuntimeWhisper(texto, codigo=status)
+
+
 def garantir_whisper(cfg: Config) -> tuple[Path, Path]:
     """Retorna (whisper-cli, whisper-vad-speech-segments), baixando se necessário."""
     cli, vad = caminhos_whisper(cfg)
+    conferir_runtime_whisper(cfg)
     if cli.exists() and vad.exists():
         return cli, vad
     if cfg["ferramentas"]["whisper_cli"] or cfg["ferramentas"]["whisper_vad"]:

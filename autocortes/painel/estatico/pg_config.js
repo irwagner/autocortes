@@ -392,6 +392,11 @@ function cfgAtividadeDownload() {
 
 function cfgLadoTranscricaoHtml() {
   const m = App.meta || {};
+  // o Visual C++ x64 só conta com a transcrição ligada no formulário (salva ou não)
+  const usa = String(valor("transcricao.fonte") || "") !== "nenhuma";
+  const runtime = m.whisper_runtime || { necessario: false, pronto: true, faltando: [], falha: null, url: "" };
+  const faltaRuntime = usa && runtime.necessario && !runtime.pronto;
+  const naoAbriu = usa && !faltaRuntime && Boolean(runtime.falha);
   const nome = String(valor("transcricao.modelo") || "");
   const modelo = (m.modelos || {})[nome];
   const baixado = Boolean(modelo && modelo.baixado);
@@ -400,6 +405,11 @@ function cfgLadoTranscricaoHtml() {
     [m.whisper_instalado, "whisper.cpp e detector de voz", m.whisper_instalado ? "instalados" : "não baixados"],
     [baixado, `Modelo ${nome}`, baixado ? "baixado" : `não baixado${tamanho ? ` (${tamanho})` : ""}`],
   ];
+  if (usa && runtime.necessario) {
+    const problema = faltaRuntime || naoAbriu;
+    linhas.push([!problema, "Microsoft Visual C++ x64", faltaRuntime ? "falta instalar" : naoAbriu ? "não abriu" : "instalado",
+      problema ? "alerta" : "ok"]);
+  }
   const atividade = cfgAtividadeDownload();
   let acao;
   if (atividade) {
@@ -407,13 +417,26 @@ function cfgLadoTranscricaoHtml() {
     acao = h`<div class="filme-progresso"><span class="giro"></span><span>${atividade.texto}</span>${pct !== null ? h`<div class="barra"><i style="width:${pct}%"></i></div><b>${Math.round(pct)}%</b>` : ""}</div>`;
   } else if (PgConfig.baixando) {
     acao = h`<div class="filme-progresso"><span class="giro"></span><span>Preparando o download...</span></div>`;
+  } else if (faltaRuntime || naoAbriu) {
+    // link comum para o instalador (sem data-acao: o clique global faria preventDefault)
+    const texto = faltaRuntime
+      ? `Falta o Microsoft Visual C++ x64 (${(runtime.faltando || []).join(", ")}). Sem ele, o Whisper e o detector de voz não abrem, e os filmes novos esperam na fila de análise.`
+      : runtime.falha.mensagem;
+    acao = h`<p class="aviso-inline">${ic("alerta")}<span>${texto}</span></p>
+      <div class="grupo-botoes"><a class="btn primario" href="${runtime.url}" target="_blank" rel="noopener noreferrer">${ic("externo")}Baixar o instalador da Microsoft</a>${faltaRuntime ? h`<button type="button" class="btn" data-acao="cfg-conferir-runtime">${ic("refazer")}Já instalei, conferir de novo</button>` : ""}</div>
+      <p class="nota">${faltaRuntime
+        ? "Abra o instalador e escolha Instalar (ou Reparar, se ele oferecer). É o pacote x64, mesmo que você já tenha o x86. Os filmes que esperavam são analisados sozinhos, sem baixar os modelos de novo."
+        : "Depois de instalar ou reparar, reabra o AutoCortes para tentar na hora; sem isso, eu tento de novo sozinho mais tarde."}</p>`;
   } else if (!m.whisper_instalado || !baixado) {
     acao = h`<button type="button" class="btn primario" data-acao="baixar-modelo" data-modelo="${nome}">${ic("baixar")}Baixar agora</button>`;
+  } else if (runtime.necessario && !runtime.pronto) {
+    // só com a transcrição desligada no formulário (ligada, o aviso acima aparece): sem o Visual C++, não está "tudo pronto"
+    acao = h`<p class="nota">A transcrição está desligada.</p>`;
   } else {
     acao = h`<p class="nota">${ic("ok")} Tudo pronto para transcrever.</p>`;
   }
   return h`<div class="card"><div class="card-topo"><h3>${ic("microfone")}Transcrição automática</h3></div>
-    <ul class="lista-simples">${linhas.map(([ok, rotulo, texto]) => h`<li><span class="com-logo">${ic(ok ? "ok" : "relogio")}${rotulo}</span><b>${texto}</b></li>`)}</ul>
+    <ul class="lista-simples">${linhas.map(([ok, rotulo, texto, icone]) => h`<li><span class="com-logo">${ic(icone || (ok ? "ok" : "relogio"))}${rotulo}</span><b>${texto}</b></li>`)}</ul>
     <div class="rodape-card">${acao}</div>
     <p class="nota">Se você não baixar agora, o download acontece sozinho na primeira análise. A transcrição roda no seu PC, sem mandar o áudio para a internet.</p></div>`;
 }
@@ -673,10 +696,22 @@ async function cfgConferirDownload(e) {
     return;
   }
   const m = App.meta.modelos[modelo];
-  const pronto = App.meta.whisper_instalado && m && m.baixado;
-  toast(pronto ? "Transcrição pronta para usar" : "O download não terminou. Veja o motivo no Registro.", pronto ? "ok" : "erro", 7000);
+  const semRuntime = Boolean(App.meta.whisper_runtime && !App.meta.whisper_runtime.pronto);
+  const pronto = App.meta.whisper_instalado && m && m.baixado && !semRuntime;
+  toast(pronto ? "Transcrição pronta para usar"
+    : semRuntime ? "Falta o Microsoft Visual C++ x64: veja o aviso ao lado." : "O download não terminou. Veja o motivo no Registro.",
+  pronto ? "ok" : "erro", 7000);
   if (App.nomePagina === "config" && PgConfig.aba === "transcricao") desenharConfig();
 }
+
+App.acoes["cfg-conferir-runtime"] = async (el) => {
+  // relê só o /config: o que não foi salvo continua em App.pendente
+  await ocupado(el, () => carregarConfig());
+  const runtime = App.meta.whisper_runtime || { pronto: true, faltando: [] };
+  if (runtime.pronto) toast("Microsoft Visual C++ x64 encontrado: a análise dos filmes continua sozinha.", "ok", 7000);
+  else toast(`Ainda falta o Microsoft Visual C++ x64: ${(runtime.faltando || []).join(", ")}.`, "erro", 7000);
+  if (App.nomePagina === "config" && PgConfig.aba === "transcricao") montarSeMudou($("#cfg-lado"), cfgLadoTranscricaoHtml());
+};
 
 /* ------------------------------------------------------------ página */
 
@@ -696,7 +731,9 @@ App.paginas.config = {
     if (CFG_REDESENHA.has(caminho)) cfgRedesenharFormulario();
     if (aba === "textos") montarSeMudou($("#cfg-lado"), cfgAmostraHtml());
     if (aba === "ia" && caminho === "ia.modelo") montarSeMudou($("#ia-modelos"), cfgModelosIaHtml());
-    if (aba === "transcricao" && caminho === "transcricao.modelo") montarSeMudou($("#cfg-lado"), cfgLadoTranscricaoHtml());
+    if (aba === "transcricao" && (caminho === "transcricao.modelo" || caminho === "transcricao.fonte")) {
+      montarSeMudou($("#cfg-lado"), cfgLadoTranscricaoHtml());
+    }
   },
   aoSalvar() {
     desenharConfig();

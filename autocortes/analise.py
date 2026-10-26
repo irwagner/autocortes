@@ -332,6 +332,10 @@ def detectar_fala(cfg: Config, wav: Path, pasta: Path, parar) -> list[list[float
         baixa_prioridade=cfg["geral"]["prioridade_baixa"],
     )
     if r.codigo != 0:
+        # o Windows nem abriu o programa (falta o Visual C++, por exemplo): diz o que instalar
+        erro = ferramentas.erro_ao_abrir(cfg, vad_exe, r.codigo, "o detector de voz")
+        if erro is not None:
+            raise erro
         raise ErroMidia(f"detecção de voz falhou: {r.resumo_erro(3)}")
     falas = [
         [round(float(a) / 100, 2), round(float(b) / 100, 2)]
@@ -415,6 +419,9 @@ def transcrever(cfg: Config, wav: Path, pasta: Path, idioma: str, falas, titulo:
     log.info("Transcrevendo '%s' com o modelo %s (pode demorar)", titulo, modelo.stem)
     r = executar(cmd, cwd=pasta, parar=parar, ao_ler_erro=ler_erro, baixa_prioridade=cfg["geral"]["prioridade_baixa"])
     if r.codigo != 0:
+        erro = ferramentas.erro_ao_abrir(cfg, cli, r.codigo, "o Whisper")
+        if erro is not None:
+            raise erro
         raise ErroMidia(f"whisper falhou: {r.resumo_erro(4)}")
     try:
         palavras = ler_whisper_json(pasta / "whisper.json")
@@ -548,8 +555,10 @@ def obter_legendas(cfg: Config, caminho: Path, info: dict, pasta: Path, wav, fal
     idioma = str(meta.get("idioma") or cfg["transcricao"]["idioma"] or "auto")
     try:
         frases, idioma_final = transcrever(cfg, audio, pasta, idioma, falas, titulo, parar)
-    except ferramentas.ErroDownload:
-        raise  # sem internet para baixar o modelo: tenta de novo mais tarde
+    except (ferramentas.ErroDownload, ferramentas.ErroRuntimeWhisper):
+        # sem internet para baixar o modelo, ou sem o Visual C++: o filme espera, em vez de gravar
+        # para sempre a legenda do original no lugar da dublagem
+        raise
     except ErroMidia as e:
         if descartada is not None:  # melhor a legenda do original do que nenhuma
             frases = _extrair_embutida(cfg, caminho, descartada, pasta, parar)
@@ -624,6 +633,11 @@ def analisar(cfg: Config, filme, parar: threading.Event | None = None) -> Analis
                 falas = detectar_fala(cfg, obter_wav(), pasta, parar)
             except ferramentas.ErroDownload:
                 raise  # problema de rede: o filme volta para a fila e tenta mais tarde
+            except ferramentas.ErroRuntimeWhisper as e:
+                if precisa_texto:
+                    raise  # a escolha da legenda depende da voz: o filme espera o Visual C++
+                log.warning("Sem detecção de voz para '%s': %s", titulo, e)
+                falas = []  # a transcrição já está gravada: segue, e a voz é tentada na próxima vez
             except ErroMidia as e:
                 log.warning("Sem detecção de voz para '%s': %s", titulo, e)
                 falas = []
@@ -633,6 +647,8 @@ def analisar(cfg: Config, filme, parar: threading.Event | None = None) -> Analis
                                                        parar)
             except ferramentas.ErroDownload:
                 raise
+            except ferramentas.ErroRuntimeWhisper:
+                raise  # do PC, não do filme: não gasta tentativa nem vira "nenhuma (erro)"
             except Interrompido:
                 raise
             except ErroMidia as e:

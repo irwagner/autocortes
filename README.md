@@ -119,7 +119,7 @@ flowchart LR
 1. **Pasta de filmes.** A cada 5 min o sistema procura vídeos novos em `filmes/` (mp4, mkv, avi, mov, webm, ts e outros). Título e ano saem do nome do arquivo: `O.Poderoso.Chefao.1972.1080p.BluRay.mkv` vira "O Poderoso Chefao", de 1972. Episódio de série (`S01E01` ou `1x01`) vira "Nome T1:E1".
 2. **Análise**, uma vez por filme e com cache (se parar no meio, continua de onde estava):
    - tarjas pretas, trocas de cena, volume a cada 0,5 s e trechos com voz;
-   - legendas: `.srt` ao lado do filme, senão a legenda embutida (de texto), senão transcrição com Whisper. Em arquivo com áudio dublado ("Dual", com dois idiomas, ou "Dublado" no nome), a legenda embutida costuma ser a tradução do original e não bate com a dublagem, então a fala dublada é transcrita; se a transcrição falhar, a legenda embutida entra no lugar. Uma faixa com poucas falas para o filme (só os letreiros, mesmo sem a marca "forced") é pulada, e entre duas faixas em português a do Brasil vem antes;
+   - legendas: `.srt` ao lado do filme, senão a legenda embutida (de texto), senão transcrição com Whisper. Em arquivo com áudio dublado ("Dual", com dois idiomas, ou "Dublado" no nome), a legenda embutida costuma ser a tradução do original e não bate com a dublagem, então a fala dublada é transcrita; se a transcrição falhar, a legenda embutida entra no lugar (menos quando falta o Visual C++ x64: aí o filme espera na fila). Uma faixa com poucas falas para o filme (só os letreiros, mesmo sem a marca "forced") é pulada, e entre duas faixas em português a do Brasil vem antes;
    - pula a abertura e os créditos finais (até 90 s no início e 7 min no fim).
 3. **Seleção.** Cada trecho de 30 a 60 s recebe uma nota: volume, picos de intensidade, diálogo, ritmo de cenas, começo forte, falas com ! e ? e palavras-chave. Perde nota o corte que abre com "então", "mas" ou "aí", ou que pega uma frase pela metade. O corte começa e termina numa troca de cena ou numa pausa da fala. São até 40 cortes por filme, sem sobreposição.
 4. **Edição.** Vídeo 1080x1920 com o visual do modelo em uso (veja [Estúdio](#painel), abaixo): moldura opcional por cima, filme no centro sobre fundo desfocado ou preto (ou preenchendo a área), legenda palavra por palavra com destaque amarelo, nome do filme e "Parte N" no topo, barra de progresso, fade e áudio normalizado em -14 LUFS. Por padrão, título e legenda ficam na área que os apps não cobrem e diminuem sozinhos quando o texto é comprido. A legenda não separa palavras que andam juntas: "PARA A CASA" sai inteiro, nunca "VOU PARA / A CASA".
@@ -183,7 +183,7 @@ Você vai precisar de:
 
 O site também oferece o **Python install manager**, que agora é o recomendado por lá. Se instalar por ele, rode `py install 3.14` no PowerShell depois.
 
-### 2. Instale o FFmpeg
+### 2. Instale o FFmpeg e o Visual C++
 
 No PowerShell:
 
@@ -194,6 +194,8 @@ winget install Gyan.FFmpeg
 Feche o PowerShell, abra de novo e confira com `ffmpeg -version`.
 
 Sem o `winget`, baixe o "full build" em [gyan.dev/ffmpeg/builds](https://www.gyan.dev/ffmpeg/builds/) e extraia, por exemplo, em `C:\ffmpeg`. Depois de abrir o AutoCortes (passo 4), informe `C:\ffmpeg\bin\ffmpeg.exe` e `C:\ffmpeg\bin\ffprobe.exe` em Configurações > Sistema > Ferramentas.
+
+Instale também o [Microsoft Visual C++ Redistributable x64](https://aka.ms/vc14/vc_redist.x64.exe), necessário para o Whisper e o detector de voz. Abra o instalador e escolha **Instalar**; se já estiver instalado, ele pode oferecer **Reparar**. É o pacote x64, mesmo se você já tiver o x86. Ele traz as bibliotecas que o Whisper usa (`MSVCP140.dll`, `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll` e `VCOMP140.dll`), que não vêm no ZIP do Whisper. Sem ele, o AutoCortes avisa no Início e em Configurações > Transcrição, e os filmes esperam na fila de análise. O link é o publicado na [documentação oficial da Microsoft](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
 
 ### 3. Baixe o AutoCortes
 
@@ -282,6 +284,7 @@ Com as redes testadas, clique em **Ativar a publicação real**, no topo de Rede
 | "A pasta .venv foi criada com um Python antigo" | Apague a pasta `.venv`, dentro da pasta do AutoCortes, e abra o `.bat` de novo. Ela é refeita, e nada do AutoCortes se perde |
 | "Não consegui instalar as bibliotecas" | Confira a internet. Se continuar, apague a pasta `.venv` e abra o `.bat` de novo |
 | "O FFmpeg não está no PATH" | Instale o FFmpeg (passo 2) e abra o `.bat` de novo, ou informe o caminho em Configurações > Sistema |
+| "Falta o Microsoft Visual C++ x64", ou `MSVCP140.dll`, `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll` ou `VCOMP140.dll` não encontrada | Instale ou repare o [Microsoft Visual C++ Redistributable x64](https://aka.ms/vc14/vc_redist.x64.exe) (passo 2) e clique em **Já instalei, conferir de novo**, em Configurações > Transcrição. Os filmes que esperavam são analisados sozinhos, sem gastar tentativas e sem baixar os modelos de novo. Se o aviso for "O Windows não abriu o Whisper ou o detector de voz", reabra o AutoCortes depois de instalar. Um filme que ficou "sem legenda" numa versão anterior volta com **Reanalisar > Refazer legendas e trechos**, em Filmes |
 | "Não consegui abrir a porta 8777" | Outro programa usa a porta: troque `porta`, em `[painel]`, no `config.toml` da pasta do AutoCortes |
 | O painel não abriu no navegador | Abra `http://127.0.0.1:8777` à mão |
 | "Testar a IA" falha | Confira se o Ollama está aberto (ícone perto do relógio) e se o modelo do painel tem o mesmo nome que aparece no `ollama list` |
@@ -298,7 +301,7 @@ Também funciona sem o painel:
 
 ```powershell
 .venv\Scripts\python -m autocortes init        # cria o config.toml e as pastas
-.venv\Scripts\python -m autocortes verificar   # confere FFmpeg, whisper, fonte e logins
+.venv\Scripts\python -m autocortes verificar   # confere FFmpeg, whisper (e o Visual C++), fonte e logins
 .venv\Scripts\python -m autocortes rodar       # loop sem painel (Ctrl+C para parar)
 ```
 
@@ -311,9 +314,9 @@ Comandos, todos no formato `.venv\Scripts\python -m autocortes <comando>`:
 | `status` | filmes, cortes, redes e últimas postagens |
 | `criar [pauta]` | gera um vídeo do zero a partir de uma pauta de `pautas/` |
 | `auth <rede>` | conecta youtube, tiktok ou instagram; numa rede pelo navegador (o Bilibili inclusive), abre a janela para entrar na conta. O Kwai é só à mão |
-| `verificar [--online]` | confere a instalação e testa os logins |
-| `baixar` | baixa o whisper.cpp e os modelos agora |
-| `analisar [--filme N]` | analisa filmes novos sem postar |
+| `verificar [--online]` | confere a instalação (inclusive o Visual C++ x64 do Whisper) e testa os logins |
+| `baixar` | baixa o whisper.cpp e os modelos agora; sem o Visual C++ x64, avisa e não baixa |
+| `analisar [--filme N]` | analisa filmes novos sem postar; sem o Visual C++ x64, avisa e não começa |
 | `renderizar [-n N]` | edita os próximos N cortes |
 | `cortes [--filme N]` | lista os cortes e as notas |
 | `reanalisar N [--tudo]` | refaz a análise de um filme |
@@ -801,7 +804,7 @@ AutoCortes/
 | `voz.py` | narração com o tempo de cada palavra (para a legenda) |
 | `estoque.py` | imagens e clipes de fundo (pasta própria, Pexels ou Pixabay), com crédito |
 | `montagem.py` | monta o vídeo criado (clipes, voz, música) e passa pelo mesmo editor dos cortes |
-| `ferramentas.py` | download do whisper.cpp, dos modelos, do yt-dlp e do Deno, com o SHA-256 conferido |
+| `ferramentas.py` | download do whisper.cpp, dos modelos, do yt-dlp e do Deno, com o SHA-256 conferido, e a conferência do Visual C++ x64 que o whisper.cpp usa |
 | `canais.py` | canais do YouTube: lista os vídeos novos, aplica as regras e baixa para a pasta de filmes |
 | `atualizacao.py` | atualização pelo GitHub: confere, espera a folga, fecha, troca a versão, abre de novo e volta se precisar |
 | `analise.py` | tarjas, cenas, volume, voz e legendas |
@@ -903,7 +906,7 @@ Ciclo de vida no banco:
 
 ## Testes feitos
 
-Não há framework de testes: cada rodada usa scripts temporários numa pasta própria, com filmes sintéticos, servidores que imitam as APIs das redes e o Edge sem janela para o painel.
+Os testes fixos ficam em `tests/` (unittest) e rodam com `.venv\Scripts\python -m unittest tests.test_gravador tests.test_canais tests.test_runtime_whisper`. O resto de cada rodada usa scripts temporários numa pasta própria, com filmes sintéticos, servidores que imitam as APIs das redes e o Edge sem janela para o painel.
 
 <details>
 <summary><b>Ver todos os testes</b></summary>
@@ -966,6 +969,11 @@ Não há framework de testes: cada rodada usa scripts temporários numa pasta pr
   - A janela de conectar com o Chrome de verdade, sem janela, num perfil temporário, com o login e o `robots.txt` de um servidor local e os cookies plantados pelo DevTools. A entrada foi vista pelo `LOGIN_INFO`, o arquivo saiu só com `youtube.com` e `google.com` (sem `example.com` nem `notyoutube.com`) e a ida e volta pela DPAPI devolveu os mesmos cookies. O Chrome abriu em 0,5 s, da entrada da conta ao "conectada" foram de 6 a 10 s, e o perfil (443 arquivos) foi apagado em 0,15 s. Cancelar, o prazo e a janela fechada também apagam o perfil.
   - API num painel de teste (58 checagens): o 409 da pausa e o `forcar`, conectar, a segunda janela que não abre, o `/saude` ocupado, a pausa que vira a janela com a conta, a olhada direto com a conta, cancelar, esquecer, o alerta da conta caída e a pausa de quando a própria conta levou o robô, que entrar de novo não desfaz. Numa rodada à parte (33 checagens), cancelar ou fechar o AutoCortes com a janela de conectar ainda abrindo fecha o Chrome e apaga o perfil temporário.
   - Edge sem janela (33 checagens, 0 erros no console, 11 capturas conferidas): o cartão nas três situações, as confirmações, a janela de entrar com Cancelar, a pergunta do "Olhar agora", os alertas do Início e a tela de 760 px.
+- **Visual C++ do Whisper** (outubro de 2026), sem desinstalar nada:
+  - Tabela de importação dos 17 binários do whisper.cpp b5130, só lida: tudo x64, e o whisper-cli e o detector de voz precisam de `MSVCP140.dll`, `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll` e `VCOMP140.dll` (o OpenMP vem do `ggml-base.dll`). Com o carregador do Windows de verdade, o programa sem DLL sai com 0xC0000135, com DLL de 32 bits com 0xC000007B e com DLL sem a função com 0xC0000139; um `MSVCP140.dll` de 32 bits ao lado do whisper-cli não atrapalha quando o System32 tem o de 64.
+  - Testes fixos em `tests/test_runtime_whisper.py` (38, em cerca de 4 s): a conferência com um System32 falso (sem e com as DLLs, DLL ao lado do executável, cópia de 32 bits, arquivo que não é DLL, Sysnative num Python de 32 bits), a lista contra os binários de verdade, os códigos com e sem sinal virando erro legível, 4 análises seguidas sem gastar tentativa nem gravar "nenhuma (erro)", a espera de 30 min, o motor sem laço, a mineração, a linha de comando, o alerta do Início e o 409 do download.
+  - Ponta a ponta com um filme de 90 s narrado pela voz do Windows (92 checagens, 0 erros no console, 10 capturas conferidas). Sem o Visual C++ (um System32 falso vazio), `verificar`, `analisar` e `baixar` avisam e saem com 1; o painel mostra o aviso e o alerta; e o motor esperou 103 s sem tocar no filme (0,03 s de CPU em 82 s). Com as DLLs copiadas, "Já instalei, conferir de novo" confirmou sem perder a alteração não salva, e o filme foi transcrito (12 frases) sem baixar nada. Com um `.bat` que sai com 0xC0000135 no lugar do detector de voz e depois do Whisper, o filme esperou com o erro legível: uma linha no registro em 2 min e 4 aberturas sem gastar tentativa; sem o `.bat`, foi transcrito. Com o runtime de verdade deste PC, nenhum aviso no painel, no `/api/config` nem no `verificar`.
+  - O que foi corrigido: a lista não tinha o `VCOMP140.dll` (achado na tabela de importação); a falta do runtime gastava as tentativas da transcrição e gravava "sem legenda" para sempre (no dublado, a legenda do original); e, achados na tela, o recado do Início mandava "ver o Início" e o cartão dizia "Tudo pronto" com a transcrição desligada e o runtime faltando.
 
 </details>
 
@@ -985,6 +993,7 @@ Pendências conhecidas:
 - As métricas da Página do Facebook e dos posts feitos à mão não são lidas.
 - Editar de novo um corte com tarefa à mão apaga a cópia da pasta sincronizada; o vídeo novo fica no painel.
 - **Conta separada dos canais:** o login de verdade no Google e o que o YouTube faz com a conta não foram testados (o teste usou cookies plantados): se ele aceita os cookies, se pede verificação de novo e quanto tempo a conta dura.
+- **Visual C++ do Whisper:** testado com um System32 falso e com um `.bat` que sai com 0xC0000135, não num Windows sem o pacote. Uma DLL que falte apesar da conferência (whisper.cpp próprio ou pacote antigo demais) ainda pode abrir a caixa de erro do próprio Windows antes do aviso do AutoCortes: ele não liga o `SEM_FAILCRITICALERRORS`, que valeria para todos os programas que ele abre.
 
 Melhorias levantadas na pesquisa, por prioridade:
 

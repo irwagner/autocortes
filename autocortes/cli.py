@@ -14,7 +14,8 @@ AJUDA = """\
 Comandos principais:
   painel                abre o painel no navegador com o loop ligado (padrão)
   init                  cria o config.toml e as pastas
-  verificar [--online]  confere FFmpeg, whisper, fonte e logins das redes
+  verificar [--online]  confere FFmpeg, whisper (e o Visual C++ x64 que ele usa), fonte e
+                        logins das redes
   auth <rede>           conecta youtube, tiktok ou instagram; numa rede pelo navegador (Bilibili
                         inclusive), abre a janela para entrar na conta. O Kwai é só à mão
   rodar                 loop contínuo sem painel (modo terminal)
@@ -123,6 +124,11 @@ def cmd_verificar(args) -> int:
     if cfg["transcricao"]["fonte"] == "nenhuma":
         linha(None, "Transcrição desligada")
     else:
+        runtime = ferramentas.runtime_whisper(cfg)
+        if runtime["necessario"]:
+            # a mensagem da falta já começa com "Falta o Microsoft Visual C++ x64"
+            linha(runtime["pronto"], f"Microsoft Visual C++ x64: encontrado ({', '.join(ferramentas.DLLS_VISUAL_CPP)})"
+                  if runtime["pronto"] else runtime["mensagem"])
         linha(True if cli.exists() and vad.exists() else None,
               f"whisper.cpp: {cli if cli.exists() else 'será baixado no primeiro uso (ou rode: baixar)'}")
         modelo = ferramentas.caminho_modelo(cfg)
@@ -172,11 +178,16 @@ def cmd_verificar(args) -> int:
 
 def cmd_baixar(args) -> int:
     from . import ferramentas
+    from .midia import ErroMidia
 
     cfg = _carregar(args)
-    ferramentas.garantir_whisper(cfg)
-    ferramentas.garantir_vad(cfg)
-    ferramentas.garantir_modelo(cfg)
+    try:
+        ferramentas.garantir_whisper(cfg)  # sem o Visual C++ x64, recusa antes de baixar
+        ferramentas.garantir_vad(cfg)
+        ferramentas.garantir_modelo(cfg)
+    except ErroMidia as e:
+        print(f"Não baixei: {e}", file=sys.stderr)
+        return 1
     print("Ferramentas de transcrição prontas.")
     return 0
 
@@ -402,8 +413,17 @@ def cmd_analisar(args) -> int:
     if not filmes:
         print("Nenhum filme novo para analisar (coloque vídeos em %s)." % cfg.pasta_filmes)
         return 0
+    # sem o Visual C++ do Whisper, nem começa: os filmes ficam na fila sem gastar tentativas
+    espera = produtor.espera_runtime()
+    if espera:
+        print(f"Não analiso agora: {espera}", file=sys.stderr)
+        return 1
     for f in filmes:
         n = produtor.analisar(conn, f)
+        espera = produtor.espera_runtime()
+        if espera:  # o Windows não abriu o Whisper: os próximos dariam no mesmo
+            print(f"#{f['id']} {f['titulo']}: não analisado. {espera}", file=sys.stderr)
+            return 1
         print(f"#{f['id']} {f['titulo']}: {n} cortes candidatos")
     return 0
 

@@ -140,6 +140,10 @@ def escrever_textos_ia(cfg: Config, conn: sqlite3.Connection, corte_id: int, fra
 
 MAX_TENTATIVAS_ANALISE = 5
 MAX_TENTATIVAS_RENDER = 2
+# O Windows recusou abrir o Whisper (ou o detector de voz) com as DLLs no lugar: a análise espera
+# isso antes de tentar outro filme, como a falha da GPU (edicao.VALIDADE_FALHA_GPU). Reabrir o
+# AutoCortes zera a espera.
+ESPERA_RUNTIME = 30 * 60
 # uma edição por vez (o loop e o botão "editar agora" do painel não disputam a numeração das partes)
 TRAVA_EDICAO = threading.Lock()
 TRAVA_ANALISE = threading.Lock()
@@ -154,9 +158,54 @@ class Produtor:
         self._ia_pausa_ate = 0.0  # depois de uma falha da IA, espera antes de pedir de novo
         self._ia_falhou: dict[int, float] = {}
         self._criacao_pausa_ate = 0.0  # falha na criação de vídeo: espera antes de tentar outra pauta
+        # Visual C++ do Whisper: a última falha ({desde, mensagem, codigo}), os filmes que esperam
+        # por ela e o último aviso anotado no registro (para não repetir a cada ciclo)
+        self._runtime_falhou: dict | None = None
+        self._esperando_runtime: set[int] = set()
+        self._aviso_runtime: str | None = None
 
     def pedir_varredura(self) -> None:
         self._ultima_varredura = 0.0
+
+    # ------------------------------------------------------------ Visual C++ do Whisper
+    def falha_runtime(self) -> dict | None:
+        """A falha do Visual C++ que ainda vale (sem mudar nada: o painel chama de outra thread).
+
+        Sem código (veio da conferência prévia), vale enquanto as DLLs faltarem; com o código do
+        Windows, por ESPERA_RUNTIME.
+        """
+        falha = self._runtime_falhou
+        if falha is None:
+            return None
+        if falha["codigo"] is None:
+            return None if ferramentas.runtime_whisper(self.cfg)["pronto"] else dict(falha)
+        return dict(falha) if time.time() - falha["desde"] < ESPERA_RUNTIME else None
+
+    def espera_runtime(self) -> str | None:
+        """Por que a análise dos filmes espera o Visual C++ agora (None = pode analisar).
+
+        Só a thread do produtor e a linha de comando chamam: quando a espera acaba, limpa a falha.
+        """
+        if self.cfg["transcricao"]["fonte"] != "nenhuma":
+            runtime = ferramentas.runtime_whisper(self.cfg)
+            if not runtime["pronto"]:
+                return runtime["mensagem"]
+        falha = self.falha_runtime()
+        if falha is not None:
+            return falha["mensagem"]
+        self._runtime_falhou = None
+        self._esperando_runtime.clear()
+        return None
+
+    def _anotar_espera(self, espera: str | None) -> None:
+        """Uma linha no registro quando a espera começa ou muda, e outra quando ela acaba."""
+        if espera == self._aviso_runtime:
+            return
+        if espera:
+            log.warning("A análise dos filmes espera: %s", espera)
+        else:
+            log.info("A análise dos filmes volta a rodar.")
+        self._aviso_runtime = espera
 
     # ------------------------------------------------------------ estoque
     def prontos_pendentes(self, conn: sqlite3.Connection) -> int:
@@ -215,8 +264,12 @@ class Produtor:
         if falta_estoque and not criar_primeiro and self.criar_video(conn):
             return True
 
+        # sem o Visual C++ do Whisper, os filmes novos esperam na fila: sem gastar tentativa nem
+        # analisar o mesmo filme sem parar (ele voltaria a 'novo' e seria pego de novo na hora)
+        espera = self.espera_runtime()
+        self._anotar_espera(espera)
         # filmes novos (com espera crescente depois de falhas de download)
-        filme = conn.execute(
+        filme = None if espera else conn.execute(
             "SELECT * FROM filmes WHERE tipo='filme' AND status='novo' "
             "AND atualizado_em + tentativas * 600 <= ? ORDER BY id LIMIT 1",
             (agora(),),
@@ -236,7 +289,18 @@ class Produtor:
         if self._completar_textos_ia(conn):
             return True
 
-        if falta_estoque:
+        esperando = 0
+        if falta_estoque and espera:
+            esperando = conn.execute("SELECT COUNT(*) FROM filmes WHERE tipo='filme' AND status='novo'").fetchone()[0]
+        if esperando:
+            # este recado aparece no Início, ao lado do alerta. O cartão da Transcrição só fala do Visual
+            # C++ com a transcrição ligada (a espera pode vir de um filme que pediu o Whisper no .json
+            # dele): sem ela, quem explica é o Registro
+            onde = ("veja Configurações > Transcrição" if self.cfg["transcricao"]["fonte"] != "nenhuma"
+                    else "veja o Registro")
+            ATIVIDADES.definir(f"Esperando o Microsoft Visual C++ x64 para analisar {esperando} "
+                               f"{'filme' if esperando == 1 else 'filmes'}: {onde}", ocioso=True)
+        elif falta_estoque:
             criando = self.cfg["criacao"]["ativo"]
             ATIVIDADES.definir("Sem trechos novos: adicione filmes na pasta"
                                + (" ou temas em pautas/temas.txt" if criando else ""), ocioso=True)
@@ -319,9 +383,13 @@ class Produtor:
 
     def minerar_mais(self, conn: sqlite3.Connection):
         """Acabaram os candidatos: procura mais trechos nos filmes já analisados (usa o cache da análise)."""
+        # o filme que parou no Visual C++ do Whisper espera junto com os novos
+        esperando = sorted(self._esperando_runtime)
+        fora = f"AND id NOT IN ({','.join('?' * len(esperando))}) " if esperando else ""
         filme = conn.execute(
-            "SELECT * FROM filmes WHERE tipo='filme' AND status='analisado' AND esgotado=0 "
-            "ORDER BY (SELECT COUNT(*) FROM cortes c WHERE c.filme_id = filmes.id) ASC, id LIMIT 1"
+            f"SELECT * FROM filmes WHERE tipo='filme' AND status='analisado' AND esgotado=0 {fora}"
+            "ORDER BY (SELECT COUNT(*) FROM cortes c WHERE c.filme_id = filmes.id) ASC, id LIMIT 1",
+            esperando,
         ).fetchone()
         if filme is None:
             return None
@@ -383,6 +451,18 @@ class Produtor:
         except Interrompido:
             conn.execute("UPDATE filmes SET status='novo', atualizado_em=? WHERE id=?", (agora(), filme["id"]))
             raise
+        except ferramentas.ErroRuntimeWhisper as e:
+            # do PC, não do filme: volta como estava, sem gastar tentativa, e espera (espera_runtime)
+            self._runtime_falhou = {"desde": time.time(), "mensagem": str(e), "codigo": e.codigo}
+            self._esperando_runtime.add(int(filme["id"]))
+            self._aviso_runtime = str(e)  # a linha abaixo já avisa: o próximo ciclo não repete
+            volta = filme["status"] if filme["status"] in ("novo", "analisado") else "novo"
+            log.warning("'%s' espera o Microsoft Visual C++ x64: %s", filme["titulo"], e)
+            conn.execute(
+                "UPDATE filmes SET status=?, erro=?, atualizado_em=? WHERE id=?",
+                (volta, str(e)[:500], agora(), filme["id"]),
+            )
+            return 0
         except (ferramentas.ErroDownload, analise.ErroTranscricao) as e:
             # sem internet para baixar o modelo, ou a transcrição falhou: volta para a fila e tenta mais tarde
             tentativas = int(filme["tentativas"] or 0) + 1
