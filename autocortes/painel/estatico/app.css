@@ -555,6 +555,19 @@ details.guia a { color: #ffc766; text-decoration: underline; }
 .card-rede.desligada .card-topo { margin-bottom: 0; }
 .card-rede.desligada .rede-titulo small { color: var(--fraco); }
 .card-rede .rodape-card { margin-top: auto; padding-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: space-between; }
+/* o que a rede posta (Vídeos e Imagens) e o roteiro de imagem, dentro do cartão da rede */
+.rede-posta { margin-bottom: 12px; }
+.rede-posta .form .linha-campo { padding: 8px 0; }
+.rede-posta > .nota { margin: 4px 0 0; }
+.switch.inativo input { cursor: not-allowed; }
+.card-interno { border: 1px solid var(--borda); border-radius: 12px; background: var(--bg-2); padding: 12px 13px; margin-bottom: 12px; }
+.card-interno .card-topo { margin-bottom: 6px; }
+.card-interno .card-topo h3 { font-size: 14px; }
+.card-interno .nota { margin: 0 0 8px; }
+.card-interno .grupo-botoes { margin-top: 4px; }
+/* marca de post de imagem (Início, Agenda, Cortes) */
+.marca-imagem { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border-radius: 99px; font-size: 11px; line-height: 18px; font-weight: 600; color: #c4b5fd; background: rgba(167, 139, 250, .12); border: 1px solid rgba(167, 139, 250, .3); white-space: nowrap; vertical-align: middle; }
+.marca-imagem .ic { width: 12px; height: 12px; }
 .contas-ig { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
 .contas-ig label { display: flex; gap: 10px; align-items: center; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--borda-2); background: var(--bg-2); cursor: pointer; }
 .contas-ig input { accent-color: var(--acento); }

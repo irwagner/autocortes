@@ -247,6 +247,14 @@ function badge(par, mini = false) {
   const [texto, tipo] = par || ["?", "neutro"];
   return h`<span class="badge ${tipo}${mini ? " mini" : ""}">${texto}</span>`;
 }
+// posts de imagem (config.TIPOS_IMAGEM): o nome de cada tipo nas telas
+const TIPOS_IMAGEM = { momento: "Momento", frase: "Frase", carrossel: "Carrossel" };
+/** Marca de post de imagem com o tipo. Recebe o tipo ou um item com imagem_tipo (sem tipo: o post da gravação). */
+function marcaImagem(item) {
+  const tipo = typeof item === "string" ? item : item && item.imagem_tipo;
+  const nome = TIPOS_IMAGEM[tipo] || "Imagem da gravação";
+  return h`<span class="marca-imagem" title="Post de imagem: ${nome.toLowerCase()}">${ic("imagem")}${nome}</span>`;
+}
 function vazioBloco(icone, titulo, texto = "", grande = false) {
   return h`<div class="vazio${grande ? " grande" : ""}">${ic(icone)}<b>${titulo}</b>${texto}</div>`;
 }
@@ -579,7 +587,8 @@ async function salvarConfig(somente = null) {
 const mesmoArquivo = (a, b) => String(a).replace(/\\/g, "/").toLowerCase() === String(b).replace(/\\/g, "/").toLowerCase();
 
 const CONTROLES = {
-  switch: ({ chave, rotulo }) => h`<label class="switch"><input type="checkbox" data-campo="${chave}" data-tipo="switch" ${valor(chave) ? raw("checked") : ""} aria-label="${rotulo}"><span></span></label>`,
+  // inativo: aparece apagado, com o valor salvo (ex.: as imagens com um envio que não as posta)
+  switch: ({ chave, rotulo, inativo = false }) => h`<label class="switch${inativo ? " inativo" : ""}"><input type="checkbox" data-campo="${chave}" data-tipo="switch" ${valor(chave) ? raw("checked") : ""} ${inativo ? raw("disabled") : ""} aria-label="${rotulo}"><span></span></label>`,
   numero: ({ chave, rotulo, min, max, passo = 1, sufixo }) => h`<input type="number" class="curto" data-campo="${chave}" data-tipo="numero" value="${valor(chave)}" min="${min ?? ""}" max="${max ?? ""}" step="${passo}" aria-label="${rotulo}">${sufixo ? h`<span class="sufixo">${sufixo}</span>` : ""}`,
   range: ({ chave, rotulo, min, max, passo = 1, formato = "" }) => h`<div class="range"><input type="range" data-campo="${chave}" data-tipo="range" data-formato="${formato}" value="${valor(chave)}" min="${min}" max="${max}" step="${passo}" aria-label="${rotulo}"><output>${formatar(formato, valor(chave))}</output></div>`,
   texto: ({ chave, rotulo, placeholder = "", id = "" }) => h`<input type="text" ${id ? raw(`id="${id}"`) : ""} data-campo="${chave}" data-tipo="texto" value="${valor(chave) ?? ""}" placeholder="${placeholder}" aria-label="${rotulo}" spellcheck="false" autocomplete="off">`,

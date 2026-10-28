@@ -111,7 +111,7 @@ function avisoRede(rede, envio) {
 // tipo da pausa que o motor pôs na rede (publicador.ler_bloqueios)
 const TITULO_PAUSA_REDE = {
   cota: "Pausada: limite de uso da rede",
-  recusas: "Pausada: vídeos recusados em seguida",
+  recusas: "Pausada: posts recusados em seguida",
   rede: "Sem resposta da rede: tento de novo sozinho",
   configuracao: "Falta configurar",
   bloqueio: "Parada: a rede bloqueou ou pediu verificação",
@@ -144,7 +144,8 @@ function statusContaHtml(r, envio) {
     icone = r.pronta ? "ok" : "alerta";
     titulo = r.pronta ? r.conta || "Sessão salva no navegador" : "Sem sessão no navegador";
     sub = r.pronta ? "pelo navegador, com a sua sessão" : r.motivo;
-    if (r.gravando) { classe = "pendente"; icone = "microfone"; titulo = "Gravando o roteiro"; sub = "Poste um vídeo à mão na janela que abriu"; }
+    if (r.gravando && r.gravando_midia === "imagem") { classe = "pendente"; icone = "microfone"; titulo = "Gravando o roteiro de imagem"; sub = "Poste as imagens de exemplo à mão na janela que abriu"; }
+    else if (r.gravando) { classe = "pendente"; icone = "microfone"; titulo = "Gravando o roteiro"; sub = "Poste um vídeo à mão na janela que abriu"; }
     else if (r.roteiro && r.roteiro.tem) {
       const erros = (r.roteiro.erros || []).length;
       const avisos = (r.roteiro.avisos || []).length;
@@ -264,6 +265,76 @@ function notaEnvio(rede, info, envio) {
   return h`<p class="nota">A conta do ${info.rotulo} é conectada no site do Upload-Post, dentro do perfil informado abaixo.</p>`;
 }
 
+/* ------------------------------------------------------------ vídeos e imagens de cada rede */
+
+const redImgRedes = () => (App.meta && App.meta.redes_imagem) || ["tiktok", "instagram"];
+const RED_IMG_DIREITOS = "O quadro do filme tem os mesmos direitos do vídeo. Desde 13/03/2026 a Meta trata como não original juntar trechos com mudanças pequenas (bordas, legendas), e isso vale também para imagens.";
+const RED_IMG_DICA = {
+  instagram: "Na gravação, no passo de recorte, escolha 4:5 ou Original antes de Avançar; sem isso o Instagram corta em quadrado.",
+  tiktok: "Na gravação, escolha a opção de fotos do TikTok Studio. Se ela não aparecer, o TikTok desta conta ainda não aceita fotos pelo computador.",
+};
+
+/** As caixas Vídeos e Imagens da rede, salvas juntas pelo salvar da rede (dá para trocar uma pela outra de uma vez). */
+function redImgCaixasHtml(rede, r, envio) {
+  const info = REDES[rede];
+  const videos = campo({ chave: `${rede}.videos`, tipo: "switch", rotulo: "Vídeos", ajuda: "Os cortes em vídeo vertical, nos horários de vídeo da agenda." });
+  if (!redImgRedes().includes(rede)) {
+    const motivo = (App.meta && App.meta.imagem_indisponivel && App.meta.imagem_indisponivel[rede]) || r.imagens_motivo || "Esta rede ainda não posta imagens.";
+    // sem data-campo: a chave nem existe no config desta rede
+    const desligado = h`<label class="switch inativo"><input type="checkbox" disabled aria-label="Imagens no ${info.rotulo}"><span></span></label>`;
+    return h`<div class="rede-posta"><div class="rotulo-campo">O que esta rede posta</div>${formulario([videos, linhaCampo("Imagens", motivo, desligado)])}</div>`;
+  }
+  const ligada = Boolean(valor(`${rede}.imagens`));
+  const estado = r.estado_imagens || {};
+  const tem = Boolean(r.roteiro_imagem && r.roteiro_imagem.tem);
+  let nota = "Momentos, frases e carrosséis tirados dos cortes, nos horários de imagem da agenda.";
+  let inativo = false;
+  // ligada continua podendo desligar; o que impede é só ligar
+  if (envio !== "navegador") { nota = "As imagens saem só pelo navegador: troque o envio para Navegador."; inativo = true; }
+  else if (estado.sem_fotos && !ligada) { nota = estado.sem_fotos; inativo = true; }
+  else if (!tem && !ligada) { nota = "Grave o roteiro de imagem abaixo antes de ligar."; inativo = true; }
+  else if (r.imagens && r.imagens_disponivel && !r.imagens_prontas && r.imagens_prontas_motivo) {
+    nota = `As imagens não saem agora: ${r.imagens_prontas_motivo}.`;
+  }
+  const imagens = campo({ chave: `${rede}.imagens`, tipo: "switch", rotulo: "Imagens", ajuda: nota, inativo });
+  return h`<div class="rede-posta"><div class="rotulo-campo">O que esta rede posta</div>${formulario([videos, imagens])}
+    <p class="nota">${RED_IMG_DIREITOS}</p></div>`;
+}
+
+/** O roteiro de imagem da rede (só pelo navegador): gravar, ver e apagar, sem roteiro padrão. */
+function redImgRoteiroHtml(rede, r) {
+  const rot = r.roteiro_imagem || {};
+  const estado = r.estado_imagens || {};
+  const erros = (rot.erros || []).length;
+  const avisos = (rot.avisos || []).length;
+  let selo;
+  if (estado.sem_fotos) selo = ["Sem fotos nesta conta", "erro"];
+  else if (!rot.tem) selo = ["Não gravado", "neutro"];
+  else if (erros) selo = [plural(erros, "linha com problema", "linhas com problema"), "erro"];
+  else if (estado.parado) selo = ["Parado", "erro"];
+  else if (estado.sem_carrossel) selo = ["O carrossel ficou de fora", "aviso"];
+  else if (avisos) selo = [plural(avisos, "ponto arriscado", "pontos arriscados"), "aviso"];
+  else selo = ["Gravado", "ok"];
+  const problema = estado.sem_fotos || estado.parado || estado.sem_carrossel;
+  const botoes = [h`<button class="btn ${rot.tem ? "" : "primario"}" data-acao="rede-gravar" data-rede="${rede}" data-midia="imagem">${ic("microfone")}${rot.tem ? "Gravar de novo" : "Gravar o roteiro de imagem"}</button>`];
+  if (rot.tem) {
+    botoes.push(h`<button class="btn" data-acao="rede-roteiro" data-rede="${rede}" data-midia="imagem">${ic("terminal")}Ver o roteiro</button>`);
+    botoes.push(h`<button class="btn fantasma" data-acao="rede-roteiro-apagar" data-rede="${rede}" data-midia="imagem">Apagar</button>`);
+  }
+  return h`<div class="card-interno"><div class="card-topo"><h3>${ic("imagem")}Roteiro de imagem</h3>${badge(selo, true)}</div>
+    <p class="nota">Gravado enquanto você posta à mão o próximo carrossel desta rede. Esse post sai de verdade e fica em "A conferir" no Início.${rot.tem ? ` Tem ${plural(rot.linhas || 0, "ação", "ações")}.` : ""}</p>
+    ${problema ? h`<div class="aviso-rede">${ic("alerta")}<span>${problema}</span></div>` : ""}
+    ${RED_IMG_DICA[rede] ? h`<p class="nota">${RED_IMG_DICA[rede]}</p>` : ""}
+    <div class="grupo-botoes">${botoes}</div></div>`;
+}
+
+function redImgPorSemana(r) {
+  const partes = [];
+  if (r.videos !== false) partes.push(plural(r.por_semana || 0, "vídeo", "vídeos"));
+  if (r.imagens_por_semana) partes.push(plural(r.imagens_por_semana, "imagem", "imagens"));
+  return partes.length ? `${partes.join(" e ")} por semana na agenda` : "Nada por semana na agenda";
+}
+
 function cardRedeHtml(rede, r) {
   const info = REDES[rede];
   const envio = valor(`${rede}.envio`);
@@ -278,13 +349,18 @@ function cardRedeHtml(rede, r) {
   const opcoes = opcoesRede(rede);
   const rodape = [];
   if (r.ativo) rodape.push(`${r.postados_24h} nas últimas 24 h`);
-  if (r.ativo && r.proximo) rodape.push(`próximo: ${fmtQuando(r.proximo)}`);
+  // rede só de imagens: sem a linha do próximo vídeo
+  if (r.ativo && r.proximo) rodape.push(`${r.proximo_imagem ? "próximo vídeo" : "próximo"}: ${fmtQuando(r.proximo)}`);
+  if (r.ativo && r.proximo_imagem) rodape.push(`próxima imagem: ${fmtQuando(r.proximo_imagem)}`);
+  const roteiroImagem = envio === "navegador" && redImgRedes().includes(rede);
   return h`<div class="card card-rede" style="--cor:${info.cor}">
-    <div class="card-topo"><div class="rede-titulo">${logoRede(rede)}<div><b>${info.nome}</b><small>${r.por_semana} posts por semana na agenda</small></div></div>${CONTROLES.switch({ chave: `${rede}.ativo`, rotulo: `Postar no ${info.rotulo}` })}</div>
+    <div class="card-topo"><div class="rede-titulo">${logoRede(rede)}<div><b>${info.nome}</b><small>${redImgPorSemana(r)}</small></div></div>${CONTROLES.switch({ chave: `${rede}.ativo`, rotulo: `Postar no ${info.rotulo}` })}</div>
     ${statusContaHtml(r, envio)}
     ${aviso ? h`<div class="aviso-rede">${ic("alerta")}<span>${aviso}</span></div>` : ""}
+    ${redImgCaixasHtml(rede, r, envio)}
     ${formulario([envioHtml(rede, info, envio), ...(envio === "oficial" ? camposOficiais(rede) : [])])}
     ${notaEnvio(rede, info, envio)}
+    ${roteiroImagem ? redImgRoteiroHtml(rede, r) : ""}
     ${opcoes.length ? h`<details class="guia"><summary>${ic("ajustes")}Opções dos posts</summary><div class="form-interno">${formulario(opcoes)}</div></details>` : ""}
     <div class="rodape-card"><div class="grupo-botoes">${botoesRede(rede, r, envio)}</div><small class="texto-suave">${rodape.join(" · ")}</small></div>
   </div>`;
@@ -504,7 +580,8 @@ App.acoes["rede-testar"] = async (el) => {
 
 // sessao: número da gravação aberta agora. A janela de uma gravação antiga, ao fechar, não pode
 // cancelar a gravação que acabou de começar ("Gravar de novo" abria e já cancelava a nova).
-const Gravacao = { rede: null, timer: null, sessao: 0, passos: 0 };
+// midia: "video" ou "imagem"; tipo: o tipo das imagens de exemplo (o post que sai na gravação de imagem)
+const Gravacao = { rede: null, timer: null, sessao: 0, passos: 0, midia: "video", tipo: null };
 
 function marcasHtml(marcas) {
   const nomes = { titulo: "Título", descricao: "Descrição", legenda: "Legenda", tags: "Tags", fonte: "Fonte (转载来源)" };
@@ -515,8 +592,10 @@ const ICONE_PASSO = { arquivo: "video", clicar: "seta-dir", digitar: "texto", te
 
 function camposGravacaoHtml(s) {
   const achados = new Set((s.lista || []).map((p) => p.papel).filter(Boolean));
+  // o título do post de fotos do TikTok é opcional: sem ele, a legenda basta
+  const opcional = (papel) => s.midia === "imagem" && papel === "titulo";
   return h`<div class="marcas">${Object.keys(s.marcas || {}).map((papel) => badge([
-    `${NOME_PAPEL[papel] || papel}: ${achados.has(papel) ? "reconhecido" : "aguardando"}`,
+    `${NOME_PAPEL[papel] || papel}${opcional(papel) ? " (opcional)" : ""}: ${achados.has(papel) ? "reconhecido" : "aguardando"}`,
     achados.has(papel) ? "ok" : "neutro",
   ], true))}</div>`;
 }
@@ -526,7 +605,8 @@ function logGravacaoHtml(s) {
   if (!lista.length) {
     return h`<div class="grava-log vazio-log">${ic("microfone")}<span>Nada anotado ainda. Faça o primeiro passo na janela do Chrome.</span></div>`;
   }
-  return h`<div class="grava-log">${lista.map((p) => h`<div class="grava-passo${p.fragil ? " fragil" : ""}${p.estranha ? " ruim" : ""}"><span class="n">${p.n}</span>${ic(ICONE_PASSO[p.tipo] || "lista")}<span class="txt">${p.texto}</span>${p.papel ? badge([NOME_PAPEL[p.papel] || p.papel, "ok"], true) : ""}${p.fragil ? h`<span class="marca-fragil" title="Sem âncora estável: esse passo é o que quebra mais fácil se a página mudar">${ic("alerta")}</span>` : ""}</div>`)}</div>`;
+  const icone = (p) => (p.tipo === "arquivo" && s.midia === "imagem" ? "imagem" : ICONE_PASSO[p.tipo] || "lista");
+  return h`<div class="grava-log">${lista.map((p) => h`<div class="grava-passo${p.fragil ? " fragil" : ""}${p.estranha ? " ruim" : ""}"><span class="n">${p.n}</span>${ic(icone(p))}<span class="txt">${p.texto}</span>${p.papel ? badge([NOME_PAPEL[p.papel] || p.papel, "ok"], true) : ""}${p.fragil ? h`<span class="marca-fragil" title="Sem âncora estável: esse passo é o que quebra mais fácil se a página mudar">${ic("alerta")}</span>` : ""}</div>`)}</div>`;
 }
 
 function gravandoHtml(rede, s) {
@@ -542,7 +622,37 @@ function gravandoHtml(rede, s) {
       <li>Volte aqui e clique em <b>Terminei</b>.</li>
     </ol>
     ${rede === "youtube" ? h`<p class="nota">No YouTube, cole <code>@@TAGS@@</code> no campo <b>Tags</b>, que aparece ao clicar em <b>Mostrar mais</b>. Título e descrição recebem suas marcas nos campos correspondentes.</p>` : ""}
-    <div class="rotulo-campo">Reconhecimento dos campos</div>
+    ${gravaAcompanharHtml(rede, s)}</div>`;
+}
+
+/** O que a gravação de imagem pede: o próximo post de verdade, escolhido pelo botão da página e com a legenda real. */
+function redImgGravandoHtml(rede, s) {
+  const c = s.exemplo_corte || {};
+  const qual = c.parte ? `${c.filme} - Parte ${c.parte}` : c.filme || "um corte";
+  const n = s.exemplo_quantos || 1;
+  const usar = s.exemplo_tipo === "carrossel"
+    ? `Use as ${n} imagens desta pasta (são o próximo carrossel de '${qual}'), na ordem, e cole @@LEGENDA@@ na legenda.`
+    : `Use a imagem desta pasta (é o próximo post de imagem de '${qual}') e cole @@LEGENDA@@ na legenda.`;
+  const marcas = Object.fromEntries(Object.entries(s.marcas || {}).filter(([papel]) => papel !== "legenda"));
+  return h`<div class="gravando">
+    <p><span class="ponto-grava"></span>Gravando o roteiro de imagem. Faça a postagem na janela do Chrome que abriu, do começo até publicar.</p>
+    <div class="aviso-rede">${ic("alerta")}<span><b>Este post vai sair de verdade na sua conta.</b> ${usar} Fica em: <code class="caminho">${s.exemplos || ""}</code></span></div>
+    <ol class="passos">
+      <li><b>Escolha as imagens pelo botão de escolher arquivo da própria página (não arraste).</b> Arrastadas para a página, eu não consigo repetir.</li>
+      ${RED_IMG_DICA[rede] ? h`<li>${RED_IMG_DICA[rede]}</li>` : ""}
+      <li>Cole <code>@@LEGENDA@@</code> no campo da legenda. Antes de publicar, troque pela legenda de verdade:
+        <button type="button" class="btn pequeno" data-acao="copiar" data-texto="${s.exemplo_legenda || ""}">${ic("copiar")}Copiar a legenda</button></li>
+      ${Object.keys(marcas).length ? h`<li>Se quiser, cole também estas marcas (clique para copiar):${marcasHtml(marcas)}</li>` : ""}
+      <li>Se a página preencher um campo com o nome do arquivo (exemplo-1), apague e cole a marca dele (no TikTok, <code>@@TITULO@@</code> no título): este post sai de verdade.</li>
+      <li>Espere o envio das imagens terminar antes de clicar em publicar. Clicando antes, o roteiro sai com o clique cedo demais.</li>
+      <li>Clique em publicar, espere a confirmação aparecer e volte aqui em <b>Terminei</b>.</li>
+    </ol>
+    ${gravaAcompanharHtml(rede, s)}</div>`;
+}
+
+/** O acompanhamento ao vivo e os botões, iguais nas gravações de vídeo e de imagem. */
+function gravaAcompanharHtml(rede, s) {
+  return h`<div class="rotulo-campo">Reconhecimento dos campos</div>
     <div id="grava-campos">${camposGravacaoHtml(s)}</div>
     <div class="rotulo-campo">O que eu anotei até agora</div>
     <div id="grava-log">${logGravacaoHtml(s)}</div>
@@ -555,7 +665,7 @@ function gravandoHtml(rede, s) {
       <button class="btn" data-acao="grava-desfazer" data-rede="${rede}">${ic("refazer")}Desfazer o último</button>
       <button class="btn" data-acao="grava-recomecar" data-rede="${rede}">Recomeçar</button>
       <button class="btn primario" data-acao="grava-fim" data-rede="${rede}">${ic("check")}Terminei</button>
-    </div></div>`;
+    </div>`;
 }
 
 function pararGravacao() {
@@ -594,25 +704,74 @@ function desenharGravacao(s) {
   montarSeMudou($("#grava-campos"), camposGravacaoHtml(s));
 }
 
+/** As imagens de exemplo levam até uns 2 min para sair: o botão diz o que está acontecendo. */
+async function redImgPreparando(el, trabalho) {
+  const antes = el.innerHTML;
+  montar(el, h`${ic("relogio")}Preparando as imagens de exemplo...`);
+  toast("Preparando as imagens de exemplo (o próximo post de imagem desta rede)...", "info", 7000);
+  try {
+    return await ocupado(el, trabalho);
+  } finally {
+    if (el.isConnected) el.innerHTML = antes;
+  }
+}
+
+/** Na gravação de imagem com algum passo anotado: o post pode ter saído na rede. */
+function redImgPerguntarPublicou() {
+  return confirmar({
+    titulo: "Você chegou a publicar?",
+    texto: "Se o post saiu na rede, eu deixo ele em \"A conferir\" no Início, para não postar as mesmas imagens de novo.",
+    botao: "Sim, publiquei",
+    cancelar: "Não publiquei",
+  });
+}
+
+async function redImgCancelarNoServidor(rede, publicou) {
+  const r = await post(`/redes/${rede}/gravar/cancelar`, { publicou });
+  if (r.conferir) toast("O post da gravação ficou em \"A conferir\" no Início: diga lá se ele saiu.", "info", 8000);
+  return r;
+}
+
 App.acoes["rede-gravar"] = async (el) => {
   const rede = el.dataset.rede;
+  const midia = el.dataset.midia === "imagem" ? "imagem" : "video";
   if (!(await salvarDaRede(el, rede))) return;
   // a janela anterior (o resultado de outra gravação) fecha antes de a nova começar
   fecharModal(true);
-  const s = await ocupado(el, () => post(`/redes/${rede}/gravar`));
+  let s;
+  if (midia === "imagem") {
+    const token = App.navegacao;
+    s = await redImgPreparando(el, () => post(`/redes/${rede}/gravar`, { midia }));
+    if (!App.ativa(token)) {
+      // você saiu da página enquanto as imagens saíam: sem a janela, ninguém termina a gravação
+      redImgCancelarNoServidor(rede, false).catch(() => {});
+      toast("Gravação cancelada: você saiu de Redes sociais antes de as imagens ficarem prontas.", "info", 7000);
+      return;
+    }
+  } else {
+    s = await ocupado(el, () => post(`/redes/${rede}/gravar`));
+  }
   const sessao = ++Gravacao.sessao;
   Gravacao.rede = rede;
   Gravacao.passos = s.passos || 0;
+  Gravacao.midia = midia;
+  Gravacao.tipo = s.exemplo_tipo || null;
   abrirModal({
-    titulo: `Aprender a postar no ${REDES[rede].rotulo}`,
+    titulo: midia === "imagem" ? `Gravar o roteiro de imagem do ${REDES[rede].rotulo}` : `Aprender a postar no ${REDES[rede].rotulo}`,
     largura: 660,
-    corpo: gravandoHtml(rede, s),
+    corpo: midia === "imagem" ? redImgGravandoHtml(rede, s) : gravandoHtml(rede, s),
     // fechar sem querer (Esc, clique fora) cancelaria a gravação com tudo que já foi anotado
     protegido: () => Gravacao.sessao === sessao && Gravacao.rede === rede && Gravacao.passos > 0,
     aoFechar: () => {
       if (Gravacao.sessao !== sessao) return; // outra gravação já tomou o lugar desta
-      if (Gravacao.rede === rede) post(`/redes/${rede}/gravar/cancelar`).catch(() => {});
+      const aberta = Gravacao.rede === rede;
+      const perguntar = aberta && midia === "imagem" && Gravacao.passos > 0;
       pararGravacao();
+      if (!aberta) return;
+      if (!perguntar) { post(`/redes/${rede}/gravar/cancelar`).catch(() => {}); return; }
+      redImgPerguntarPublicou().then((publicou) => {
+        if (Gravacao.sessao === sessao) redImgCancelarNoServidor(rede, publicou).catch(() => {});
+      });
     },
   });
   Gravacao.timer = setTimeout(() => acompanharGravacao(rede, sessao), 2000);
@@ -622,8 +781,10 @@ const NOME_PAPEL = { titulo: "título", descricao: "descrição", legenda: "lege
 
 App.acoes["grava-fim"] = async (el) => {
   const rede = el.dataset.rede;
+  const midia = Gravacao.midia;
   const r = await ocupado(el, () => post(`/redes/${rede}/gravar/fim`));
   pararGravacao();
+  if (midia === "imagem") { await redImgFimDaGravacao(rede, r); return; }
   const nomes = (lista) => (lista || []).map((p) => NOME_PAPEL[p] || p).join(", ");
   if (!r.ok) {
     const motivos = [];
@@ -689,12 +850,45 @@ App.acoes["grava-recomecar"] = async (el) => {
 
 App.acoes["grava-cancelar"] = async (el) => {
   const rede = el.dataset.rede;
-  await ocupado(el, () => post(`/redes/${rede}/gravar/cancelar`));
+  // na de imagem, o post pode ter saído: com sim, ele fica "a conferir" no Início
+  const publicou = Gravacao.midia === "imagem" && Gravacao.passos > 0 ? await redImgPerguntarPublicou() : false;
+  const r = await ocupado(el, () => post(`/redes/${rede}/gravar/cancelar`, publicou ? { publicou } : {}));
   pararGravacao();
   fecharModal();
-  toast("Gravação cancelada", "info");
+  toast(r.conferir ? "Gravação cancelada. O post ficou em \"A conferir\" no Início: diga lá se ele saiu." : "Gravação cancelada", "info", r.conferir ? 8000 : 4500);
   await App.paginas.redes.recarregar();
 };
+
+/** O resultado da gravação de imagem: o roteiro (ou o porquê de não ter salvo) e o post que ficou a conferir. */
+async function redImgFimDaGravacao(rede, r) {
+  const rotulo = REDES[rede].rotulo;
+  const qual = Gravacao.tipo === "carrossel" ? "Este carrossel" : "Este post";
+  const conferir = r.conferir ? h`<p class="nota"><b>${qual} ficou em "A conferir" no Início: diga lá se ele saiu.</b></p>` : "";
+  if (!r.ok) {
+    const motivos = [];
+    if (r.mensagem) motivos.push(h`<p class="erro-texto">${r.mensagem}</p>`);
+    else if (!r.tem_arquivo) motivos.push(h`<p class="erro-texto">Não vi você escolher as imagens. Escolha pelo botão de escolher arquivo da página, na janela do AutoCortes.</p>`);
+    if (r.erros && r.erros.length) motivos.push(h`<p class="erro-texto">${r.erros.map((erro) => h`${erro}<br>`)}</p>`);
+    tituloModal(`A gravação do roteiro de imagem do ${rotulo} não deu`);
+    montar(corpoModal(), h`<div class="login-espera">${ic("alerta", "grande")}
+      <p><b>${plural(r.passos || 0, "passo anotado", "passos anotados")}</b>, mas o roteiro não serve, então eu <b>não salvei</b>.</p>
+      ${motivos}${conferir}
+      <p class="nota">O roteiro de imagem que já existia (se havia um) continua valendo.</p>
+      <div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Fechar</button>${r.motivo === "sem_fotos" ? "" : h`<button class="btn primario" data-acao="rede-gravar" data-rede="${rede}" data-midia="imagem">${ic("microfone")}Gravar de novo</button>`}</div></div>`);
+    toast("Gravação de imagem descartada: veja o porquê", "erro", 7000);
+    await App.paginas.redes.recarregar();
+    return;
+  }
+  tituloModal(`Roteiro de imagem do ${rotulo} gravado`);
+  montar(corpoModal(), h`<div class="login-espera">${ic("ok", "grande")}
+    <p><b>${plural(r.passos, "passo gravado", "passos gravados")}</b>, incluindo a escolha das imagens${r.quantos ? ` (${plural(r.quantos, "imagem", "imagens")})` : ""}.</p>
+    ${r.so_uma ? h`<p class="nota">O campo de arquivo que você usou aceita uma imagem por vez: o carrossel fica de fora nesta rede, e os outros tipos continuam.</p>` : ""}
+    ${conferir}
+    <p class="nota">Agora ligue Imagens no cartão da rede. Com o ensaio ligado, o próximo post de imagem preenche tudo e para antes de publicar.</p>
+    <div class="acoes-modal"><button class="btn" data-acao="rede-roteiro" data-rede="${rede}" data-midia="imagem">Ver o roteiro</button><button class="btn primario" data-acao="fechar-modal">Entendi</button></div></div>`);
+  toast(`Roteiro de imagem do ${rotulo} gravado com ${r.passos} passos`, "ok", 7000);
+  await App.paginas.redes.recarregar();
+}
 
 /* ------------------------------------------------------------ ver e editar o roteiro */
 
@@ -722,31 +916,36 @@ function roteiroHtml(rede, d) {
   const r = d.resumo;
   const linhas = Math.max(14, Math.min(30, (d.texto || "").split("\n").length + 2));
   const padrao = d.origem === "padrao";
+  const imagem = d.midia === "imagem";
+  const vazio = imagem ? "Nenhum roteiro de imagem ainda. Grave um em Gravar o roteiro de imagem, ou escreva aqui."
+    : "Nenhum roteiro ainda. Grave um em Aprender a postar, ou escreva aqui.";
   return h`<div class="editor-roteiro">
     ${padrao ? h`<div class="aviso-rede">${ic("info")}<span>Este é o <b>roteiro padrão</b> do AutoCortes, que vem com a instalação e é atualizado junto com ela. Se você mudar e salvar, ele vira o seu roteiro e passa a valer no lugar do padrão. O seu fica em: <code class="caminho">${d.arquivo}</code></span></div>` : ""}
     <p class="nota">Uma ação por linha, na ordem em que eu faço. Linha que começa com <code>#</code> é comentário e não faz nada, então dá para desligar um passo sem apagar. Precisa de um tempo em algum ponto? Ponha <code>esperar 5</code> ali. Ctrl+S salva.</p>
+    ${imagem ? h`<p class="nota">No roteiro de imagem, a linha <code>imagens</code> entrega todas as imagens do post de uma vez, na ordem do carrossel. Não existe roteiro padrão de imagem.</p>` : ""}
     ${ajudaRoteiroHtml(d.comandos)}
-    <label class="campo"><span>Roteiro do ${REDES[rede].rotulo}</span><textarea id="roteiro-texto" rows="${linhas}" spellcheck="false" placeholder="Nenhum roteiro ainda. Grave um em Aprender a postar, ou escreva aqui.">${d.texto || ""}</textarea></label>
+    <label class="campo"><span>${imagem ? "Roteiro de imagem" : "Roteiro"} do ${REDES[rede].rotulo}</span><textarea id="roteiro-texto" rows="${linhas}" spellcheck="false" placeholder="${vazio}">${d.texto || ""}</textarea></label>
     <div id="roteiro-erros">${problemasRoteiroHtml(r)}</div>
     <p class="nota">${r ? h`${plural(r.linhas, "ação", "ações")}${r.papeis && r.papeis.length ? ` · escreve ${r.papeis.join(", ")}` : ""}` : "vazio"} · arquivo: <code class="caminho">${padrao ? d.arquivo_padrao : d.arquivo}</code></p>
-    <div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Fechar</button><button class="btn primario" data-acao="roteiro-salvar" data-rede="${rede}">${ic("check")}Salvar o roteiro</button></div>
+    <div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Fechar</button><button class="btn primario" data-acao="roteiro-salvar" data-rede="${rede}" data-midia="${imagem ? "imagem" : "video"}">${ic("check")}Salvar o roteiro</button></div>
   </div>`;
 }
 
 App.acoes["rede-roteiro"] = async (el) => {
   const rede = el.dataset.rede;
-  const d = await ocupado(el, () => api(`/redes/${rede}/roteiro`));
+  const midia = el.dataset.midia === "imagem" ? "imagem" : "video";
+  const d = await ocupado(el, () => api(`/redes/${rede}/roteiro${midia === "imagem" ? "?midia=imagem" : ""}`));
   RoteiroAberto.rede = rede;
   RoteiroAberto.texto = d.texto || "";
   abrirModal({
-    titulo: `Roteiro do ${REDES[rede].rotulo}`,
+    titulo: midia === "imagem" ? `Roteiro de imagem do ${REDES[rede].rotulo}` : `Roteiro do ${REDES[rede].rotulo}`,
     largura: 860,
     corpo: roteiroHtml(rede, d),
     protegido: () => {
       const area = $("#roteiro-texto");
       return Boolean(area) && area.value.replace(/\r\n/g, "\n") !== RoteiroAberto.texto.replace(/\r\n/g, "\n");
     },
-    aoSalvar: () => salvarRoteiroAberto(rede),
+    aoSalvar: () => salvarRoteiroAberto(rede, null, midia),
     aoFechar: () => { RoteiroAberto.rede = null; RoteiroAberto.texto = ""; },
   });
 };
@@ -762,10 +961,10 @@ App.acoes["roteiro-inserir"] = (el) => {
   area.selectionStart = area.selectionEnd = pos + quebra.length + linha.length + 1;
 };
 
-async function salvarRoteiroAberto(rede, el = null) {
+async function salvarRoteiroAberto(rede, el = null, midia = "video") {
   const texto = ($("#roteiro-texto") || {}).value || "";
   try {
-    const r = await ocupado(el, () => post(`/redes/${rede}/roteiro`, { texto }));
+    const r = await ocupado(el, () => post(`/redes/${rede}/roteiro`, midia === "imagem" ? { texto, midia } : { texto }));
     RoteiroAberto.texto = texto;
     montar($("#roteiro-erros"), problemasRoteiroHtml(r.resumo));
     const avisos = (r.resumo && r.resumo.avisos) || [];
@@ -779,10 +978,23 @@ async function salvarRoteiroAberto(rede, el = null) {
   }
 }
 
-App.acoes["roteiro-salvar"] = (el) => salvarRoteiroAberto(el.dataset.rede, el);
+App.acoes["roteiro-salvar"] = (el) => salvarRoteiroAberto(el.dataset.rede, el, el.dataset.midia);
 
 App.acoes["rede-roteiro-apagar"] = async (el) => {
   const rede = el.dataset.rede;
+  if (el.dataset.midia === "imagem") {
+    const ok = await confirmar({
+      titulo: `Apagar o roteiro de imagem do ${REDES[rede].rotulo}?`,
+      texto: "Sem ele, as imagens desta rede param até você gravar de novo (não há roteiro padrão de imagem). Os vídeos continuam.",
+      botao: "Apagar",
+      perigo: true,
+    });
+    if (!ok) return;
+    await ocupado(el, () => post(`/redes/${rede}/roteiro/apagar`, { midia: "imagem" }));
+    toast("Roteiro de imagem apagado", "info");
+    await App.paginas.redes.recarregar();
+    return;
+  }
   const padrao = Boolean(el.dataset.padrao);
   const ok = await confirmar({
     titulo: padrao ? `Voltar ao roteiro padrão do ${REDES[rede].rotulo}?` : `Apagar o roteiro do ${REDES[rede].rotulo}?`,
@@ -845,7 +1057,7 @@ App.paginas.redes = {
     desenharRedes();
   },
   aoMudar(caminho) {
-    if (/\.(envio|ativo|privacidade|pagina_facebook)$/.test(caminho) || caminho === "navegador.ensaio") desenharRedes();
+    if (/\.(envio|ativo|privacidade|pagina_facebook|videos|imagens)$/.test(caminho) || caminho === "navegador.ensaio") desenharRedes();
   },
   async aoSalvar() {
     await this.recarregar();
