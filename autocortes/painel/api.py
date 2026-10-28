@@ -250,7 +250,9 @@ def esperar_tarefas(prazo: float) -> list[str]:
 def _facebook_ligado(cfg) -> bool:
     """O Reel do Instagram vai também para a Página do Facebook (pela API oficial ou pelo Upload-Post)."""
     ig = cfg["instagram"]
-    return bool(ig["ativo"] and ig["pagina_facebook"] and ig["envio"] in ("oficial", "upload_post"))
+    # Instagram só de imagens: não há Reel para repetir na Página
+    return bool(ig["ativo"] and ig.get("videos", True) and ig["pagina_facebook"]
+                and ig["envio"] in ("oficial", "upload_post"))
 
 
 def _bloqueios(ctx: Contexto) -> dict[str, dict]:
@@ -274,7 +276,8 @@ def _resumo_redes(ctx: Contexto) -> dict:
         pronta, motivo = plataforma.pronta()
         bloqueio = bloqueadas.get(rede)
         proximo = None
-        if cfg[rede]["ativo"]:
+        videos = bool(cfg[rede].get("videos", True))
+        if cfg[rede]["ativo"] and videos:
             # rede pausada: o próximo horário é o primeiro depois da pausa; parada até você
             # resolver (login, conta, configuração), não há próximo
             ate = bloqueio.get("ate") if bloqueio and not cfg.simulacao else 0
@@ -291,7 +294,8 @@ def _resumo_redes(ctx: Contexto) -> dict:
             # tipo: bloqueio, cota, recusas, rede ou configuracao; ate None = até você testar a conta
             "bloqueio": {k: bloqueio.get(k) for k in ("tipo", "desde", "ate", "motivo")} if bloqueio else None,
             "proximo": proximo.timestamp() if proximo else None,
-            "por_semana": agenda.posts_por_semana(cfg, rede),
+            # rede só de imagens: nenhum vídeo por semana (os horários de imagem são outra conta)
+            "por_semana": agenda.posts_por_semana(cfg, rede) if videos else 0,
             "tarefas": esperando.get(rede, 0),
             "conferir": a_conferir.get(rede, 0),
         }
@@ -422,7 +426,7 @@ def _alertas(ctx: Contexto, filmes: dict, cortes: dict, cobertura: dict, redes: 
             add("info" if cfg.simulacao else "erro", f"{ROTULOS[rede]}: {v['motivo']}.", "redes")
     conferir = n_conferir if n_conferir is not None else sum(v.get("conferir", 0) for v in redes.values())
     if conferir:
-        add("aviso", f"{conferir} post(s) a conferir: a rede recebeu o vídeo, mas eu não vi a confirmação. "
+        add("aviso", f"{conferir} post(s) a conferir: a rede recebeu o post, mas eu não vi a confirmação. "
             "Diga se saiu no Início.", "inicio")
     if "tiktok" in ativas and cfg["tiktok"]["privacidade"] == "SELF_ONLY":
         if redes["tiktok"]["via"] == "upload_post":
@@ -1050,11 +1054,12 @@ def baixar_ferramentas(ctx: Contexto):
 # ---------------------------------------------------------------- cortes
 
 def _postagens_por_corte(conn: sqlite3.Connection, feitos: set[str]) -> tuple[dict, dict]:
+    """A última postagem do vídeo de cada corte por rede (as de imagem não contam) e as redes já feitas."""
     ultima: dict[int, dict[str, sqlite3.Row]] = {}
     feitas: dict[int, set[str]] = {}
     for p in conn.execute(
         "SELECT id, corte_id, plataforma, status, url, erro, criado_em, via, visualizacoes, curtidas, comentarios "
-        "FROM postagens ORDER BY id"
+        "FROM postagens WHERE midia='video' ORDER BY id"
     ):
         ultima.setdefault(p["corte_id"], {})[p["plataforma"]] = p
         if p["status"] in feitos:
@@ -1109,7 +1114,8 @@ def listar_cortes(ctx: Contexto):
     _exigir(aba in ABAS, "Aba inválida")
     filme = _int(ctx.consulta.get("filme"))
     limite = max(1, min(400, _int(ctx.consulta.get("limite"), 150)))
-    ativas = cfg.plataformas_ativas()
+    # rede só de imagens não recebe vídeo: não pode segurar o corte em "Na fila"
+    ativas = cfg.redes_de_video()
     # a tarefa à mão ainda não foi postada, e o post a conferir pode não ter saído: o corte continua
     # em "Na fila" até você marcar
     ultima, feitas = _postagens_por_corte(conn, set(planejador.status_concluidos(cfg)) - {"aguardando", "conferir"})
@@ -1247,8 +1253,9 @@ def _aplicar_acao(ctx: Contexto, c: sqlite3.Row, acao, registrar: bool = True) -
     if criado and acao in ("reeditar", "editar_agora", "restaurar"):
         raise ErroHttp(400, "Este vídeo foi criado de uma pauta: use \"Criar de novo\" para gerar outro")
     if acao in ("descartar", "reeditar", "recriar", "apagar_video"):
-        # o arquivo está subindo para uma rede agora: apagar no meio não desfaz o post
-        if conn.execute("SELECT 1 FROM postagens WHERE corte_id=? AND status='enviando' LIMIT 1",
+        # o arquivo está subindo para uma rede agora: apagar no meio não desfaz o post (as imagens
+        # ficam em dados/imagens e não dependem do .mp4)
+        if conn.execute("SELECT 1 FROM postagens WHERE corte_id=? AND midia='video' AND status='enviando' LIMIT 1",
                         (c["id"],)).fetchone():
             raise ErroHttp(409, "Este vídeo está sendo enviado agora. Espere o envio terminar.", {"motivo": "enviando"})
     if acao == "recriar":
@@ -1420,7 +1427,7 @@ def _soltar_para_reeditar(cfg, conn: sqlite3.Connection, corte_id: int, parar: t
         c = conn.execute("SELECT arquivo, status FROM cortes WHERE id=?", (corte_id,)).fetchone()
         if c is None or c["status"] not in ("revisao", "pronto"):
             return False
-        if conn.execute("SELECT 1 FROM postagens WHERE corte_id=? AND status='enviando' LIMIT 1",
+        if conn.execute("SELECT 1 FROM postagens WHERE corte_id=? AND midia='video' AND status='enviando' LIMIT 1",
                         (corte_id,)).fetchone():
             return False
         _apagar_arquivos(c["arquivo"])
@@ -1511,6 +1518,7 @@ def postar_corte(ctx: Contexto, corte_id):
     _exigir(rede in PLATAFORMAS or rede == "facebook", "Rede inválida")
     base = "instagram" if rede == "facebook" else rede  # o Reel da Página usa a conta do Instagram
     _exigir(bool(cfg[base]["ativo"]), f"O {ROTULOS[base]} está desativado. Ative em Redes sociais.")
+    _exigir(bool(cfg[base].get("videos", True)), "Esta rede está só com imagens: ligue Vídeos em Redes sociais")
     if rede == "facebook":
         _exigir(cfg["instagram"]["envio"] != "manual",
                 "Com o Instagram postado à mão, ligue \"Compartilhar no Facebook\" no app ao postar o Reel")

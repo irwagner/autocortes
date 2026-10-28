@@ -366,7 +366,8 @@ def cmd_status(args) -> int:
             print(f"  {nome:<10} desativado")
             continue
         pronta, motivo = criar(nome, cfg).pronta()
-        h = agenda.proximo_horario(cfg, nome, agora)
+        so_imagens = not cfg[nome].get("videos", True)
+        h = None if so_imagens else agenda.proximo_horario(cfg, nome, agora)
         n24 = conn.execute(
             "SELECT COUNT(*) FROM postagens WHERE plataforma=? AND status IN ('publicado','simulado') AND criado_em>=?",
             (nome, agora.timestamp() - 86400),
@@ -380,7 +381,8 @@ def cmd_status(args) -> int:
             situacao = f"pelo navegador: {'sessão salva' if pronta else motivo}"
         else:
             situacao = "login ok" if pronta else motivo
-        print(f"  {nome:<10} {situacao:<45} próximo: {h.strftime('%d/%m %H:%M') if h else '-'}  últimas 24h: {n24}")
+        proximo = "só imagens" if so_imagens else f"próximo: {h.strftime('%d/%m %H:%M') if h else '-'}"
+        print(f"  {nome:<10} {situacao:<45} {proximo}  últimas 24h: {n24}")
     print("\nÚltimas postagens:")
     for p in conn.execute(
         "SELECT p.*, c.parte, f.titulo FROM postagens p JOIN cortes c ON c.id=p.corte_id JOIN filmes f ON f.id=c.filme_id "
@@ -479,8 +481,9 @@ RESULTADOS_POSTAR = {
     "publicado": "publicado",
     "simulado": "simulado (modo simulação: nada foi enviado)",
     "aguardando": "tarefa de postagem à mão criada (veja o vídeo e os textos no Início do painel)",
-    "conferir": "a rede recebeu o vídeo, mas não deu para confirmar que saiu. Confira no app e marque "
+    "conferir": "a rede recebeu o post, mas não deu para confirmar que saiu. Confira no app e marque "
                 "no Início do painel (Saiu / Não saiu)",
+    "so_imagens": "esta rede está só com imagens: ligue Vídeos em Redes sociais",
     "ensaio": "ensaio: tudo foi preenchido e nada foi publicado (o motivo ficou no histórico do corte)",
     "pausado": "a rede ou a internet falharam antes de o vídeo sair: nada foi publicado e a rede espera "
                "um pouco antes de tentar de novo (veja o registro)",
@@ -508,6 +511,9 @@ def cmd_postar(args) -> int:
     if not cfg[rede]["ativo"]:
         print(f"O {rotulo} está desativado ([{rede}].ativo no config ou em Redes sociais no painel).",
               file=sys.stderr)
+        return 1
+    if not cfg[rede].get("videos", True):
+        print(f"{rotulo}: {RESULTADOS_POSTAR['so_imagens']}", file=sys.stderr)
         return 1
     trava = _travar(cfg)  # noqa: F841 (fica com o comando até o fim)
     conn = _conn(cfg)

@@ -48,6 +48,10 @@ def resumo(cfg: Config, conn, publicador: Publicador | None = None) -> str:
         if publicador and nome in publicador.bloqueadas:
             proximos.append(f"{nome}: pausado")
             continue
+        if not cfg[nome].get("videos", True):  # rede só de imagens: não tem horário de vídeo
+            h = agenda.proximo_horario(cfg, nome, agora, midia="imagem") if nome in cfg.redes_de_imagem() else None
+            proximos.append(f"{nome}: próxima imagem {h.strftime('%H:%M') if h else '-'}")
+            continue
         h = agenda.proximo_horario(cfg, nome, agora)
         proximos.append(f"{nome} {h.strftime('%d/%m %H:%M') if h else '-'}")
     return (

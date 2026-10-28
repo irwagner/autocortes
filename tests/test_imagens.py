@@ -4,7 +4,9 @@ Tudo roda numa pasta temporária com um config.toml mínimo escrito à mão (a p
 dela). Nada toca em dados\\, perfis\\ nem no config.toml da instalação.
 """
 
+import contextlib
 import copy
+import io
 import sqlite3
 import tempfile
 import threading
@@ -13,9 +15,12 @@ import tomllib
 import unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from autocortes import agenda, config, db, planejador, publicador
+from autocortes import agenda, cli, config, db, loop, planejador, publicador, util
+from autocortes.painel import api
+from autocortes.painel.erros import ErroHttp
 from autocortes.config import PADRAO, RAIZ, Config, ErroConfig
 
 CONFIG_MINIMO = '[geral]\npasta_filmes = "filmes"\npasta_dados = "dados"\n'
@@ -389,6 +394,7 @@ class TestVideosSoComMidiaVideo(BaseBanco):
     def test_instagram_so_de_imagens_desliga_a_pagina(self):  # CA-33
         self.so_redes("youtube", "instagram")
         self.cfg["instagram"].update(videos=False, imagens=True, envio="oficial", pagina_facebook=True)
+        self.assertFalse(api._facebook_ligado(self.cfg))
         pub = publicador.Publicador(self.cfg, threading.Event())
         self.assertFalse(pub.facebook_ligado())
         corte = self.novo_corte()
@@ -402,6 +408,7 @@ class TestVideosSoComMidiaVideo(BaseBanco):
         # com os vídeos ligados, a Página volta
         self.cfg["instagram"]["videos"] = True
         self.assertTrue(pub.facebook_ligado())
+        self.assertTrue(api._facebook_ligado(self.cfg))
 
     def test_falhas_da_gravacao_e_da_geracao_nao_gastam_o_corte(self):
         corte = self.novo_corte()
@@ -421,6 +428,66 @@ class TestVideosSoComMidiaVideo(BaseBanco):
                                              "momento"), "pulado")
         linha = self.conn.execute("SELECT status, midia, imagem_tipo FROM postagens WHERE id=?", (ultima,)).fetchone()
         self.assertEqual(tuple(linha), ("pulado", "imagem", "momento"))
+
+
+class TestSoImagensNasTelas(BaseBanco):
+    """CA-21 (o resto): painel, CLI e resumo do motor não postam nem contam vídeo na rede só de imagens."""
+
+    def setUp(self):
+        super().setUp()
+        self.so_redes("tiktok", "instagram")
+        self.so_imagens("tiktok")
+
+    def ctx(self, **campos):
+        motor = SimpleNamespace(publicador=None, rodando=False)
+        painel = SimpleNamespace(motor=motor, gravacoes={})
+        return SimpleNamespace(**{"cfg": self.cfg, "conn": self.conn, "painel": painel, "consulta": {}, "corpo": {},
+                                  **campos})
+
+    def test_lista_de_cortes_sem_a_rede_so_de_imagens(self):
+        corte = self.novo_corte()
+        self.postagem(corte, "instagram", "publicado")
+        self.postagem(corte, "tiktok", "publicado", "imagem", "momento")
+        resposta = api.listar_cortes(self.ctx(consulta={"aba": "publicados"}))
+        self.assertEqual(resposta["ativas"], ["instagram"])
+        self.assertEqual([c["id"] for c in resposta["itens"]], [corte])
+        self.assertEqual(set(resposta["itens"][0]["postagens"]), {"instagram"})  # a imagem não é o "último vídeo"
+
+    def test_resumo_das_redes(self):
+        redes = api._resumo_redes(self.ctx())
+        self.assertIsNone(redes["tiktok"]["proximo"])
+        self.assertEqual(redes["tiktok"]["por_semana"], 0)
+        self.assertIsNotNone(redes["instagram"]["proximo"])
+        self.assertEqual(redes["instagram"]["por_semana"], 14)
+
+    def test_postar_agora_recusa(self):
+        corte = self.novo_corte()
+        for rede in ("tiktok", "facebook"):
+            if rede == "facebook":
+                self.so_imagens("instagram")
+                self.cfg["tiktok"]["videos"] = True
+            with self.assertRaises(ErroHttp) as erro:
+                api.postar_corte(self.ctx(corpo={"rede": rede}), str(corte))
+            self.assertEqual(erro.exception.status, 400)
+            self.assertIn("Esta rede está só com imagens: ligue Vídeos em Redes sociais", str(erro.exception))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM postagens").fetchone()[0], 0)
+
+    def test_cli_postar_sai_com_1_sem_chamar_o_publicador(self):
+        self.caminho.write_text(CONFIG_MINIMO + '[tiktok]\nvideos = false\nimagens = true\nenvio = "navegador"\n',
+                                encoding="utf-8")
+        args = SimpleNamespace(config=str(self.caminho), real=False, rede="tiktok", corte=None, detalhado=False)
+        saida = io.StringIO()
+        with patch.object(util, "configurar_log"), \
+                patch.object(publicador, "Publicador", side_effect=AssertionError("não devia chamar o publicador")), \
+                patch.object(cli, "_travar", side_effect=AssertionError("não devia travar a pasta")), \
+                contextlib.redirect_stderr(saida):
+            self.assertEqual(cli.cmd_postar(args), 1)
+        self.assertIn(cli.RESULTADOS_POSTAR["so_imagens"], saida.getvalue())
+
+    def test_resumo_do_motor(self):
+        texto = loop.resumo(self.cfg, self.conn)
+        self.assertIn("tiktok: próxima imagem ", texto)
+        self.assertIn("instagram ", texto)
 
 
 class TestConfig(Base):
