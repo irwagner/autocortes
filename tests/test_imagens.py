@@ -9,9 +9,10 @@ import sqlite3
 import tempfile
 import tomllib
 import unittest
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from autocortes import config, db
+from autocortes import agenda, config, db
 from autocortes.config import PADRAO, RAIZ, Config, ErroConfig
 
 CONFIG_MINIMO = '[geral]\npasta_filmes = "filmes"\npasta_dados = "dados"\n'
@@ -128,6 +129,129 @@ class TestBanco(Base):
         linha = conn.execute("SELECT status, erro FROM postagens WHERE plataforma='tiktok'").fetchone()
         self.assertEqual(linha["status"], "conferir")
         self.assertIn("depois que a rede recebeu o post", linha["erro"])
+
+
+# resultados da agenda de vídeo gravados com o código de bd7de20 (PADRAO, Instagram só seg/qua/sex),
+# para 15/10/2026 (uma quinta): o midia="video" padrão não pode mudar nada
+AGENDA_MAIN = {
+    'youtube': {"com_chave":[["2026-10-15T12:39:05.109594","2026-10-15 12:30"],["2026-10-15T15:01:17.387318","2026-10-15 15:00"],["2026-10-15T20:05:06.861359","2026-10-15 20:00"]],"entre":[["2026-10-15T12:39:05.109594","2026-10-15 12:30"],["2026-10-15T15:01:17.387318","2026-10-15 15:00"],["2026-10-15T20:05:06.861359","2026-10-15 20:00"],["2026-10-16T12:30:46.138827","2026-10-16 12:30"],["2026-10-16T15:09:12.870702","2026-10-16 15:00"],["2026-10-16T20:06:31.009093","2026-10-16 20:00"],["2026-10-17T12:39:11.679735","2026-10-17 12:30"]],"vigente":["2026-10-15T12:39:05.109594","2026-10-15 12:30"],"proximo":"2026-10-15 15:01:17.387318","semana":21,"permitido":True},  # noqa: E501
+    'tiktok': {"com_chave":[["2026-10-15T12:02:13.953248","2026-10-15 12:00"],["2026-10-15T18:36:49.313643","2026-10-15 18:30"],["2026-10-15T21:07:30.745572","2026-10-15 21:00"]],"entre":[["2026-10-15T12:02:13.953248","2026-10-15 12:00"],["2026-10-15T18:36:49.313643","2026-10-15 18:30"],["2026-10-15T21:07:30.745572","2026-10-15 21:00"],["2026-10-16T12:08:50.236695","2026-10-16 12:00"],["2026-10-16T18:39:18.071708","2026-10-16 18:30"],["2026-10-16T21:07:33.094861","2026-10-16 21:00"],["2026-10-17T12:09:40.387079","2026-10-17 12:00"]],"vigente":["2026-10-15T12:02:13.953248","2026-10-15 12:00"],"proximo":"2026-10-15 18:36:49.313643","semana":21,"permitido":True},  # noqa: E501
+    'instagram': {"com_chave":[],"entre":[["2026-10-16T12:17:25.073723","2026-10-16 12:15"],["2026-10-16T19:04:59.591498","2026-10-16 19:00"]],"vigente":[],"proximo":"2026-10-16 12:17:25.073723","semana":6,"permitido":False},  # noqa: E501
+    'kwai': {"com_chave":[["2026-10-15T12:04:06.834892","2026-10-15 12:00"],["2026-10-15T19:34:24.052295","2026-10-15 19:30"]],"entre":[["2026-10-15T12:04:06.834892","2026-10-15 12:00"],["2026-10-15T19:34:24.052295","2026-10-15 19:30"],["2026-10-16T12:00:17.312591","2026-10-16 12:00"],["2026-10-16T19:39:31.975064","2026-10-16 19:30"],["2026-10-17T12:02:16.589649","2026-10-17 12:00"]],"vigente":["2026-10-15T12:04:06.834892","2026-10-15 12:00"],"proximo":"2026-10-15 19:34:24.052295","semana":14,"permitido":True},  # noqa: E501
+    'bilibili': {"com_chave":[["2026-10-15T08:07:21.547995","2026-10-15 08:00"]],"entre":[["2026-10-16T08:00:36.212468","2026-10-16 08:00"],["2026-10-17T08:00:48.239036","2026-10-17 08:00"]],"vigente":[],"proximo":"2026-10-16 08:00:36.212468","semana":7,"permitido":True},  # noqa: E501
+    'consumo': 3.0,
+}
+
+
+class TestAgenda(Base):
+    DIA = date(2026, 10, 15)
+
+    def test_video_igual_ao_main(self):
+        cfg = Config(copy.deepcopy(PADRAO), self.caminho)
+        cfg["instagram"]["dias"] = ["seg", "qua", "sex"]
+        cfg["instagram"]["imagens"] = True  # imagens ligadas não mexem nos vídeos
+        cfg["instagram"]["envio"] = "navegador"
+        for p in config.PLATAFORMAS:
+            iso = [[h.isoformat(), c] for h, c in agenda.horarios_com_chave(cfg, p, self.DIA)]
+            entre = agenda.horarios_entre_com_chave(cfg, p, datetime(2026, 10, 15, 11), datetime(2026, 10, 17, 13))
+            vigente = agenda.horario_vigente_com_chave(cfg, p, datetime(2026, 10, 15, 13))
+            obtido = {
+                "com_chave": iso,
+                "entre": [[h.isoformat(), c] for h, c in entre],
+                "vigente": [vigente[0].isoformat(), vigente[1]] if vigente else [],
+                "proximo": str(agenda.proximo_horario(cfg, p, datetime(2026, 10, 15, 13))),
+                "semana": agenda.posts_por_semana(cfg, p, self.DIA),
+                "permitido": agenda.dia_permitido(cfg, p, self.DIA),
+            }
+            self.assertEqual(obtido, AGENDA_MAIN[p], p)
+            self.assertEqual(agenda.horarios_do_dia(cfg, p, self.DIA),
+                             [datetime.fromisoformat(h) for h, _ in AGENDA_MAIN[p]["com_chave"]])
+        self.assertEqual(agenda.consumo_diario(cfg), AGENDA_MAIN["consumo"])
+
+    def test_chave_e_semente_de_imagem(self):
+        cfg = Config(copy.deepcopy(PADRAO), self.caminho)
+        cfg["tiktok"]["horarios_imagens"] = ["12:00"]  # o mesmo HH:MM de um vídeo...
+        cfg["tiktok"]["videos"] = False  # ...numa rede só de imagens, para não sair do dia
+        cfg["tiktok"]["imagens"] = True
+        imagem = agenda.horarios_com_chave(cfg, "tiktok", self.DIA, "imagem")
+        video = agenda.horarios_com_chave(cfg, "tiktok", self.DIA)
+        self.assertEqual([c for _, c in imagem], ["img 2026-10-15 12:00"])
+        self.assertEqual(video[0][1], "2026-10-15 12:00")
+        self.assertNotEqual(imagem[0][0], video[0][0])  # atraso sorteado com outra semente
+        self.assertEqual(agenda.horario_vigente_com_chave(cfg, "tiktok", imagem[0][0], "imagem")[1],
+                         "img 2026-10-15 12:00")
+        self.assertEqual(agenda.posts_por_semana(cfg, "tiktok", self.DIA, "imagem"), 7)
+        self.assertEqual(agenda.proximo_horario(cfg, "instagram", datetime(2026, 10, 15, 11), "imagem").hour, 16)
+        # dias_imagens vazio = os dias dos vídeos; com lista, a dela
+        cfg["tiktok"]["dias"] = ["sex"]
+        self.assertEqual(agenda.horarios_com_chave(cfg, "tiktok", self.DIA, "imagem"), [])
+        cfg["tiktok"]["dias_imagens"] = ["qui"]
+        self.assertEqual(len(agenda.horarios_com_chave(cfg, "tiktok", self.DIA, "imagem")), 1)
+
+    def test_imagem_perto_do_video_sai_do_dia(self):  # CA-10 (parte da agenda)
+        cfg = Config(copy.deepcopy(PADRAO), self.caminho)
+        cfg["instagram"].update(horarios=["12:00", "19:00"], horarios_imagens=["11:30", "16:00"])
+        self.assertEqual(cfg["agenda"]["variacao_minutos"], 10)
+        self.assertEqual(cfg["agenda"]["intervalo_minimo_min"], 60)
+        self.assertEqual(agenda.horarios_imagem_descartados(cfg, "instagram", self.DIA),
+                         [{"horario": "11:30", "video": "12:00", "minutos": 30, "precisa": 70}])
+        self.assertEqual([c for _, c in agenda.horarios_com_chave(cfg, "instagram", self.DIA, "imagem")],
+                         ["img 2026-10-15 16:00"])
+        # o vídeo nunca sai por causa da imagem
+        self.assertEqual(len(agenda.horarios_com_chave(cfg, "instagram", self.DIA)), 2)
+        # sem vídeos na rede, a imagem fica
+        cfg["instagram"]["videos"] = False
+        self.assertEqual(agenda.horarios_imagem_descartados(cfg, "instagram", self.DIA), [])
+        # virada da meia-noite: imagem às 23:40 com vídeo às 00:10 do dia seguinte
+        cfg["instagram"].update(videos=True, horarios=["00:10"], horarios_imagens=["23:40"])
+        self.assertEqual(agenda.horarios_imagem_descartados(cfg, "instagram", self.DIA),
+                         [{"horario": "23:40", "video": "00:10", "minutos": 30, "precisa": 70}])
+
+    def test_imagens_perto_entre_si(self):
+        cfg = Config(copy.deepcopy(PADRAO), self.caminho)
+        cfg["instagram"]["horarios_imagens"] = ["09:00", "09:20"]
+        descartados = agenda.horarios_imagem_descartados(cfg, "instagram", self.DIA)
+        self.assertEqual(len(descartados), 1)
+        self.assertEqual((descartados[0]["horario"], descartados[0]["video"], descartados[0]["imagem"]),
+                         ("09:20", None, "09:00"))
+
+    def test_sessenta_dias_sem_imagem_perto_de_video(self):  # CA-10 (com a variação sorteada)
+        cfg = Config(copy.deepcopy(PADRAO), self.caminho)
+        # 10:50 fica a 70 min do vídeo das 12:00 (o mínimo que a conta pede): mantido
+        cfg["instagram"].update(horarios=["12:00", "19:00"], horarios_imagens=["10:50", "17:50", "20:05"])
+        minimo = timedelta(minutes=cfg["agenda"]["intervalo_minimo_min"])
+        mantidos = 0
+        for i in range(60):
+            dia = self.DIA + timedelta(days=i)
+            videos = [h for d in (-1, 0, 1)
+                      for h in agenda.horarios_do_dia(cfg, "instagram", dia + timedelta(days=d))]
+            for h in agenda.horarios_do_dia(cfg, "instagram", dia, "imagem"):
+                mantidos += 1
+                self.assertTrue(all(abs(h - v) >= minimo for v in videos), (dia, h))
+        self.assertEqual(mantidos, 120)  # 10:50 e 17:50 ficam; 20:05 sai todo dia
+
+    def test_padrao_e_presets_sem_descartados(self):
+        cfg = Config(copy.deepcopy(PADRAO), self.caminho)
+        for rede in config.REDES_IMAGEM:
+            self.assertEqual(agenda.horarios_imagem_descartados(cfg, rede, self.DIA), [], rede)
+        for nome, preset in agenda.PRESETS.items():
+            cfg = Config(copy.deepcopy(PADRAO), self.caminho)
+            for rede in config.PLATAFORMAS:
+                cfg[rede]["horarios"] = list(preset[rede])
+            for rede in config.REDES_IMAGEM:
+                cfg[rede]["horarios_imagens"] = list(preset["imagens"][rede])
+                for i in range(7):
+                    dia = self.DIA + timedelta(days=i)
+                    self.assertEqual(agenda.horarios_imagem_descartados(cfg, rede, dia), [], (nome, rede))
+                    total = (len(agenda.horarios_do_dia(cfg, rede, dia))
+                             + len(agenda.horarios_do_dia(cfg, rede, dia, "imagem")))
+                    self.assertLessEqual(total, cfg["agenda"]["maximo_por_dia"], (nome, rede))
+
+    def test_consumo_so_com_redes_de_video(self):
+        cfg = Config(copy.deepcopy(PADRAO), self.caminho)
+        cfg["youtube"]["ativo"] = False
+        cfg["tiktok"].update(videos=False, imagens=True, envio="navegador")
+        self.assertEqual(agenda.consumo_diario(cfg), 2.0)  # só o Instagram (2 por dia) puxa a fila
 
 
 class TestConfig(Base):
