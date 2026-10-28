@@ -1991,5 +1991,176 @@ class TestEnvio(Base):
         self.assertEqual(plat_nav._chave_do_link("https://www.tiktok.com/@x/photo/123"), "123")
 
 
+class _AbaRoteiro:
+    """Aba de mentira para o ViaNavegador: tudo dá certo na página, e ela anota o que o roteiro fez."""
+
+    def __init__(self, erro_arquivo: Exception | None = None):
+        self.parar = None
+        self.feito: list[tuple] = []
+        self.erro_arquivo = erro_arquivo
+        self.links: list[str] = []
+
+    def js(self, corpo: str, promessa: bool = False):
+        if "a[href]" in corpo:
+            self.feito.append(("links",))
+            return list(self.links)
+        return 1
+
+    def esperar(self, expressao: str, segundos: float = 30, o_que: str = ""):
+        self.feito.append(("esperar", o_que))
+        return 1
+
+    def navegar(self, url: str, segundos: float = 45) -> None:
+        self.feito.append(("abrir", url))
+
+    def iframes(self) -> list[str]:
+        return []
+
+    def existe(self, seletor: str) -> bool:
+        return True
+
+    def texto_dialogos(self) -> str:
+        return ""
+
+    def captura(self, destino: Path):
+        return None
+
+    def enviar_arquivo(self, seletor, arquivo: Path, segundos: float = 30) -> None:
+        self.feito.append(("video", [arquivo]))
+
+    def enviar_arquivos(self, seletor, arquivos, segundos: float = 30, midia: str = "video") -> None:
+        if self.erro_arquivo is not None:
+            raise self.erro_arquivo
+        self.feito.append(("imagens", list(arquivos), midia))
+
+    def clicar_alvos(self, alvos, segundos: float = 30, antes=None, o_que: str = "") -> int:
+        if antes is not None:
+            antes()
+        self.feito.append(("clicar", o_que))
+        return 0
+
+    def digitar_alvos(self, alvos, texto: str, segundos: float = 30, o_que: str = "") -> None:
+        self.feito.append(("escrever", texto))
+
+    def pausa_fixa(self, segundos: float) -> None:
+        pass
+
+    def pausa(self, fator: float = 1.0) -> None:
+        pass
+
+    def tecla(self, nome: str = "Enter") -> None:
+        pass
+
+
+class _NavegadorFalso:
+    aba: _AbaRoteiro | None = None
+
+    def __init__(self, cfg, parar=None):
+        pass
+
+    def nova_aba(self, url: str):
+        return _NavegadorFalso.aba
+
+    def fechar_aba(self, aba) -> None:
+        pass
+
+
+class TestViaNavegadorImagem(Base):
+    """O roteiro de imagem na repetição (C15), com o navegador e a aba de mentira."""
+
+    def setUp(self):
+        super().setUp()
+        self.aba = _AbaRoteiro()
+        _NavegadorFalso.aba = self.aba
+        for alvo, novo in ((plat_nav, "Navegador"), (plat_nav, "esperar_sessao")):
+            troca = patch.object(alvo, novo, _NavegadorFalso if novo == "Navegador" else (lambda *a, **k: None))
+            troca.start()
+            self.addCleanup(troca.stop)
+        self.fotos = []
+        for i in range(1, 4):
+            foto = self.raiz / f"filme-{i}.jpg"
+            foto.write_bytes(b"jpg")
+            self.fotos.append(foto)
+        self.conteudo = textos.Conteudo("O Filme - Parte 2", "A legenda do post #filme", ["#filme"])
+
+    def gravar(self, nome: str, texto: str) -> None:
+        arquivo = gravador.arquivo_roteiro(self.cfg, nome)
+        arquivo.parent.mkdir(parents=True, exist_ok=True)
+        arquivo.write_text(texto, encoding="utf-8")
+
+    def via(self, rede: str = "instagram") -> "plat_nav.ViaNavegador":
+        return plat_nav.ViaNavegador(rede, self.cfg)
+
+    def publicar(self, rede: str = "instagram") -> tuple[plat_base.Resultado, plat_base.Entrega]:
+        entrega = plat_base.Entrega()
+        return self.via(rede).publicar_imagens(self.fotos, self.conteudo, None, entrega), entrega
+
+    def erro(self, rede: str = "instagram") -> plat_base.ErroPublicacao:
+        with self.assertRaises(plat_base.ErroPublicacao) as erro:
+            self.publicar(rede)
+        return erro.exception
+
+    def test_publica_as_imagens_na_ordem(self):
+        self.gravar("instagram-imagem", ROTEIRO_IMAGEM)
+        resultado, entrega = self.publicar()
+        self.assertTrue(entrega.aceita)
+        self.assertTrue(resultado.confirmado)
+        self.assertIn(("imagens", self.fotos, "imagem"), self.aba.feito)
+        # os links da página são lidos antes das imagens (senão um /p/ antigo viraria o link deste post)
+        indice = self.aba.feito.index(("imagens", self.fotos, "imagem"))
+        self.assertEqual(self.aba.feito[indice - 1], ("links",))
+        self.assertIn(("escrever", "A legenda do post #filme"), self.aba.feito)
+
+    def test_ensaio_para_antes_de_publicar(self):  # CA-07 (navegador)
+        self.gravar("instagram-imagem", ROTEIRO_IMAGEM)
+        self.cfg["navegador"]["ensaio"] = True
+        entrega = plat_base.Entrega()
+        with self.assertRaises(plat_base.ErroPublicacao) as erro:
+            self.via().publicar_imagens(self.fotos, self.conteudo, None, entrega)
+        self.assertEqual(erro.exception.tipo, "ensaio")
+        self.assertFalse(entrega.aceita)
+        cliques = [f[1] for f in self.aba.feito if f[0] == "clicar"]
+        self.assertEqual(len(cliques), 2)  # "Criar" e "Original", e nunca o "Compartilhar"
+        self.assertIn(("escrever", "A legenda do post #filme"), self.aba.feito)
+
+    def test_roteiro_de_imagem_invalido_para_so_as_imagens(self):
+        self.gravar("instagram-imagem", "abrir https://www.instagram.com/\nvideo\npublicar \"Compartilhar\"\n")
+        e = self.erro()
+        self.assertEqual((e.tipo, e.parado, e.persistente), ("formato", True, False))
+        self.assertNotIn(("clicar", "Compartilhar"), self.aba.feito)
+
+    def test_roteiro_de_imagem_sumido(self):
+        e = self.erro()
+        self.assertEqual((e.tipo, e.parado), ("formato", True))
+        self.assertIn("o roteiro de imagem sumiu", str(e))
+        self.assertEqual(self.aba.feito, [])  # nem abriu a página
+
+    def test_roteiro_de_video_invalido_continua_bloqueio(self):
+        self.gravar("instagram", "abrir https://www.instagram.com/\nimagens\npublicar \"Compartilhar\"\n")
+        with self.assertRaises(plat_base.ErroPublicacao) as erro:
+            self.via().publicar(self.fotos[0], self.conteudo, None, plat_base.Entrega())
+        self.assertEqual((erro.exception.tipo, erro.exception.parado), ("bloqueio", False))
+
+    def test_parado_do_campo_chega_ao_publicador(self):
+        self.gravar("instagram-imagem", ROTEIRO_IMAGEM)
+        self.aba.erro_arquivo = navegador.ErroNavegador("o campo de arquivo desta página não aceita imagem",
+                                                        "formato", parado=True)
+        e = self.erro()
+        self.assertEqual((e.tipo, e.parado), ("formato", True))
+        self.assertIn("a linha 3 do roteiro de imagem não funcionou", str(e))
+        # sem o parado (campo sem multiple), ele também não aparece do outro lado
+        self.aba.erro_arquivo = navegador.ErroNavegador("o campo aceita uma imagem por vez", "formato")
+        e = self.erro()
+        self.assertEqual((e.tipo, e.parado), ("formato", False))
+
+    def test_titulo_no_roteiro_de_imagem_do_tiktok(self):
+        self.gravar("tiktok-imagem", "abrir https://www.tiktok.com/tiktokstudio/upload\nimagens\n"
+                                     "escrever titulo em input.titulo\nescrever legenda em div.legenda\n"
+                                     "publicar \"Publicar\"\n")
+        self.publicar("tiktok")
+        self.assertIn(("escrever", "O Filme - Parte 2"), self.aba.feito)
+        self.assertIn(("escrever", "A legenda do post #filme"), self.aba.feito)
+
+
 if __name__ == "__main__":
     unittest.main()

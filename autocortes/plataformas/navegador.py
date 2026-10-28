@@ -27,7 +27,7 @@ from urllib.parse import urlsplit
 from .. import gravador, roteiro
 from ..config import ROTULOS, Config
 from ..navegador import TRAVA, Aba, ErroNavegador, Navegador, css
-from ..textos import Conteudo
+from ..textos import Conteudo, limitar
 from ..util import log
 from .base import Entrega, ErroPublicacao, Plataforma, Resultado
 from .manual import textos
@@ -281,17 +281,36 @@ class ViaNavegador(Plataforma):
     # ------------------------------------------------------------ publicação
     def publicar(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None,
                  entrega: Entrega | None = None) -> Resultado:
+        return self._enviar_pelo_roteiro([arquivo], conteudo, parar, entrega, "video")
+
+    def publicar_imagens(self, arquivos: list[Path], conteudo: Conteudo, parar: threading.Event | None = None,
+                         entrega: Entrega | None = None) -> Resultado:
+        """Posta as imagens (uma ou o carrossel, na ordem) pelo roteiro de imagem que você gravou."""
+        return self._enviar_pelo_roteiro(list(arquivos), conteudo, parar, entrega, "imagem")
+
+    def _enviar_pelo_roteiro(self, arquivos: list[Path], conteudo: Conteudo, parar: threading.Event | None,
+                             entrega: Entrega | None, midia: str) -> Resultado:
         entrega = entrega if entrega is not None else Entrega()
         ensaio = bool(self.nav["ensaio"])
-        # o seu roteiro (dados/roteiros) ou, sem ele, o padrão que vem com a instalação
-        aprendido, origem = gravador.carregar_com_origem(self.cfg, self.nome)
+        nome = roteiro.nome_roteiro(self.nome, midia)
+        # o seu roteiro (dados/roteiros) ou, sem ele, o padrão que vem com a instalação (só no vídeo)
+        aprendido, origem = gravador.carregar_com_origem(self.cfg, nome)
         if aprendido:
-            def passo_a_passo(aba, arq, t, ens, ent):
-                return self._repetir(aba, aprendido, arq, t, ens, ent, origem or "perfil")
+            def passo_a_passo(aba, arqs, t, ens, ent):
+                return self._repetir(aba, aprendido, arqs, t, ens, ent, origem or "perfil", nome)
+        elif midia == "imagem":
+            # só numa corrida (o motor confere o roteiro antes): para as imagens, e não a rede inteira
+            raise ErroPublicacao(f"{self.rotulo}: o roteiro de imagem sumiu: grave de novo em Redes sociais",
+                                 "formato", parado=True)
         else:
-            passo_a_passo = {"youtube": self._youtube, "tiktok": self._tiktok,
-                             "instagram": self._instagram, "bilibili": self._bilibili}[self.nome]
+            fixo = {"youtube": self._youtube, "tiktok": self._tiktok,
+                    "instagram": self._instagram, "bilibili": self._bilibili}[self.nome]
+
+            def passo_a_passo(aba, arqs, t, ens, ent):
+                return fixo(aba, arqs[0], t, ens, ent)
         t = textos(self.cfg, self.nome, conteudo)
+        if midia == "imagem" and self.nome == "tiktok":
+            t["titulo"] = limitar(conteudo.titulo or "", 90)  # o post de fotos do TikTok tem título
         # outro envio pelo navegador (de outra rede) pode estar no meio: espera a vez dele
         if not TRAVA.acquire(timeout=600):
             raise ErroPublicacao(f"{self.rotulo}: o navegador ficou ocupado com outro envio por mais de 10 min; "
@@ -319,7 +338,7 @@ class ViaNavegador(Plataforma):
                         "a página de envio está dentro de um quadro (iframe) que eu não alcanço: "
                         f"{quadros[0]}. Use o envio à mão nesta rede até eu ajustar", "bloqueio",
                     )
-                resultado = passo_a_passo(aba, arquivo, t, ensaio, entrega)
+                resultado = passo_a_passo(aba, arquivos, t, ensaio, entrega)
                 if ensaio:
                     imagem = self._guardar_imagem(aba, "ensaio")
                     raise ErroPublicacao(
@@ -342,7 +361,9 @@ class ViaNavegador(Plataforma):
                             tipo, persistente = "bloqueio", True
                             e = ErroNavegador(f"{e} (a rede mostrou '{marca}': resolva na janela do navegador "
                                               "e teste a conta de novo)", "bloqueio")
-                raise ErroPublicacao(f"{self.rotulo}: {e}", tipo, persistente=persistente) from e
+                # o parado (as imagens param) atravessa; trocado por um bloqueio acima, ele some de propósito
+                raise ErroPublicacao(f"{self.rotulo}: {e}", tipo, persistente=persistente,
+                                     parado=getattr(e, "parado", False)) from e
             finally:
                 if aba is not None:
                     navegador.fechar_aba(aba)
@@ -359,36 +380,41 @@ class ViaNavegador(Plataforma):
         return Resultado(self._id_envio or f"navegador-{uuid.uuid4().hex[:12]}", url, observacao, confirmado)
 
     # ---- roteiro que você gravou (e pode editar no painel)
-    def _repetir(self, aba: Aba, texto_roteiro: str, arquivo: Path, t: dict, ensaio: bool,
-                 entrega: Entrega, origem: str = "perfil") -> Resultado:
+    def _repetir(self, aba: Aba, texto_roteiro: str, arquivos: list[Path], t: dict, ensaio: bool,
+                 entrega: Entrega, origem: str = "perfil", nome_roteiro: str | None = None) -> Resultado:
+        nome_roteiro = nome_roteiro or self.nome
+        de_imagem = roteiro.midia_do_roteiro(nome_roteiro) == "imagem"
+        o_post = "o post" if de_imagem else "o vídeo"
         padrao = origem == "padrao"
-        nome_roteiro = "o roteiro padrão do AutoCortes" if padrao else "o roteiro"
+        qual = "o roteiro padrão do AutoCortes" if padrao else ("o roteiro de imagem" if de_imagem else "o roteiro")
         # o padrão não é seu para ajustar: o caminho é gravar o seu (ou esperar a atualização)
         conserto = ("Grave o seu em Redes sociais > Aprender a postar" if padrao
                     else "Ajuste ou grave de novo em Redes sociais > Ver o roteiro")
         try:
-            instrucoes = roteiro.validar(texto_roteiro, self.nome)
+            instrucoes = roteiro.validar(texto_roteiro, nome_roteiro)
         except roteiro.ErroRoteiro as e:
+            # o roteiro de imagem quebrado para só as imagens; o de vídeo para a rede, como sempre
             raise ErroNavegador(
-                f"{nome_roteiro} tem linha com problema: {'; '.join(e.erros[:3])}. "
+                f"{qual} tem linha com problema: {'; '.join(e.erros[:3])}. "
                 + ("Grave o seu em Redes sociais > Aprender a postar" if padrao
-                   else "Corrija em Redes sociais > Ver o roteiro"), "bloqueio",
+                   else "Corrija em Redes sociais > Ver o roteiro"),
+                "formato" if de_imagem else "bloqueio", parado=de_imagem,
             ) from e
         aba.js("__ac.travarArquivo()")  # o clique em "selecionar vídeo" não pode abrir a janela do Windows
-        depois_do_video = publicou = False
+        depois_do_arquivo = publicou = False
         links_antes: set[str] = set()
         confirmado: bool | None = None  # None = o roteiro não tem linha conferir
         sem_confirmacao: list[str] = []
         for ins in instrucoes:
             # O clique que publica: a linha "publicar" ou, de rede de segurança, qualquer clique com
-            # cara de publicar depois do vídeo (a gravação pode ter dado o nome errado ao passo).
-            ponto = (depois_do_video and not publicou and ins.comando in ("publicar", "clicar")
+            # cara de publicar depois do arquivo (a gravação pode ter dado o nome errado ao passo).
+            ponto = (depois_do_arquivo and not publicou and ins.comando in ("publicar", "clicar")
                      and (ins.comando == "publicar" or roteiro.parece_publicar(ins.alvos)))
             if ponto and ensaio:
                 log.info("%s: ensaio, paro antes da linha %d (\u201c%s\u201d)", self.rotulo, ins.linha, ins.descricao)
                 return self._fim()
             try:
-                if ins.comando == "video":
+                if ins.comando in ("video", "imagens"):
                     links_antes = self._links(aba)
                 if ponto:
                     _conferir_bloqueio(aba, so_dialogos=True)
@@ -401,11 +427,11 @@ class ViaNavegador(Plataforma):
                     except ErroNavegador as e:
                         if e.conexao or (aba.parar is not None and aba.parar.is_set()):
                             raise
-                        log.warning("%s: %s (o vídeo pode ter saído; fica para você conferir)", self.rotulo, e)
+                        log.warning("%s: %s (%s pode ter saído; fica para você conferir)", self.rotulo, e, o_post)
                         confirmado = False
                         sem_confirmacao.append(f"não vi {' ou '.join(str(a) for a in ins.alvos)} na tela")
                 else:
-                    self._rodar(aba, ins, arquivo, t)
+                    self._rodar(aba, ins, arquivos, t)
             except ErroNavegador as e:
                 parou = aba.parar is not None and aba.parar.is_set()
                 if ins.opcional and not e.conexao and not parou:
@@ -416,30 +442,32 @@ class ViaNavegador(Plataforma):
                     # e "ajuste o roteiro" mandaria você mexer no lugar errado
                     raise
                 raise ErroNavegador(
-                    f"a linha {ins.linha} d{nome_roteiro} não funcionou (\u201c{ins.descricao}\u201d): {e}. "
-                    f"{conserto}", e.tipo, e.conexao, e.persistente,
+                    f"a linha {ins.linha} d{qual} não funcionou (\u201c{ins.descricao}\u201d): {e}. "
+                    f"{conserto}", e.tipo, e.conexao, e.persistente, parado=getattr(e, "parado", False),
                 ) from e
-            if ins.comando == "video":
-                depois_do_video = True
+            if ins.comando in ("video", "imagens"):
+                depois_do_arquivo = True
         if not publicou:
             raise ErroNavegador("o roteiro terminou sem passar pelo clique de publicar", "bloqueio")
         link = self._link_novo(aba, links_antes)
         if confirmado is None:
-            return self._fim(f"publicado pel{nome_roteiro}; ele não tem linha conferir, então não vi a "
+            return self._fim(f"publicado pel{qual}; ele não tem linha conferir, então não vi a "
                              "confirmação na tela", link)
         if not confirmado:
-            return self._fim(f"{nome_roteiro} chegou ao fim, mas " + "; ".join(sem_confirmacao)
-                             + ". Confira na rede se o vídeo saiu", link, confirmado=False)
+            return self._fim(f"{qual} chegou ao fim, mas " + "; ".join(sem_confirmacao)
+                             + f". Confira na rede se {o_post} saiu", link, confirmado=False)
         return self._fim("publicado pelo roteiro padrão do AutoCortes" if padrao
                          else "publicado pelo roteiro que você gravou", link)
 
-    def _rodar(self, aba: Aba, ins: roteiro.Instrucao, arquivo: Path, t: dict) -> None:
+    def _rodar(self, aba: Aba, ins: roteiro.Instrucao, arquivos: list[Path], t: dict) -> None:
         segundos = ESPERA_PUBLICAR if ins.comando in ("publicar", "conferir") else 90
         if ins.comando == "abrir":
             aba.navegar(ins.url, 60)
             aba.js("__ac.travarArquivo()")  # a página nova não tem a trava do seletor de arquivo
         elif ins.comando == "video":
-            aba.enviar_arquivo(self._seletores(ins), arquivo, segundos)
+            aba.enviar_arquivo(self._seletores(ins), arquivos[0], segundos)
+        elif ins.comando == "imagens":  # todas de uma vez, na ordem do carrossel
+            aba.enviar_arquivos(self._seletores(ins), arquivos, segundos, midia="imagem")
         elif ins.comando in ("clicar", "publicar"):
             self._clicar(aba, ins, segundos)
         elif ins.comando == "escrever":
