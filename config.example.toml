@@ -359,6 +359,54 @@ ativo = true
 intervalo_horas = 6
 janela_dias = 14
 
+# ---------------------------------------------------------------------
+# Posts de imagem tirados dos cortes (opcional). Cada rede tem as caixas
+# videos e imagens; as imagens saem só no TikTok (9:16) e no Instagram
+# (4:5), só com envio = "navegador" e o roteiro de imagem gravado em
+# Redes sociais. Tipos:
+#   "momento"   = um quadro forte com o nome do filme e a parte
+#   "frase"     = a fala real do trecho sobre o quadro (só cortes com fala)
+#   "carrossel" = de 3 a 5 quadros de cenas diferentes, em ordem
+# A fonte e as cores vêm do modelo visual em uso (Estúdio).
+#
+# Originalidade: a imagem continua sendo um quadro do filme. Use filmes
+# que você tem direito de publicar; as redes tratam como não original o
+# que só junta trechos de terceiros com texto por cima.
+# ---------------------------------------------------------------------
+[imagens]
+tipos = ["momento", "frase", "carrossel"]
+# Quadros do carrossel (de 3 a 5)
+quadros_carrossel = 4
+# Texto desenhado em cima do quadro. Variáveis: {filme} {ano} {parte}. \n quebra a linha.
+topo = "{filme}\nParte {parte}"
+# Chamada para o vídeo, desenhada embaixo do quadro. Só aparece quando o
+# vídeo daquela parte já saiu nesta rede.
+chamada = "A Parte {parte} completa está no perfil"
+# Legenda de cada tipo de post. Variáveis: {filme} {ano} {ano_parenteses}
+# {parte} {frase} {hashtags} {canal} {link_original} {titulo_ia}
+# {descricao_ia} {quadros} (quadros do carrossel) e {chamada_perfil}
+# (a chamada para o vídeo; só aparece quando o vídeo daquela parte já
+# saiu nesta rede). Linha com uma variável vazia some inteira.
+# O texto que você escreve à mão no corte vale só para o vídeo.
+legenda_momento = """{titulo_ia}
+
+{filme}{ano_parenteses} - Parte {parte}
+{chamada_perfil}
+
+{hashtags}"""
+legenda_frase = """“{frase}”
+
+{filme}{ano_parenteses}
+
+{hashtags}"""
+legenda_carrossel = """{filme}{ano_parenteses} - Parte {parte}, em {quadros} cenas.
+{chamada_perfil}
+
+{hashtags}"""
+# Usa o texto que a IA já escreveu para o corte ({titulo_ia} e {descricao_ia}),
+# sem chamar a IA de novo
+usar_ia = true
+
 [agenda]
 # Horários (hora local do PC) das redes que ficarem sem horários próprios.
 # Cada rede tem os seus em [youtube], [tiktok], [instagram], [kwai] e [bilibili].
@@ -393,6 +441,8 @@ pausado = false
 # ---------------------------------------------------------------------
 [youtube]
 ativo = true
+# Posta os cortes em vídeo nesta rede (o YouTube ainda não posta imagens)
+videos = true
 # "oficial" (API do YouTube), "upload_post" (veja [upload_post]), "navegador"
 # (veja [navegador]: contraria os termos) ou "manual" (veja [manual])
 envio = "oficial"
@@ -428,6 +478,9 @@ dias = []
 # ---------------------------------------------------------------------
 [tiktok]
 ativo = true
+# Vídeos e imagens (veja [imagens]). Uma das duas precisa estar ligada.
+videos = true
+imagens = false
 # "oficial" (só posts privados sem auditoria), "upload_post" (público; use
 # privacidade = "PUBLIC_TO_EVERYONE"), "navegador" (veja [navegador]:
 # contraria os termos) ou "manual" (você posta pelo app)
@@ -445,6 +498,11 @@ permitir_stitch = false
 capa_ms = 1000
 horarios = ["12:00", "18:30", "21:00"]
 dias = []
+# Horários dos posts de imagem. Perto demais de um vídeo (menos que o
+# intervalo mínimo mais a variação), o horário de imagem sai do dia.
+horarios_imagens = ["10:30", "15:30"]
+# Vazio = os mesmos dias dos vídeos desta rede
+dias_imagens = []
 
 # ---------------------------------------------------------------------
 # Instagram Reels (API do Instagram com Login do Facebook)
@@ -459,6 +517,9 @@ dias = []
 # ---------------------------------------------------------------------
 [instagram]
 ativo = true
+# Vídeos e imagens (veja [imagens]). Uma das duas precisa estar ligada.
+videos = true
+imagens = false
 # "oficial" (API do Instagram), "upload_post", "navegador" (veja [navegador]:
 # contraria os termos) ou "manual" (você posta pelo app)
 envio = "oficial"
@@ -483,6 +544,9 @@ pagina_facebook = false
 facebook_pagina_id = ""
 horarios = ["12:15", "19:00"]
 dias = []
+# Horários dos posts de imagem (veja [tiktok]) e os dias (vazio = os dos vídeos)
+horarios_imagens = ["10:00", "16:00"]
+dias_imagens = []
 
 # ---------------------------------------------------------------------
 # Kwai: não tem API de postagem para criadores nem envio pelo site.
@@ -491,6 +555,7 @@ dias = []
 # ---------------------------------------------------------------------
 [kwai]
 ativo = false
+videos = true
 envio = "manual"
 horarios = ["12:00", "19:30"]
 dias = []
@@ -504,6 +569,7 @@ dias = []
 # ---------------------------------------------------------------------
 [bilibili]
 ativo = false
+videos = true
 # "manual" (a tarefa no Início) ou "navegador" (veja [navegador]: contraria os termos)
 envio = "manual"
 # 08:00 em Brasília = 19:00 em Pequim

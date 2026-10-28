@@ -30,6 +30,23 @@ ENVIOS = {
     "bilibili": ("navegador", "manual"),
 }
 DIAS_SEMANA = ("seg", "ter", "qua", "qui", "sex", "sab", "dom")
+# posts de imagem tirados dos cortes: só estas redes, e só pelo roteiro do navegador
+REDES_IMAGEM = ("tiktok", "instagram")
+TIPOS_IMAGEM = ("momento", "frase", "carrossel")
+FORMATOS_IMAGEM = {
+    "instagram": {"nome": "4x5", "largura": 1080, "altura": 1350},
+    "tiktok": {"nome": "9x16", "largura": 1080, "altura": 1920},
+}
+# por que a rede ainda não posta imagens (o painel mostra a caixa Imagens desligada com este texto)
+IMAGEM_INDISPONIVEL = {
+    "youtube": "As imagens do YouTube (posts da Comunidade) ficam para uma próxima etapa: a página de post da "
+               "Comunidade ainda não foi verificada, e a API do YouTube não posta na Comunidade.",
+    "kwai": "O Kwai não tem página de envio no computador, e a imagem como tarefa à mão fica para uma "
+            "próxima etapa.",
+    "bilibili": "As imagens do Bilibili ficam para uma próxima etapa: a página de envio de fotos dele ainda "
+                "não foi verificada.",
+}
+SO_PELO_NAVEGADOR = "as imagens saem só pelo navegador: troque o envio para Navegador"
 # campos que nunca voltam para o painel em texto puro
 SEGREDOS = (
     ("youtube", "client_secret"), ("tiktok", "client_secret"), ("instagram", "app_secret"),
@@ -279,6 +296,24 @@ PADRAO: dict = {
         "intervalo_horas": 6,
         "janela_dias": 14,
     },
+    "imagens": {
+        # posts de imagem tirados dos cortes (ligados por rede, em [tiktok] e [instagram]):
+        # momento (um quadro com o nome e a parte), frase (a fala real do trecho) e carrossel
+        "tipos": list(TIPOS_IMAGEM),
+        # quadros do carrossel (de 3 a 5)
+        "quadros_carrossel": 4,
+        # texto desenhado em cima do quadro
+        "topo": "{filme}\nParte {parte}",
+        # chamada para o vídeo, desenhada embaixo (só quando o vídeo daquela parte já saiu na rede)
+        "chamada": "A Parte {parte} completa está no perfil",
+        # legenda do post, por tipo
+        "legenda_momento": "{titulo_ia}\n\n{filme}{ano_parenteses} - Parte {parte}\n{chamada_perfil}\n\n{hashtags}",
+        "legenda_frase": "“{frase}”\n\n{filme}{ano_parenteses}\n\n{hashtags}",
+        "legenda_carrossel": "{filme}{ano_parenteses} - Parte {parte}, em {quadros} cenas.\n{chamada_perfil}"
+                             "\n\n{hashtags}",
+        # usa o texto que a IA já escreveu para o corte ({titulo_ia} e {descricao_ia}), sem chamar a IA de novo
+        "usar_ia": True,
+    },
     "agenda": {
         # usado pelas redes que não têm horários próprios
         "horarios": ["12:00", "18:00", "21:00"],
@@ -293,6 +328,8 @@ PADRAO: dict = {
     },
     "youtube": {
         "ativo": True,
+        # posta os cortes em vídeo nesta rede
+        "videos": True,
         # "oficial" (API do YouTube), "upload_post" ou "manual"
         "envio": "oficial",
         "client_id": "",
@@ -309,6 +346,9 @@ PADRAO: dict = {
     },
     "tiktok": {
         "ativo": True,
+        "videos": True,
+        # posts de imagem (só com envio = "navegador" e o roteiro de imagem gravado)
+        "imagens": False,
         "envio": "oficial",
         "client_key": "",
         "client_secret": "",
@@ -321,9 +361,16 @@ PADRAO: dict = {
         "capa_ms": 1000,
         "horarios": ["12:00", "18:30", "21:00"],
         "dias": [],
+        # horários dos posts de imagem (longe dos vídeos: perto demais, a imagem sai do dia)
+        "horarios_imagens": ["10:30", "15:30"],
+        # vazio = os mesmos dias dos vídeos desta rede
+        "dias_imagens": [],
     },
     "instagram": {
         "ativo": True,
+        "videos": True,
+        # posts de imagem (só com envio = "navegador" e o roteiro de imagem gravado)
+        "imagens": False,
         "envio": "oficial",
         "app_id": "",
         "app_secret": "",
@@ -340,10 +387,13 @@ PADRAO: dict = {
         "facebook_pagina_id": "",
         "horarios": ["12:15", "19:00"],
         "dias": [],
+        "horarios_imagens": ["10:00", "16:00"],
+        "dias_imagens": [],
     },
     "kwai": {
         # sem API de postagem para criadores: no horário, vira uma tarefa para você postar pelo app
         "ativo": False,
+        "videos": True,
         "envio": "manual",
         "horarios": ["12:00", "19:30"],
         "dias": [],
@@ -351,6 +401,7 @@ PADRAO: dict = {
     "bilibili": {
         # a API de envio é só para empresas chinesas: no horário, vira uma tarefa para você enviar pelo site
         "ativo": False,
+        "videos": True,
         "envio": "manual",
         # 08:00 em Brasília = 19:00 em Pequim
         "horarios": ["08:00"],
@@ -437,10 +488,23 @@ class Config:
     def plataformas_ativas(self) -> list[str]:
         return [p for p in PLATAFORMAS if self[p]["ativo"]]
 
-    def horarios(self, plataforma: str) -> list[str]:
+    def redes_de_video(self) -> list[str]:
+        """Redes ligadas que postam os cortes em vídeo."""
+        return [p for p in self.plataformas_ativas() if self[p].get("videos", True)]
+
+    def redes_de_imagem(self) -> list[str]:
+        """Redes ligadas que postam imagens: só as de REDES_IMAGEM, e só pelo navegador."""
+        return [p for p in self.plataformas_ativas()
+                if p in REDES_IMAGEM and self[p].get("imagens") and self[p].get("envio") == "navegador"]
+
+    def horarios(self, plataforma: str, midia: str = "video") -> list[str]:
+        if midia == "imagem":  # sem lista geral: a rede sem horários de imagem não ganha imagens
+            return list(self[plataforma].get("horarios_imagens") or [])
         return list(self[plataforma].get("horarios") or self["agenda"]["horarios"])
 
-    def dias(self, plataforma: str) -> list[str]:
+    def dias(self, plataforma: str, midia: str = "video") -> list[str]:
+        if midia == "imagem":
+            return list(self[plataforma].get("dias_imagens") or self.dias(plataforma))
         return list(self[plataforma].get("dias") or self["agenda"]["dias"])
 
     def segredo_definido(self, secao: str, chave: str) -> bool:
@@ -478,6 +542,15 @@ class Config:
             dados["_segredos"][f"{secao}.{chave}"] = self.segredo_definido(secao, chave)
             dados[secao][chave] = [] if isinstance(dados[secao][chave], list) else ""
         return dados
+
+
+def motivo_sem_imagens(cfg: Config, rede: str) -> str | None:
+    """Por que a rede não pode postar imagens (None quando pode)."""
+    if rede not in REDES_IMAGEM:
+        return IMAGEM_INDISPONIVEL.get(rede, "esta rede não posta imagens")
+    if cfg[rede].get("envio") != "navegador":
+        return SO_PELO_NAVEGADOR
+    return None
 
 
 # ---------------------------------------------------------------- leitura
@@ -607,6 +680,35 @@ def _validar_pastas(cfg: Config, erros: list[str]) -> None:
     if filmes == instalacao or _dentro_de(instalacao, filmes):
         erros.append("[geral].pasta_filmes não pode ser a pasta do AutoCortes (nem uma pasta acima dela): "
                      "a varredura entraria nos cortes de todos os perfis")
+
+
+def _validar_imagens(cfg: Config, erros: list[str]) -> None:
+    """Caixas Vídeos e Imagens de cada rede e a seção [imagens].
+
+    O envio diferente de Navegador com imagens ligadas não é recusado (quem troca o envio no painel
+    salva só aquela rede): redes_de_imagem() deixa a rede de fora e o painel diz por quê."""
+    com_imagens = False
+    for rede in PLATAFORMAS:
+        secao = cfg[rede]
+        imagens = secao.get("imagens", False)
+        if rede not in REDES_IMAGEM and imagens is not False:
+            erros.append(f"[{rede}].imagens não vale nesta rede: {IMAGEM_INDISPONIVEL[rede]}")
+            imagens = False
+        imagens = imagens is True
+        com_imagens = com_imagens or imagens
+        if secao["ativo"] and not secao["videos"] and not imagens:
+            erros.append(f"[{rede}] ligue Vídeos ou Imagens, ou desative a rede")
+        if imagens and not secao.get("horarios_imagens"):
+            erros.append(f"[{rede}].horarios_imagens precisa de pelo menos um horário com as imagens ligadas")
+    im = cfg["imagens"]
+    if not 3 <= im["quadros_carrossel"] <= 5:
+        erros.append(f"[imagens].quadros_carrossel deve ficar entre 3 e 5 (atual: {im['quadros_carrossel']!r})")
+    desconhecidos = [t for t in im["tipos"] if t not in TIPOS_IMAGEM]
+    if desconhecidos:
+        erros.append(f"[imagens].tipos tem um tipo desconhecido: {desconhecidos[0]!r} "
+                     f"(use {', '.join(TIPOS_IMAGEM)})")
+    elif com_imagens and not im["tipos"]:
+        erros.append("[imagens].tipos precisa de pelo menos um tipo com as imagens ligadas em alguma rede")
 
 
 def validar(cfg: Config) -> None:
@@ -792,12 +894,15 @@ def validar(cfg: Config) -> None:
         erros.append("[transcricao].modelo inválido")
 
     for nome in ("agenda",) + PLATAFORMAS:
-        for h in cfg[nome].get("horarios", []):
-            if not isinstance(h, str) or not _HORA.match(h.strip()):
-                erros.append(f"[{nome}].horarios tem um horário inválido: {h!r} (use HH:MM)")
-        for d in cfg[nome].get("dias", []):
-            if d not in DIAS_SEMANA:
-                erros.append(f"[{nome}].dias tem um dia inválido: {d!r} (use {', '.join(DIAS_SEMANA)})")
+        for chave in ("horarios", "horarios_imagens"):
+            for h in cfg[nome].get(chave, []):
+                if not isinstance(h, str) or not _HORA.match(h.strip()):
+                    erros.append(f"[{nome}].{chave} tem um horário inválido: {h!r} (use HH:MM)")
+        for chave in ("dias", "dias_imagens"):
+            for d in cfg[nome].get(chave, []):
+                if d not in DIAS_SEMANA:
+                    erros.append(f"[{nome}].{chave} tem um dia inválido: {d!r} (use {', '.join(DIAS_SEMANA)})")
+    _validar_imagens(cfg, erros)
     if not cfg["agenda"]["horarios"]:
         erros.append("[agenda].horarios não pode ficar vazio")
     if not cfg["agenda"]["dias"]:
@@ -857,7 +962,7 @@ def _filtrar(padrao: dict, alteracoes: dict, prefixo: tuple = ()) -> dict:
                 continue  # vazio = manter o segredo que já está salvo
             if valor == LIMPAR:
                 valor = ""
-        if caminho[-1] == "horarios" and isinstance(valor, list):
+        if caminho[-1] in ("horarios", "horarios_imagens") and isinstance(valor, list):
             valor = sorted({_hora_normal(v) for v in valor if str(v).strip()})
         saida[chave] = _coagir(valor, base)
     return saida
