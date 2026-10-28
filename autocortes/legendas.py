@@ -523,3 +523,50 @@ def gerar_ass(
     if not palavras:
         log.debug("Corte sem falas: legenda vazia")
     return "\n".join(cabecalho + eventos) + "\n"
+
+
+def gerar_ass_cartaz(estilo: EstiloLegenda, blocos: list[dict], largura: int, altura: int) -> str:
+    """Os textos de uma imagem parada (posts de imagem): um Dialogue por bloco.
+
+    Sem quebra automática (WrapStyle 2): as linhas vêm prontas da imagens.geometria, as mesmas da
+    prévia. Cada bloco: {"estilo": "Topo"|"Frase"|"Chamada", "linhas", "x", "y", "an": 2|8, "escala"}.
+    """
+    e = estilo
+    fonte_topo = e.fonte_topo or e.fonte
+    cor_topo = cor_ass(e.cor_topo or "FFFFFF")
+    cor_frase = cor_ass(e.cor)
+    cor_chamada = cor_ass(e.destaque)
+    cabecalho = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {largura}",
+        f"PlayResY: {altura}",
+        "WrapStyle: 2",
+        "ScaledBorderAndShadow: yes",
+        "YCbCr Matrix: TV.709",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
+        "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        f"Style: Topo,{fonte_topo},{e.tamanho_topo},{cor_topo},{cor_topo},&H00000000,&H64000000,"
+        f"0,0,0,0,100,100,0,0,1,5,2,2,0,0,0,1",
+        f"Style: Frase,{e.fonte},{e.tamanho},{cor_frase},{cor_frase},&H00000000,&H64000000,"
+        f"0,0,0,0,100,100,0,0,1,{e.contorno},3,2,0,0,0,1",
+        f"Style: Chamada,{fonte_topo},{round(e.tamanho_topo * 0.75)},{cor_chamada},{cor_chamada},&H00000000,"
+        f"&H64000000,0,0,0,0,100,100,0,0,1,5,2,2,0,0,0,1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    eventos = []
+    for b in blocos:
+        linhas = [_escapar_ass(linha) for linha in b["linhas"] if str(linha).strip()]
+        if not linhas:
+            continue
+        esc = int(b.get("escala") or 100)
+        eventos.append(
+            f"Dialogue: 0,{_tempo_ass(0)},{_tempo_ass(36000)},{b['estilo']},,0,0,0,,"
+            f"{{\\an{int(b['an'])}\\pos({int(b['x'])},{int(b['y'])})\\fscx{esc}\\fscy{esc}}}" + "\\N".join(linhas)
+        )
+    return "\n".join(cabecalho + eventos) + "\n"

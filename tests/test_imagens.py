@@ -7,6 +7,7 @@ dela). Nada toca em dados\\, perfis\\ nem no config.toml da instalação.
 import contextlib
 import copy
 import io
+import re
 import sqlite3
 import tempfile
 import threading
@@ -18,8 +19,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from autocortes import (agenda, analise, cli, config, db, gravador, loop, planejador, produtor, publicador, roteiro,
-                        selecao, textos, util)
+from autocortes import (agenda, analise, cli, config, db, edicao, gravador, imagens, legendas, loop, midia, planejador,
+                        produtor, publicador, roteiro, selecao, textos, util)
 from autocortes.painel import api
 from autocortes.painel.erros import ErroHttp
 from autocortes.config import PADRAO, RAIZ, Config, ErroConfig
@@ -1275,6 +1276,125 @@ class TestTextos(Base):
         legenda = manual.textos(self.cfg, "instagram", c)["legenda"]
         self.assertEqual(legenda.count("#"), 5)
         self.assertIn("#OFilme", legenda)
+
+
+TITULO_LONGO = "O Incrível Caso do Homem Que Esqueceu o Próprio Nome na Estação\nParte 12"
+FRASE_LONGA = ("Eu te disse mil vezes que não era para abrir aquela porta, e agora olha só o que aconteceu "
+               "com todos nós por causa da sua teimosia de sempre, meu amigo, de sempre mesmo")
+CHAMADA = "A Parte 12 completa está no perfil"
+ASPECTOS = {"2.39:1": 1920 / 804, "4:3": 4 / 3}
+
+
+def _dentro(teste: unittest.TestCase, g: dict, rotulo: str = "") -> None:
+    """CA-16: todo texto dentro da zona do formato, e no 9x16 o que passa de y = 960 fica em x ≤ 780."""
+    x0, y0, x1, y1 = g["zona"]
+    for b in g["blocos"]:
+        cx0, cy0, cx1, cy1 = b["caixa"]
+        teste.assertTrue(x0 <= cx0 and cx1 <= x1 and y0 <= cy0 and cy1 <= y1, f"{rotulo} {b} fora de {g['zona']}")
+        if g["formato"] == "9x16" and cy1 > imagens.MEIO_9X16:
+            teste.assertLessEqual(cx1, imagens.DIREITA_BAIXO_9X16, f"{rotulo} {b}")
+
+
+class TestGeometria(Base):
+    def combinacoes(self):
+        """Os blocos de cada tipo: momento, frase e o primeiro, o do meio e o último do carrossel."""
+        return {"momento": dict(topo=TITULO_LONGO, chamada=CHAMADA), "frase": dict(topo=TITULO_LONGO, frase=FRASE_LONGA),
+                "carrossel-1": dict(topo=TITULO_LONGO), "carrossel-meio": {}, "carrossel-fim": dict(chamada=CHAMADA)}
+
+    def test_textos_dentro_da_zona(self):  # CA-16 (geometria)
+        for formato in imagens.ZONAS:
+            for nome_aspecto, aspecto in ASPECTOS.items():
+                for tipo, textos_ in self.combinacoes().items():
+                    with self.subTest(formato=formato, aspecto=nome_aspecto, tipo=tipo):
+                        g = imagens.geometria(self.cfg, formato, aspecto, **textos_)
+                        self.assertEqual((g["largura"], g["altura"]), imagens.TAMANHOS[formato])
+                        _dentro(self, g, f"{formato} {nome_aspecto} {tipo}")
+                        estilos = sorted(b["estilo"] for b in g["blocos"])
+                        esperados = sorted({"topo": "Topo", "chamada": "Chamada", "frase": "Frase"}[k] for k in textos_)
+                        self.assertEqual(estilos, esperados)
+                        if formato == "4x5":  # no 4x5 o quadro também fica inteiro na zona
+                            self.assertGreaterEqual(g["y_quadro"], g["zona"][1])
+                            self.assertLessEqual(g["y_quadro"] + g["h_quadro"], g["zona"][3])
+
+    def test_titulo_longo_quebra_e_frase_cabe_em_4_linhas(self):
+        g = imagens.geometria(self.cfg, "9x16", 4 / 3, topo=TITULO_LONGO, frase=FRASE_LONGA)
+        topo = next(b for b in g["blocos"] if b["estilo"] == "Topo")
+        frase = next(b for b in g["blocos"] if b["estilo"] == "Frase")
+        self.assertGreater(len(topo["linhas"]), 2)
+        self.assertEqual(topo["escala"], 72)
+        self.assertLessEqual(len(frase["linhas"]), 4)
+        self.assertTrue(frase["linhas"][0].startswith("“") and frase["linhas"][-1].endswith("”"))
+        self.assertEqual(frase["linhas"][0], frase["linhas"][0].upper())  # o modelo padrão usa maiúsculas
+
+    def test_bloco_centrado_e_maior_que_a_zona(self):  # CA-28
+        for formato in imagens.ZONAS:
+            with self.subTest(formato):
+                g = imagens.geometria(self.cfg, formato, 1920 / 804, topo="Filme\nParte 1", chamada=CHAMADA)
+                x0, y0, x1, y1 = g["zona"]
+                topo, chamada = g["blocos"]
+                self.assertEqual(topo["caixa"][3], g["y_quadro"] - imagens.FOLGA)
+                self.assertEqual(chamada["caixa"][1], g["y_quadro"] + g["h_quadro"] + imagens.FOLGA)
+                self.assertLessEqual(abs((topo["caixa"][1] - y0) - (y1 - chamada["caixa"][3])), 1)
+        # 9x16 com um 4:3 e título de 2 linhas: o bloco passa da zona e o quadro fica no meio dela
+        g = imagens.geometria(self.cfg, "9x16", 4 / 3, topo="Um Filme\nParte 2", chamada=CHAMADA)
+        self.assertGreater(g["h_quadro"] + 2 * imagens.FOLGA + sum(b["caixa"][3] - b["caixa"][1] for b in g["blocos"]),
+                           960)
+        self.assertLessEqual(abs(g["y_quadro"] + g["h_quadro"] / 2 - 768), 1)
+        _dentro(self, g)
+        self.assertEqual(len(g["blocos"]), 2)
+        self.assertEqual(len(g["blocos"][0]["linhas"]), 2)
+
+    def test_frase_sobre_quadro_alto_no_9x16(self):  # CA-34
+        g = imagens.geometria(self.cfg, "9x16", 1080 / 1300, topo="Filme\nParte 1", frase=FRASE_LONGA)
+        self.assertEqual(g["h_quadro"], imagens.ALTURA_MAX_9X16)
+        frase = next(b for b in g["blocos"] if b["estilo"] == "Frase")
+        self.assertEqual(frase["an"], 2)
+        self.assertLessEqual(frase["y"], 1248)
+        self.assertGreaterEqual(frase["caixa"][0], 192)
+        self.assertLessEqual(frase["caixa"][2], 780)
+        self.assertEqual(frase["x"], (192 + 780) // 2)
+        _dentro(self, g)
+
+    def test_sem_chamada_o_quadro_cresce_no_4x5(self):
+        com = imagens.geometria(self.cfg, "4x5", 4 / 3, topo="Filme\nParte 1", chamada=CHAMADA)
+        sem = imagens.geometria(self.cfg, "4x5", 4 / 3, topo="Filme\nParte 1")
+        self.assertGreater(sem["h_quadro"], com["h_quadro"])
+        self.assertEqual(com["x_quadro"], (1080 - com["w_quadro"]) // 2)
+
+    def test_altura_do_fundo_par(self):
+        self.assertEqual(imagens.altura_fundo(1350), 338)
+        self.assertEqual(imagens.altura_fundo(1920), 480)
+
+    def test_sem_emoji(self):
+        self.assertEqual(imagens._sem_emoji("Olá 😀 mundo ❤️\nParte 1 🎬"), "Olá mundo\nParte 1")
+        g = imagens.geometria(self.cfg, "4x5", 2.0, topo="Filme 🍿")
+        self.assertEqual(g["blocos"][0]["linhas"], ["Filme"])
+
+    def test_ass_do_cartaz(self):
+        g = imagens.geometria(self.cfg, "9x16", 2.0, topo="Filme\nParte 1", chamada=CHAMADA)
+        estilo = edicao.estilo_legenda(self.cfg)
+        ass = legendas.gerar_ass_cartaz(estilo, g["blocos"], g["largura"], g["altura"])
+        self.assertIn("WrapStyle: 2", ass)
+        self.assertIn("PlayResY: 1920", ass)
+        dialogos = [linha for linha in ass.splitlines() if linha.startswith("Dialogue:")]
+        self.assertEqual(len(dialogos), 2)
+        topo = g["blocos"][0]
+        self.assertIn(f"\\an2\\pos({topo['x']},{topo['y']})\\fscx{topo['escala']}", dialogos[0])
+        self.assertTrue(dialogos[0].endswith("Filme\\NParte 1"))
+        self.assertIn(",Chamada,", dialogos[1])
+
+    def test_chaves_do_metadado_no_ffmpeg(self):  # DF-5: as chaves medidas existem no FFmpeg instalado
+        arquivo = self.raiz / "meta.txt"
+        r = midia.executar(midia.base_ffmpeg(self.cfg["ferramentas"]["ffmpeg"]) + [
+            "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=4", "-t", "1",
+            "-vf", f"signalstats,blurdetect,metadata=mode=print:file={midia.caminho_filtro(arquivo)}",
+            "-f", "null", "-"], baixa_prioridade=False, timeout=60)
+        self.assertEqual(r.codigo, 0, r.resumo_erro())
+        texto = arquivo.read_text(encoding="utf-8")
+        contagens = {chave: len(re.findall(rf"{re.escape(chave)}[=:]", texto))
+                     for chave in imagens.CHAVES_METADADO.values()}
+        self.assertEqual(len(set(contagens.values())), 1, contagens)  # uma de cada por quadro
+        self.assertGreaterEqual(min(contagens.values()), 4, contagens)
 
 
 if __name__ == "__main__":
