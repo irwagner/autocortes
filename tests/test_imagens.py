@@ -2153,6 +2153,29 @@ class TestViaNavegadorImagem(Base):
         e = self.erro()
         self.assertEqual((e.tipo, e.parado), ("formato", False))
 
+    def test_campo_que_nao_aceita_imagem_para_as_imagens_da_rede(self):  # CA-30 (unidade)
+        self.gravar("instagram-imagem", ROTEIRO_IMAGEM)
+        self.aba.erro_arquivo = navegador.ErroNavegador("o campo de arquivo desta página não aceita imagem",
+                                                        "formato", parado=True)
+        cfg = self.cfg
+        cfg["instagram"].update(ativo=True, imagens=True, envio="navegador")
+        cfg["geral"]["simulacao"] = False
+        conn = db.conectar(cfg.banco)
+        self.addCleanup(conn.close)
+        pub = publicador.Publicador(cfg, threading.Event())
+        pub.plataformas["instagram"] = self.via()
+        filme = conn.execute("INSERT INTO filmes (caminho, titulo, tipo, status, criado_em, atualizado_em) "
+                             "VALUES ('x.mkv', 'O Filme', 'filme', 'analisado', 1, 1)").lastrowid
+        corte = conn.execute("INSERT INTO cortes (filme_id, inicio, fim, pontuacao, status, parte, criado_em) "
+                             "VALUES (?, 0, 10, 1, 'pronto', 1, 1)", (filme,)).lastrowid
+        row = conn.execute("SELECT * FROM cortes WHERE id=?", (corte,)).fetchone()
+        with patch.object(imagens, "preparar", side_effect=lambda *a, **k: _linha_de_imagem(conn, a[2], a[3],
+                                                                                              self.fotos)):
+            self.assertEqual(pub.postar_imagem(conn, "instagram", row, "momento"), "formato")
+        self.assertIn("parado", planejador.ler_estado_imagens(conn, "instagram"))
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM postagens").fetchone()[0], 0)
+        self.assertEqual(publicador.ler_bloqueios(conn), {})
+
     def test_titulo_no_roteiro_de_imagem_do_tiktok(self):
         self.gravar("tiktok-imagem", "abrir https://www.tiktok.com/tiktokstudio/upload\nimagens\n"
                                      "escrever titulo em input.titulo\nescrever legenda em div.legenda\n"
@@ -2160,6 +2183,345 @@ class TestViaNavegadorImagem(Base):
         self.publicar("tiktok")
         self.assertIn(("escrever", "O Filme - Parte 2"), self.aba.feito)
         self.assertIn(("escrever", "A legenda do post #filme"), self.aba.feito)
+
+
+def _linha_de_imagem(conn, corte, tipo: str, arquivos: list[Path]):
+    """A linha de imagens que o preparar devolveria, apontando para os arquivos dados."""
+    conn.execute(
+        "INSERT INTO imagens (corte_id, tipo, formato, arquivos, quadros, texto, com_chamada, assinatura, modelo, "
+        "criado_em) VALUES (?, ?, '4x5', ?, '[]', ?, 0, 'x', '', 1) ON CONFLICT(corte_id, tipo, formato) DO UPDATE "
+        "SET arquivos = excluded.arquivos",
+        (corte["id"], tipo, json.dumps([str(a) for a in arquivos]),
+         corte["frase"] if tipo == "frase" else None))
+    return conn.execute("SELECT * FROM imagens WHERE corte_id=? AND tipo=? AND formato='4x5'",
+                        (corte["id"], tipo)).fetchone()
+
+
+class _PlataformaFalsa:
+    """Plataforma de mentira: anota o que recebeu (nomes e se os arquivos existiam) e faz o que `acao` mandar."""
+
+    via = "navegador"
+
+    def __init__(self, rotulo: str = "Instagram (navegador)"):
+        self.rotulo = rotulo
+        self.envios: list[dict] = []
+        self.videos: list[str] = []
+        self.acao = None  # acao(arquivos, entrega) -> Resultado, ou levanta
+
+    def pronta(self) -> tuple[bool, str]:
+        return True, "ok"
+
+    def publicar_imagens(self, arquivos, conteudo, parar=None, entrega=None):
+        self.envios.append({"nomes": [a.name for a in arquivos], "pasta": arquivos[0].parent,
+                            "existem": all(a.is_file() for a in arquivos), "legenda": conteudo.descricao})
+        if self.acao is not None:
+            return self.acao(arquivos, entrega)
+        return plat_base.Resultado("navegador-abc", "https://www.instagram.com/p/abc/")
+
+    def publicar(self, arquivo, conteudo, parar=None, entrega=None):
+        self.videos.append(Path(arquivo).name)
+        return plat_base.Resultado("navegador-video")
+
+
+class _Agora(datetime):
+    """datetime com o now() preso no momento do teste (o ciclo do publicador lê datetime.now())."""
+
+    momento: datetime | None = None
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.momento
+
+
+class TestPublicador(BaseImagens):
+    """postar_imagem e o bloco de imagem do ciclo (C16), com o preparar e a plataforma de mentira."""
+
+    def setUp(self):
+        super().setUp()
+        self.pub = publicador.Publicador(self.cfg, threading.Event())
+        self.ig = _PlataformaFalsa()
+        self.pub.plataformas["instagram"] = self.ig
+        self.erros_preparar: list[Exception | None] = []
+        self.preparos: list[tuple] = []
+        troca = patch.object(imagens, "preparar", side_effect=self.preparar_falso)
+        troca.start()
+        self.addCleanup(troca.stop)
+        self.corte = self.novo_corte()
+        # o vídeo do corte saiu há 3 h (fora do intervalo mínimo e sem atender horário de hoje)
+        self.tres_horas = time.time() - 3 * 3600
+        self.postagem(self.corte, "instagram", "publicado", criado_em=self.tres_horas, horario=self.tres_horas)
+
+    def preparar_falso(self, cfg, conn, corte, tipo, rede, parar=None, quadros=None, prazo=300, post_simulado=None):
+        self.preparos.append((corte["id"], tipo, rede))
+        if self.erros_preparar:
+            erro = self.erros_preparar.pop(0)
+            if erro is not None:
+                raise erro
+        pasta = imagens.pasta_imagens(cfg, corte["id"])
+        pasta.mkdir(parents=True, exist_ok=True)
+        fontes = []
+        for i in range(1, (3 if tipo == "carrossel" else 1) + 1):
+            arquivo = pasta / f"{tipo}-4x5-{i}.jpg"
+            arquivo.write_bytes(b"jpg")
+            fontes.append(arquivo)
+        return _linha_de_imagem(conn, corte, tipo, fontes)
+
+    def postar(self, tipo: str = "momento", rede: str = "instagram", **kw) -> str:
+        return self.pub.postar_imagem(self.conn, rede, self.corte_row(self.corte), tipo, **kw)
+
+    def linhas(self, rede: str = "instagram") -> list[tuple]:
+        return [tuple(r) for r in self.conn.execute(
+            "SELECT status, midia, imagem_tipo, erro FROM postagens WHERE plataforma=? AND midia='imagem' "
+            "ORDER BY id", (rede,))]
+
+    def envio(self, rede: str = "instagram") -> Path:
+        return imagens.pasta_imagens(self.cfg, self.corte) / "envio" / rede
+
+    def falhar(self, erro: Exception, aceitar: bool = False):
+        def acao(arquivos, entrega):
+            if aceitar:
+                entrega.aceitou("navegador-abc")
+            raise erro
+        self.ig.acao = acao
+
+    def momento_de_imagem(self) -> tuple[datetime, str]:
+        horario, chave = agenda.horarios_com_chave(self.cfg, "instagram", date.today(), "imagem")[0]
+        return horario + timedelta(minutes=1), chave
+
+    def test_simulado(self):
+        self.cfg["geral"]["simulacao"] = True
+        self.assertEqual(self.postar("carrossel"), "simulado")
+        self.assertEqual(self.linhas(), [("simulado", "imagem", "carrossel", None)])
+        self.assertEqual(self.ig.envios, [])
+        self.assertFalse(self.envio().exists())
+        imagem_id = self.conn.execute("SELECT imagem_id FROM postagens WHERE midia='imagem'").fetchone()[0]
+        self.assertIsNotNone(imagem_id)
+
+    def test_publicado_com_copias_de_nome_neutro(self):  # CA-06 (sucesso) e CA-09
+        self.assertEqual(self.postar("carrossel"), "publicado")
+        envio = self.ig.envios[0]
+        self.assertEqual(envio["nomes"], ["filme-teste-1.jpg", "filme-teste-2.jpg", "filme-teste-3.jpg"])
+        self.assertEqual(envio["pasta"], self.envio())
+        self.assertTrue(envio["existem"])
+        self.assertFalse(self.envio().exists())
+        linha = self.conn.execute("SELECT status, url, imagem_id FROM postagens WHERE midia='imagem'").fetchone()
+        self.assertEqual((linha["status"], linha["url"]), ("publicado", "https://www.instagram.com/p/abc/"))
+        self.assertIsNotNone(linha["imagem_id"])
+        # um corte com o vídeo ainda por sair continua na fila da rede e não conclui (CA-09)
+        outro = self.novo_corte(inicio=300.0, fim=340.0)
+        self.assertEqual(self.pub.postar_imagem(self.conn, "instagram", self.corte_row(outro), "momento"),
+                         "publicado")
+        self.assertEqual([c["id"] for c in planejador.fila(self.cfg, self.conn, "instagram")], [outro])
+        self.pub.atualizar_concluidos(self.conn)
+        self.assertEqual(self.corte_row(outro)["status"], "pronto")
+
+    def test_erro_tambem_apaga_as_copias(self):  # CA-06 (erro)
+        self.falhar(plat_base.ErroPublicacao("o seletor sumiu"))
+        self.assertEqual(self.postar("carrossel"), "falhou")
+        self.assertTrue(self.ig.envios[0]["existem"])
+        self.assertFalse(self.envio().exists())
+        self.assertEqual(self.linhas(), [("falhou", "imagem", "carrossel", "o seletor sumiu")])
+
+    def test_titulo_com_cara_de_exemplo_vira_imagem(self):
+        self.conn.execute("UPDATE filmes SET titulo='Exemplo 1' WHERE id=?", (self.filme,))
+        self.postar()
+        self.assertEqual(self.ig.envios[0]["nomes"], ["imagem-1.jpg"])
+
+    def test_aceita_e_erro_vira_conferir(self):
+        self.falhar(plat_base.ErroPublicacao("a página travou"), aceitar=True)
+        self.assertEqual(self.postar(), "conferir")
+        status, _, _, erro = self.linhas()[0]
+        self.assertEqual(status, "conferir")
+        self.assertTrue(erro.startswith("A rede recebeu a imagem"))
+        self.assertFalse(self.envio().exists())
+
+    def test_ensaio_ocupa_o_horario_e_o_corte_continua(self):  # CA-07
+        momento, chave = self.momento_de_imagem()
+        tipo = self.fila()[0][1]
+        self.falhar(plat_base.ErroPublicacao("ensaio: preenchi tudo e NÃO publiquei", "ensaio"))
+        self.assertEqual(self.pub.postar_imagem(self.conn, "instagram", self.corte_row(self.corte), tipo,
+                                                horario=momento, chave=chave), "ensaio")
+        self.assertEqual(self.linhas()[0][:3], ("ensaio", "imagem", tipo))
+        self.assertIsNone(self.pub.horario_devido(self.conn, "instagram", momento, midia="imagem"))
+        # o rodízio passa a vez ao tipo seguinte, mas o mesmo corte e tipo continuam possíveis
+        self.assertEqual(self.fila(forcar_tipo=tipo)[0], (self.corte, tipo))
+
+    def test_horario_de_imagem_posta_o_corte_do_video(self):  # CA-08
+        outro = self.novo_corte(inicio=300.0, fim=340.0)  # sem vídeo publicado: não é a vez dele
+        esperado = self.fila()[0]
+        self.assertEqual(esperado[0], self.corte)
+        momento, chave = self.momento_de_imagem()
+        self.pub._ciclo_imagem(self.conn, "instagram", self.ig, momento)
+        linha = self.conn.execute("SELECT corte_id, imagem_tipo, slot FROM postagens WHERE midia='imagem'").fetchone()
+        self.assertEqual((linha["corte_id"], linha["imagem_tipo"], linha["slot"]), (self.corte, esperado[1], chave))
+        self.assertEqual(len(self.ig.envios), 1)
+        self.assertEqual(len(self.ig.envios[0]["nomes"]), 3 if esperado[1] == "carrossel" else 1)
+        self.assertNotIn(outro, [p[0] for p in self.preparos])
+
+    def test_bloqueio_pausa_a_rede_e_os_videos(self):  # CA-12
+        self.falhar(plat_base.ErroPublicacao("a rede pediu verificação", "bloqueio", persistente=True))
+        self.assertEqual(self.postar(), "bloqueado")
+        self.assertEqual(self.linhas(), [])
+        self.assertIn("instagram", publicador.ler_bloqueios(self.conn))
+        # o ciclo no horário de vídeo não posta o vídeo da rede pausada
+        self.novo_corte(inicio=300.0, fim=340.0)
+        horario = agenda.horarios_com_chave(self.cfg, "instagram", date.today())[0][0] + timedelta(minutes=1)
+        _Agora.momento = horario
+        with patch.object(publicador, "datetime", _Agora):
+            self.pub.ciclo(self.conn)
+            self.assertEqual(self.ig.videos, [])
+            publicador.desbloquear(self.conn, "instagram", persistente=True)  # sem a pausa, ele sairia
+            self.pub.ciclo(self.conn)
+        self.assertEqual(len(self.ig.videos), 1)
+
+    def test_carrossel_sem_multiple_passa_a_vez(self):  # CA-13
+        # a última imagem foi uma frase: o carrossel é a vez
+        self.postagem(self.corte, "instagram", "publicado", "imagem", "frase", criado_em=self.tres_horas - 60,
+                      horario=self.tres_horas - 60)
+        self.assertEqual(self.fila()[0][1], "carrossel")
+
+        def acao(arquivos, entrega):
+            if len(arquivos) > 1:
+                raise plat_base.ErroPublicacao("o campo de arquivo aceita uma imagem por vez", "formato")
+            return plat_base.Resultado("navegador-abc")
+        self.ig.acao = acao
+        momento, _ = self.momento_de_imagem()
+        self.pub._ciclo_imagem(self.conn, "instagram", self.ig, momento)
+        self.assertEqual([len(e["nomes"]) for e in self.ig.envios], [3, 1])  # o mesmo horário tenta o seguinte
+        novas = [r for r in self.linhas() if r[1] == "imagem" and r[2] != "frase"]
+        self.assertEqual([r[:3] for r in novas], [("publicado", "imagem", "momento")])
+        estado = planejador.ler_estado_imagens(self.conn, "instagram")
+        self.assertEqual(list(estado), ["sem_carrossel"])
+        self.assertEqual(publicador.ler_bloqueios(self.conn), {})
+        self.assertNotIn("carrossel", [t for _, t in self.fila(quantidade=3)])
+
+    def test_formato_num_momento_para_as_imagens(self):  # CA-13 (o resto)
+        self.falhar(plat_base.ErroPublicacao("o campo de arquivo desta página não aceita imagem", "formato"))
+        self.assertEqual(self.postar("momento"), "formato")
+        self.assertIn("parado", planejador.ler_estado_imagens(self.conn, "instagram"))
+        self.assertEqual(self.linhas(), [])
+        self.assertEqual(publicador.ler_bloqueios(self.conn), {})
+        # o ciclo seguinte nem chama o envio das imagens desta rede
+        momento, _ = self.momento_de_imagem()
+        self.pub._ciclo_imagem(self.conn, "instagram", self.ig, momento)
+        self.assertEqual(len(self.ig.envios), 1)
+        # o carrossel com parado também para (nunca vira só "sem_carrossel")
+        planejador.limpar_estado_imagens(self.conn, "instagram")
+        self.falhar(plat_base.ErroPublicacao("o roteiro de imagem sumiu", "formato", parado=True))
+        self.assertEqual(self.postar("carrossel"), "formato")
+        self.assertEqual(list(planejador.ler_estado_imagens(self.conn, "instagram")), ["parado"])
+
+    def test_roteiro_apagado_antes_do_envio(self):
+        via = plat_nav.ViaNavegador("instagram", self.cfg)
+        self.pub.plataformas["instagram"] = via
+        roteiro_imagem = gravador.arquivo_roteiro(self.cfg, "instagram-imagem")
+
+        def apaga_e_prepara(*args, **kw):
+            roteiro_imagem.unlink()  # depois do imagens_prontas, antes do envio
+            return self.preparar_falso(*args, **kw)
+
+        with patch.object(imagens, "preparar", side_effect=apaga_e_prepara), \
+                patch.object(plat_nav, "Navegador", side_effect=AssertionError("não devia abrir o navegador")):
+            self.assertEqual(self.postar(), "formato")
+        self.assertEqual(list(planejador.ler_estado_imagens(self.conn, "instagram")), ["parado"])
+        self.assertEqual(publicador.ler_bloqueios(self.conn), {})
+        # o vídeo seguinte sai
+        self.pub.plataformas["instagram"] = self.ig
+        self.assertEqual(self.pub.postar(self.conn, "instagram", self.corte_row(self.corte)), "publicado")
+
+    def test_quatro_falhas_viram_pulado(self):
+        self.falhar(plat_base.ErroPublicacao("o seletor sumiu"))
+        resultados = [self.postar() for _ in range(planejador.FALHAS_POR_CORTE)]
+        self.assertEqual(resultados, ["falhou"] * (planejador.FALHAS_POR_CORTE - 1) + ["pulado"])
+        self.assertEqual(self.linhas()[-1][:3], ("pulado", "imagem", "momento"))
+
+    def test_falha_do_pc_na_geracao_nao_gasta_o_corte(self):  # DF-5
+        self.erros_preparar = [imagens.ErroImagem("o FFmpeg falhou", False)] * 5
+        resultados = [self.postar() for _ in range(5)]
+        self.assertEqual(resultados, ["falhou"] * 5)
+        self.assertTrue(all(r[0] == "falhou" and r[3].startswith("geração:") for r in self.linhas()))
+        self.assertIn("instagram-geracao", self.pub._avisos)
+        self.assertEqual(self.ig.envios, [])
+        self.assertEqual(self.fila()[0], (self.corte, "momento"))
+        # o FFmpeg volta: o mesmo corte sai
+        self.assertEqual(self.postar(), "publicado")
+
+    def test_trecho_que_nao_serve_vira_pulado(self):
+        self.erros_preparar = [imagens.ErroImagem("o trecho não tem fala", True)]
+        self.assertEqual(self.postar("frase"), "pulado")
+        self.assertEqual(self.linhas(), [("pulado", "imagem", "frase", "o trecho não tem fala")])
+        self.assertEqual(self.pub._recusas, {})
+
+    def test_filme_fora_da_pasta_nao_grava_linha(self):  # CA-27
+        self.erros_preparar = [imagens.ErroImagem("o arquivo do filme não está na pasta agora", False,
+                                                  sem_linha=True)]
+        self.assertEqual(self.postar(), "sem_imagem")
+        self.assertEqual(self.linhas(), [])
+        self.assertIn("instagram-filme-ausente", self.pub._avisos)
+        self.assertEqual(self.postar(), "publicado")  # o arquivo voltou
+        self.assertEqual(self.preparos, [(self.corte, "momento", "instagram")] * 2)
+
+    def test_redes_diferentes_nao_apagam_as_copias_uma_da_outra(self):  # DF-6
+        self.so_redes("instagram", "tiktok")
+        self.cfg["tiktok"].update(imagens=True, envio="navegador")
+        self.roteiro_imagem("tiktok")
+        tk = _PlataformaFalsa("TikTok (navegador)")
+        self.pub.plataformas["tiktok"] = tk
+        vistos = {}
+
+        def acao(arquivos, entrega):
+            self.assertEqual(self.pub.postar_imagem(self.conn, "tiktok", self.corte_row(self.corte), "momento"),
+                             "publicado")
+            vistos["depois"] = all(a.is_file() for a in arquivos)
+            return plat_base.Resultado("navegador-abc")
+        self.ig.acao = acao
+        self.assertEqual(self.postar("carrossel"), "publicado")
+        self.assertTrue(vistos["depois"])
+        self.assertEqual(tk.envios[0]["pasta"], self.envio("tiktok"))
+        self.assertFalse(self.envio("tiktok").exists())
+        self.assertFalse(self.envio("instagram").exists())
+
+    def test_a_linha_nasce_antes_de_soltar_a_trava(self):  # DF-7
+        vistos = []
+        conn = self.conn
+        envio = self.envio()
+
+        class Espia:
+            def __init__(self):
+                self.trava = threading.Lock()
+
+            def acquire(self, *a, **k):
+                return self.trava.acquire(*a, **k)
+
+            def release(self):
+                vistos.append(([r[0] for r in conn.execute("SELECT status FROM postagens WHERE midia='imagem'")],
+                               sorted(p.name for p in envio.iterdir()) if envio.exists() else []))
+                self.trava.release()
+
+            def locked(self):
+                return self.trava.locked()
+
+        with patch.object(imagens, "TRAVA", Espia()):
+            self.assertEqual(self.postar("carrossel"), "publicado")
+        self.assertEqual(vistos, [(["enviando"], ["filme-teste-1.jpg", "filme-teste-2.jpg", "filme-teste-3.jpg"])])
+
+    def test_ocupado_e_bloqueado_nao_gravam_nada(self):
+        with publicador.TRAVAS_REDE["instagram"]:
+            self.assertEqual(self.postar(), "ocupado")
+        gravador.arquivo_roteiro(self.cfg, "instagram-imagem").unlink()
+        self.assertEqual(self.postar(), "bloqueado")
+        self.assertEqual(self.linhas(), [])
+        self.assertEqual(self.preparos, [])
+
+    def test_com_as_imagens_desligadas_nada_muda(self):  # RNF-01
+        _Agora.momento = self.momento_de_imagem()[0]  # o horário de imagem que sairia com elas ligadas
+        self.cfg["instagram"]["imagens"] = False
+        with patch.object(publicador, "datetime", _Agora), \
+                patch.object(planejador, "fila_imagens", side_effect=AssertionError("não devia olhar as imagens")):
+            self.pub.ciclo(self.conn)
+        self.assertEqual(self.preparos, [])
+        self.assertEqual(self.ig.envios, [])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM postagens WHERE midia='imagem'").fetchone()[0], 0)
 
 
 if __name__ == "__main__":

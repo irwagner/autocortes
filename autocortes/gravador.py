@@ -31,6 +31,13 @@ __all__ = ["PASTA_PADRAO", "SCRIPT", "analisar", "arquivo_padrao", "arquivo_rote
 PASTA_PADRAO = RAIZ / "roteiros"
 
 _MARCA = re.compile(r"@@\s*([^@\s]{2,20})\s*@@")
+# o nome dos arquivos de exemplo da gravação de imagem ("exemplo-1.jpg", "Exemplo 1", cortado no meio)
+_NOME_EXEMPLO = re.compile(r"exemplo[\s_\-]*\d")
+
+
+def _tem_nome_de_exemplo(valor) -> bool:
+    """O texto cita um arquivo de exemplo da gravação de imagem (não pode ir para o roteiro)."""
+    return bool(_NOME_EXEMPLO.search(sem_acentos(str(valor or "")).lower()))
 
 # Gravador injetado na página. Escuta na fase de captura e usa composedPath, então enxerga
 # também o que está dentro do shadow DOM (YouTube Studio). Além dos eventos, varre os campos de
