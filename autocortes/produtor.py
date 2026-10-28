@@ -218,7 +218,7 @@ class Produtor:
         em_revisao = conn.execute("SELECT COUNT(*) FROM cortes WHERE status='revisao'").fetchone()[0]
         # uma rede em que nenhum corte cabe (YouTube com limite abaixo da duração mínima) faria o
         # estoque parecer sempre vazio e o motor editaria sem parar
-        ativas = [r for r in self.cfg.plataformas_ativas() if not sem_cortes_possiveis(self.cfg, r)]
+        ativas = [r for r in self.cfg.redes_de_video() if not sem_cortes_possiveis(self.cfg, r)]
         if not ativas:
             prontos = conn.execute("SELECT COUNT(*) FROM cortes WHERE status='pronto'").fetchone()[0]
             return prontos + em_revisao

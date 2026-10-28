@@ -156,23 +156,24 @@ class Publicador:
         self._bloqueios_vigentes(conn)
 
     # ------------------------------------------------------------ agenda
-    def horario_devido(self, conn: sqlite3.Connection, nome: str, momento: datetime) -> tuple[datetime, str] | None:
-        vigente = agenda.horario_vigente_com_chave(self.cfg, nome, momento)
+    def horario_devido(self, conn: sqlite3.Connection, nome: str, momento: datetime,
+                       midia: str = "video") -> tuple[datetime, str] | None:
+        vigente = agenda.horario_vigente_com_chave(self.cfg, nome, momento, midia)
         if vigente is None:
             return None
         horario, chave = vigente
         ts = horario.timestamp()
         # a tarefa à mão também ocupa o horário, o intervalo mínimo e o limite do dia
         ocupam = planejador.status_ocupam_horario(self.cfg)
-        if planejador.horario_atendido(conn, nome, ts, ocupam, chave=chave):
+        if planejador.horario_atendido(conn, nome, ts, ocupam, chave=chave, midia=midia):
             return None
 
         a = self.cfg["agenda"]
         tentativas = conn.execute(
-            "SELECT status, atualizado_em FROM postagens WHERE plataforma=? "
+            "SELECT status, atualizado_em FROM postagens WHERE plataforma=? AND midia=? "
             "AND (slot=? OR (slot IS NULL AND horario IS NOT NULL AND abs(horario - ?) < 1)) "
             "AND status IN ('falhou', 'interrompido', 'pulado') ORDER BY criado_em",
-            (nome, chave, ts),
+            (nome, midia, chave, ts),
         ).fetchall()
         if len(tentativas) >= int(a["max_tentativas"]):
             self._avisar(f"{nome}-tentativas-{chave}", "%s: desistindo do horário %s após %d tentativas",
@@ -184,6 +185,7 @@ class Publicador:
             if time.time() - falhas[-1]["atualizado_em"] < espera:
                 return None
 
+        # o intervalo mínimo e o limite do dia contam vídeos e imagens juntos: são posts da mesma conta
         marc = ",".join("?" * len(ocupam))
         ultimo = conn.execute(
             f"SELECT MAX(criado_em) FROM postagens WHERE plataforma=? AND status IN ({marc})", (nome, *ocupam)
@@ -207,12 +209,16 @@ class Publicador:
     @staticmethod
     def tarefas_esperando(conn: sqlite3.Connection, nome: str) -> int:
         return conn.execute(
-            "SELECT COUNT(*) FROM postagens WHERE plataforma=? AND status='aguardando'", (nome,)
+            "SELECT COUNT(*) FROM postagens WHERE plataforma=? AND midia='video' AND status='aguardando'", (nome,)
         ).fetchone()[0]
 
     # ------------------------------------------------------------ postagem
     def postar(self, conn: sqlite3.Connection, nome: str, corte, horario: datetime | None = None,
                manual: bool = False, chave: str | None = None) -> str:
+        # a porta única do envio de vídeo (motor, painel e CLI): rede só de imagens não recebe vídeo
+        base = "instagram" if nome == "facebook" else nome
+        if not self.cfg[base].get("videos", True):
+            return "so_imagens"
         trava = TRAVAS_REDE[nome]
         if not trava.acquire(blocking=False):
             return "ocupado"
@@ -382,11 +388,17 @@ class Publicador:
         log.warning("%s: %s (vai tentar de novo)", plataforma.rotulo, e)
         return self._limitar_falhas(conn, nome, corte, postagem, str(e))
 
-    def _limitar_falhas(self, conn, nome: str, corte, postagem: int, erro: str) -> str:
-        """Depois de algumas falhas comuns, o corte sai desta rede (com o motivo no histórico)."""
+    def _limitar_falhas(self, conn, nome: str, corte, postagem: int, erro: str, midia: str = "video",
+                        imagem_tipo: str | None = None) -> str:
+        """Depois de algumas falhas comuns, o corte sai desta rede (com o motivo no histórico).
+
+        Contam só as falhas da mesma mídia (e, na imagem, do mesmo tipo). O post da gravação marcado
+        "não saiu" ("gravação:") e a falha do PC ao gerar a imagem ("geração:") não são culpa do corte.
+        """
         falhas = conn.execute(
-            "SELECT COUNT(*) FROM postagens WHERE corte_id=? AND plataforma=? AND status='falhou'",
-            (corte["id"], nome),
+            "SELECT COUNT(*) FROM postagens WHERE corte_id=? AND plataforma=? AND midia=? AND imagem_tipo IS ? "
+            "AND status='falhou' AND COALESCE(erro, '') NOT LIKE 'gravação:%' AND COALESCE(erro, '') NOT LIKE 'geração:%'",
+            (corte["id"], nome, midia, imagem_tipo),
         ).fetchone()[0]
         if falhas < FALHAS_POR_CORTE:
             return "falhou"
@@ -400,8 +412,8 @@ class Publicador:
     def _criar_tarefa(self, conn, nome: str, corte, arquivo: Path, conteudo: Conteudo, horario_ts, chave,
                       manual: bool) -> str:
         """Tarefa para você postar: nada é enviado, o painel mostra o vídeo e os textos da rede."""
-        if conn.execute("SELECT 1 FROM postagens WHERE corte_id=? AND plataforma=? AND status='aguardando'",
-                        (corte["id"], nome)).fetchone():
+        if conn.execute("SELECT 1 FROM postagens WHERE corte_id=? AND plataforma=? AND midia='video' "
+                        "AND status='aguardando'", (corte["id"], nome)).fetchone():
             return "aguardando"  # este corte já está esperando você nesta rede
         t = agora()
         tarefa = conn.execute(
@@ -422,7 +434,9 @@ class Publicador:
     def facebook_ligado(self) -> bool:
         """O Reel do Instagram vai também para a Página do Facebook (API oficial ou Upload-Post)."""
         ig = self.cfg["instagram"]
-        return bool(ig["ativo"] and ig["pagina_facebook"] and ig["envio"] in ("oficial", "upload_post"))
+        # Instagram só de imagens: não há Reel para repetir na Página
+        return bool(ig["ativo"] and ig.get("videos", True) and ig["pagina_facebook"]
+                    and ig["envio"] in ("oficial", "upload_post"))
 
     def _postar_facebook(self, conn, corte, arquivo: Path, conteudo: Conteudo, instagram: Plataforma,
                          horario_ts, manual: bool) -> str:
@@ -555,8 +569,9 @@ class Publicador:
         """Marca como concluídos os cortes já publicados em todas as redes ativas.
 
         A tarefa à mão ('aguardando') e o post 'a conferir' só contam quando você resolve no painel.
+        Só os vídeos contam: o post de imagem nunca segura nem conclui um corte.
         """
-        ativas = list(self.plataformas)
+        ativas = [nome for nome in self.plataformas if self.cfg[nome].get("videos", True)]
         if self.cfg.simulacao or not ativas:
             return  # em simulação nada é concluído: os cortes continuam valendo para o modo real
         facebook = self.facebook_ligado()
@@ -564,16 +579,16 @@ class Publicador:
         for corte in conn.execute("SELECT id, arquivo FROM cortes WHERE status='pronto'").fetchall():
             # a rede está resolvida com o post feito ou pulado (ou, no histórico antigo, com as falhas no limite)
             feitas = conn.execute(
-                f"SELECT plataforma FROM postagens WHERE corte_id=? AND plataforma IN ({marc}) GROUP BY plataforma "
-                "HAVING SUM(status IN ('publicado', 'pulado')) > 0 OR SUM(status = 'falhou') >= ?",
+                f"SELECT plataforma FROM postagens WHERE corte_id=? AND plataforma IN ({marc}) AND midia='video' "
+                "GROUP BY plataforma HAVING SUM(status IN ('publicado', 'pulado')) > 0 OR SUM(status = 'falhou') >= ?",
                 (corte["id"], *ativas, FALHAS_POR_CORTE),
             ).fetchall()
             if len(feitas) < len(ativas):
                 continue
             if facebook and self._facebook_pendente(conn, corte["id"]):
                 continue  # o Reel da Página ainda vai ser tentado de novo com este arquivo
-            if conn.execute("SELECT 1 FROM postagens WHERE corte_id=? AND status IN ('aguardando', 'conferir') "
-                            "LIMIT 1", (corte["id"],)).fetchone():
+            if conn.execute("SELECT 1 FROM postagens WHERE corte_id=? AND midia='video' "
+                            "AND status IN ('aguardando', 'conferir') LIMIT 1", (corte["id"],)).fetchone():
                 continue  # tarefa à mão ou post a conferir: o vídeo fica até você resolver
             conn.execute("UPDATE cortes SET status='concluido' WHERE id=?", (corte["id"],))
             if self.cfg["geral"]["apagar_apos_postar"] and corte["arquivo"]:
@@ -606,30 +621,35 @@ class Publicador:
                     continue
                 if self._nao_prontas.pop(nome, None) is not None:
                     self.bloqueadas.pop(nome, None)
-            if plataforma.via == "manual":
-                esperando = self.tarefas_esperando(conn, nome)
-                if esperando >= tarefas.MAX_TAREFAS_POR_REDE:
-                    self._avisar(f"{nome}-tarefas", "%s: %d tarefas de postagem à mão esperando você; os próximos "
-                                 "horários ficam sem tarefa nova até você postar ou pular", ROTULOS[nome], esperando)
-                    continue
-            for _ in range(3):  # até 3 cortes recusados no mesmo horário
-                devido = self.horario_devido(conn, nome, momento)
-                if devido is None:
-                    break
-                horario, chave = devido
-                corte = self.proximo_corte(conn, nome)
-                if corte is None:
-                    self._avisar(f"{nome}-sem-corte", "%s: chegou o horário %s, mas não há corte pronto ainda",
-                                 plataforma.rotulo, horario.strftime("%H:%M"), intervalo=1800)
-                    break
-                if self.postar(conn, nome, corte, horario=horario, chave=chave) != "pulado":
-                    break
-                if nome in self.bloqueadas:
-                    break  # a última recusa pausou a rede
+            if self.cfg[nome].get("videos", True):
+                self._ciclo_video(conn, nome, plataforma, momento)
         if not self.parar.is_set():
             self._repetir_facebook(conn)
         self.atualizar_concluidos(conn)
         self._coletar_metricas(conn)
+
+    def _ciclo_video(self, conn: sqlite3.Connection, nome: str, plataforma: Plataforma, momento: datetime) -> None:
+        """O horário de vídeo da rede que chegou: o próximo corte da fila."""
+        if plataforma.via == "manual":
+            esperando = self.tarefas_esperando(conn, nome)
+            if esperando >= tarefas.MAX_TAREFAS_POR_REDE:
+                self._avisar(f"{nome}-tarefas", "%s: %d tarefas de postagem à mão esperando você; os próximos "
+                             "horários ficam sem tarefa nova até você postar ou pular", ROTULOS[nome], esperando)
+                return
+        for _ in range(3):  # até 3 cortes recusados no mesmo horário
+            devido = self.horario_devido(conn, nome, momento)
+            if devido is None:
+                break
+            horario, chave = devido
+            corte = self.proximo_corte(conn, nome)
+            if corte is None:
+                self._avisar(f"{nome}-sem-corte", "%s: chegou o horário %s, mas não há corte pronto ainda",
+                             plataforma.rotulo, horario.strftime("%H:%M"), intervalo=1800)
+                break
+            if self.postar(conn, nome, corte, horario=horario, chave=chave) != "pulado":
+                break
+            if nome in self.bloqueadas:
+                break  # a última recusa pausou a rede
 
     def _coletar_metricas(self, conn: sqlite3.Connection) -> None:
         if self.cfg.simulacao or not self.cfg["metricas"]["ativo"] or time.time() < self._proxima_metrica:

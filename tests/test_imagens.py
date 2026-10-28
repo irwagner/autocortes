@@ -7,12 +7,15 @@ dela). Nada toca em dados\\, perfis\\ nem no config.toml da instalação.
 import copy
 import sqlite3
 import tempfile
+import threading
+import time
 import tomllib
 import unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
-from autocortes import agenda, config, db
+from autocortes import agenda, config, db, planejador, publicador
 from autocortes.config import PADRAO, RAIZ, Config, ErroConfig
 
 CONFIG_MINIMO = '[geral]\npasta_filmes = "filmes"\npasta_dados = "dados"\n'
@@ -252,6 +255,172 @@ class TestAgenda(Base):
         cfg["youtube"]["ativo"] = False
         cfg["tiktok"].update(videos=False, imagens=True, envio="navegador")
         self.assertEqual(agenda.consumo_diario(cfg), 2.0)  # só o Instagram (2 por dia) puxa a fila
+
+
+class BaseBanco(Base):
+    """Base com o banco aberto e ajudantes para pôr filmes, cortes e postagens à mão."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg["geral"]["simulacao"] = False
+        self.conn = db.conectar(self.cfg.banco)
+        self.addCleanup(self.conn.close)
+        self.filme = self.novo_filme()
+
+    def novo_filme(self, titulo: str = "Filme Teste", tipo: str = "filme", status: str = "analisado") -> int:
+        arquivo = self.raiz / "filmes" / f"{titulo}.mkv"
+        arquivo.parent.mkdir(parents=True, exist_ok=True)
+        arquivo.write_bytes(bytes(1024))
+        t = time.time()
+        return self.conn.execute(
+            "INSERT INTO filmes (caminho, titulo, tamanho, tipo, status, criado_em, atualizado_em) "
+            "VALUES (?, ?, 1024, ?, ?, ?, ?)", (str(arquivo), titulo, tipo, status, t, t)).lastrowid
+
+    def novo_corte(self, filme_id: int | None = None, status: str = "pronto", parte: int | None = 1,
+                   inicio: float = 100.0, fim: float = 140.0, frase: str | None = "Uma fala qualquer.") -> int:
+        filme_id = filme_id or self.filme
+        t = time.time()
+        editado = status != "candidato" or parte is not None
+        arquivo = None
+        if editado:
+            self.cfg.pasta_cortes.mkdir(parents=True, exist_ok=True)
+            arquivo = self.cfg.pasta_cortes / f"corte-{filme_id}-{inicio:.0f}.mp4"
+            arquivo.write_bytes(bytes(512))
+        return self.conn.execute(
+            "INSERT INTO cortes (filme_id, inicio, fim, pontuacao, frase, status, parte, arquivo, criado_em, "
+            "renderizado_em, fila_em) VALUES (?, ?, ?, 1.0, ?, ?, ?, ?, ?, ?, ?)",
+            (filme_id, inicio, fim, frase, status, parte, str(arquivo) if arquivo else None, t,
+             t if editado else None, t if editado else None)).lastrowid
+
+    def postagem(self, corte_id: int, rede: str, status: str, midia: str = "video", imagem_tipo: str | None = None,
+                 criado_em: float | None = None, slot: str | None = None, erro: str | None = None,
+                 horario: float | None = None) -> int:
+        t = time.time() if criado_em is None else criado_em
+        return self.conn.execute(
+            "INSERT INTO postagens (corte_id, plataforma, status, midia, imagem_tipo, slot, erro, horario, via, "
+            "criado_em, atualizado_em) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'oficial', ?, ?)",
+            (corte_id, rede, status, midia, imagem_tipo, slot, erro, horario, t, t)).lastrowid
+
+    def so_redes(self, *redes: str) -> None:
+        for rede in config.PLATAFORMAS:
+            self.cfg[rede]["ativo"] = rede in redes
+
+    def so_imagens(self, rede: str) -> None:
+        self.cfg[rede].update(videos=False, imagens=True, envio="navegador")
+
+    def corte_row(self, corte_id: int):
+        return self.conn.execute("SELECT * FROM cortes WHERE id=?", (corte_id,)).fetchone()
+
+
+class TestVideosSoComMidiaVideo(BaseBanco):
+    def test_imagem_publicada_nao_tira_o_corte_da_fila_nem_conclui(self):  # CA-09
+        self.so_redes("instagram")
+        corte = self.novo_corte()
+        self.postagem(corte, "instagram", "publicado", "imagem", "momento")
+        self.postagem(corte, "instagram", "conferir", "imagem", "carrossel")
+        self.assertEqual([c["id"] for c in planejador.fila(self.cfg, self.conn, "instagram")], [corte])
+        pub = publicador.Publicador(self.cfg, threading.Event())
+        pub.atualizar_concluidos(self.conn)
+        self.assertEqual(self.corte_row(corte)["status"], "pronto")
+        # 4 falhas de imagem não contam como as do vídeo
+        for _ in range(planejador.FALHAS_POR_CORTE):
+            self.postagem(corte, "instagram", "falhou", "imagem", "frase")
+        self.assertEqual([c["id"] for c in planejador.fila(self.cfg, self.conn, "instagram")], [corte])
+        # o vídeo publicado conclui, e a imagem a conferir não segura
+        self.postagem(corte, "instagram", "publicado")
+        self.assertEqual(planejador.fila(self.cfg, self.conn, "instagram"), [])
+        pub.atualizar_concluidos(self.conn)
+        self.assertEqual(self.corte_row(corte)["status"], "concluido")
+
+    def test_horario_atendido_por_midia(self):
+        corte = self.novo_corte()
+        sucesso = planejador.status_ocupam_horario(self.cfg)
+        self.postagem(corte, "instagram", "publicado", "imagem", "momento", slot="img 2026-10-15 10:00")
+        self.assertTrue(planejador.horario_atendido(self.conn, "instagram", 0, sucesso,
+                                                    chave="img 2026-10-15 10:00", midia="imagem"))
+        self.assertFalse(planejador.horario_atendido(self.conn, "instagram", 0, sucesso,
+                                                     chave="img 2026-10-15 10:00"))
+        # postagem antiga sem slot nem horário só vale para o vídeo
+        self.postagem(corte, "tiktok", "publicado", "imagem", "momento", criado_em=time.time())
+        self.assertFalse(planejador.horario_atendido(self.conn, "tiktok", time.time() - 60, sucesso,
+                                                     chave="2026-10-15 12:00"))
+        self.postagem(corte, "tiktok", "publicado", criado_em=time.time())
+        self.assertTrue(planejador.horario_atendido(self.conn, "tiktok", time.time() - 60, sucesso,
+                                                    chave="2026-10-15 12:00"))
+
+    def test_seis_posts_misturados_seguram_os_dois(self):  # CA-11
+        self.so_redes("instagram")
+        self.cfg["instagram"].update(imagens=True, envio="navegador")
+        corte = self.novo_corte()
+        agora_ = time.time()
+        for i in range(6):  # o mais novo há 2 h: fora do intervalo mínimo, dentro das 24 h
+            midia, tipo = ("video", None) if i % 2 else ("imagem", "momento")
+            criado = agora_ - 7200 - i * 600  # com horário próprio: não atendem o horário de hoje
+            self.postagem(corte, "instagram", "publicado", midia, tipo, criado_em=criado, horario=criado)
+        self.assertEqual(self.cfg["agenda"]["maximo_por_dia"], 6)
+        hoje = date.today()
+        video = agenda.horarios_com_chave(self.cfg, "instagram", hoje)[0][0] + timedelta(minutes=1)
+        imagem = agenda.horarios_com_chave(self.cfg, "instagram", hoje, "imagem")[0][0] + timedelta(minutes=1)
+        pub = publicador.Publicador(self.cfg, threading.Event())
+        self.assertIsNone(pub.horario_devido(self.conn, "instagram", video))
+        self.assertIsNone(pub.horario_devido(self.conn, "instagram", imagem, midia="imagem"))
+        # com 5, os dois saem: era o limite do dia que segurava
+        self.conn.execute("DELETE FROM postagens WHERE id = (SELECT MIN(id) FROM postagens)")
+        self.assertIsNotNone(pub.horario_devido(self.conn, "instagram", video))
+        devido = pub.horario_devido(self.conn, "instagram", imagem, midia="imagem")
+        self.assertTrue(devido[1].startswith("img "))
+
+    def test_rede_so_de_imagens_nao_tem_video(self):  # CA-21 (núcleo)
+        self.so_redes("tiktok", "instagram")
+        self.so_imagens("tiktok")
+        corte = self.novo_corte()
+        self.assertEqual(self.cfg.redes_de_video(), ["instagram"])
+        plano = planejador.montar_plano(self.cfg, self.conn, agora=datetime.combine(date.today(), datetime.min.time()))
+        self.assertFalse([i for i in plano["itens"] if i["rede"] == "tiktok" and i.get("midia", "video") == "video"])
+        self.assertTrue([i for i in plano["itens"] if i["rede"] == "instagram" and i["midia"] == "video"])
+        self.assertNotIn("tiktok", plano["cobertura"]["por_rede"])
+        pub = publicador.Publicador(self.cfg, threading.Event())
+        self.assertEqual(pub.postar(self.conn, "tiktok", self.corte_row(corte)), "so_imagens")
+        self.so_imagens("instagram")
+        self.assertEqual(pub.postar(self.conn, "instagram", self.corte_row(corte)), "so_imagens")
+        self.assertEqual(pub.postar(self.conn, "facebook", self.corte_row(corte)), "so_imagens")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM postagens").fetchone()[0], 0)
+
+    def test_instagram_so_de_imagens_desliga_a_pagina(self):  # CA-33
+        self.so_redes("youtube", "instagram")
+        self.cfg["instagram"].update(videos=False, imagens=True, envio="oficial", pagina_facebook=True)
+        pub = publicador.Publicador(self.cfg, threading.Event())
+        self.assertFalse(pub.facebook_ligado())
+        corte = self.novo_corte()
+        self.postagem(corte, "youtube", "publicado")
+        self.postagem(corte, "facebook", "falhou", criado_em=time.time() - 86400)
+        with patch.object(pub, "_facebook_pendente", side_effect=AssertionError("não devia olhar a Página")), \
+                patch.object(pub, "postar", side_effect=AssertionError("não devia postar na Página")):
+            pub.atualizar_concluidos(self.conn)
+            pub._repetir_facebook(self.conn)
+        self.assertEqual(self.corte_row(corte)["status"], "concluido")
+        # com os vídeos ligados, a Página volta
+        self.cfg["instagram"]["videos"] = True
+        self.assertTrue(pub.facebook_ligado())
+
+    def test_falhas_da_gravacao_e_da_geracao_nao_gastam_o_corte(self):
+        corte = self.novo_corte()
+        pub = publicador.Publicador(self.cfg, threading.Event())
+        for erro in ("gravação: não saiu", "geração: o FFmpeg falhou") * 3:
+            self.postagem(corte, "instagram", "falhou", "imagem", "momento", erro=erro)
+        for _ in range(planejador.FALHAS_POR_CORTE):  # do vídeo e de outro tipo: não somam
+            self.postagem(corte, "instagram", "falhou")
+            self.postagem(corte, "instagram", "falhou", "imagem", "frase")
+        ultima = self.postagem(corte, "instagram", "falhou", "imagem", "momento", erro="seletor sumiu")
+        row = self.corte_row(corte)
+        self.assertEqual(pub._limitar_falhas(self.conn, "instagram", row, ultima, "seletor sumiu", "imagem",
+                                             "momento"), "falhou")
+        for _ in range(planejador.FALHAS_POR_CORTE - 1):
+            ultima = self.postagem(corte, "instagram", "falhou", "imagem", "momento", erro="seletor sumiu")
+        self.assertEqual(pub._limitar_falhas(self.conn, "instagram", row, ultima, "seletor sumiu", "imagem",
+                                             "momento"), "pulado")
+        linha = self.conn.execute("SELECT status, midia, imagem_tipo FROM postagens WHERE id=?", (ultima,)).fetchone()
+        self.assertEqual(tuple(linha), ("pulado", "imagem", "momento"))
 
 
 class TestConfig(Base):

@@ -59,11 +59,12 @@ def fila(cfg: Config, conn: sqlite3.Connection, rede: str, limite: int | None = 
         "SELECT c.*, f.titulo AS filme_titulo, f.ano AS filme_ano FROM cortes c JOIN filmes f ON f.id = c.filme_id "
         "WHERE c.status = 'pronto' AND c.arquivo IS NOT NULL AND f.status != 'ignorado' "
         + ("AND (c.fim - c.inicio) <= ? " if maximo is not None else "")
+        # os posts de imagem do corte não contam: o vídeo dele continua na fila da rede
         + "AND NOT EXISTS (SELECT 1 FROM postagens p WHERE p.corte_id = c.id AND p.plataforma = ? "
-        f"               AND p.status IN ({_marcas(len(feitos))})) "
+        f"               AND p.midia = 'video' AND p.status IN ({_marcas(len(feitos))})) "
         # o publicador transforma a última falha em 'pulado'; isto segura só o histórico antigo
         "AND (SELECT COUNT(*) FROM postagens p WHERE p.corte_id = c.id AND p.plataforma = ? "
-        "     AND p.status = 'falhou') < ? "
+        "     AND p.midia = 'video' AND p.status = 'falhou') < ? "
         "ORDER BY c.prioridade DESC, c.fila_em, c.id"
     )
     params: list = ([maximo + 0.5] if maximo is not None else []) + [rede, *feitos, rede, FALHAS_POR_CORTE]
@@ -74,26 +75,29 @@ def fila(cfg: Config, conn: sqlite3.Connection, rede: str, limite: int | None = 
 
 
 def horario_atendido(conn: sqlite3.Connection, rede: str, ts: float, sucesso: tuple[str, ...],
-                     limite_ts: float | None = None, chave: str | None = None) -> bool:
+                     limite_ts: float | None = None, chave: str | None = None, midia: str = "video") -> bool:
     """Um horário conta como atendido quando uma postagem da agenda saiu para ele.
 
     A ligação é pela chave do horário (agenda.horarios_com_chave); as postagens de antes da
-    chave existir são comparadas pela hora exata.
+    chave existir são comparadas pela hora exata. Só as postagens da mesma mídia contam, e as
+    de antes da chave só existem no vídeo.
     """
     marc = _marcas(len(sucesso))
     if chave and conn.execute(
-        f"SELECT 1 FROM postagens WHERE plataforma=? AND status IN ({marc}) AND slot=? LIMIT 1",
-        (rede, *sucesso, chave),
+        f"SELECT 1 FROM postagens WHERE plataforma=? AND midia=? AND status IN ({marc}) AND slot=? LIMIT 1",
+        (rede, midia, *sucesso, chave),
     ).fetchone():
         return True
+    if midia != "video":
+        return False
     if conn.execute(
-        f"SELECT 1 FROM postagens WHERE plataforma=? AND status IN ({marc}) AND horario IS NOT NULL "
+        f"SELECT 1 FROM postagens WHERE plataforma=? AND midia='video' AND status IN ({marc}) AND horario IS NOT NULL "
         "AND slot IS NULL AND abs(horario - ?) < 1 LIMIT 1",
         (rede, *sucesso, ts),
     ).fetchone():
         return True
     # postagens antigas, de antes da coluna 'horario'
-    sql = (f"SELECT 1 FROM postagens WHERE plataforma=? AND status IN ({marc}) AND horario IS NULL "
+    sql = (f"SELECT 1 FROM postagens WHERE plataforma=? AND midia='video' AND status IN ({marc}) AND horario IS NULL "
            "AND manual=0 AND criado_em>=?")
     params: list = [rede, *sucesso, ts]
     if limite_ts is not None:
@@ -140,8 +144,8 @@ def previsao_edicao(cfg: Config, conn: sqlite3.Connection, quantidade: int) -> l
 
 
 def cobertura(cfg: Config, conn: sqlite3.Connection) -> dict:
-    """Por quantos dias o conteúdo atual sustenta a agenda."""
-    ativas = cfg.plataformas_ativas()
+    """Por quantos dias o conteúdo atual sustenta a agenda (dos vídeos)."""
+    ativas = cfg.redes_de_video()
     uma = lambda sql, *p: conn.execute(sql, p).fetchone()[0] or 0  # noqa: E731
     # as contas de "quantos cortes um filme rende" são só dos filmes: uma pauta rende um vídeo
     candidatos = uma("SELECT COUNT(*) FROM cortes c JOIN filmes f ON f.id=c.filme_id "
@@ -210,11 +214,13 @@ def montar_plano(cfg: Config, conn: sqlite3.Connection, agora: datetime | None =
             "tipo": "postagem", "rede": p["plataforma"], "quando": p["criado_em"], "estado": p["status"],
             "corte_id": p["corte_id"], "filme": p["filme_titulo"], "parte": p["parte"],
             "url": p["url"], "erro": p["erro"], "manual": bool(p["manual"]),
+            "midia": p["midia"], "imagem_tipo": p["imagem_tipo"],
         })
 
     abertos: dict[str, tuple[list, list]] = {}
     necessarios = 0
-    for rede in cfg.plataformas_ativas():
+    # rede só de imagens não tem horário de vídeo nem puxa a edição
+    for rede in cfg.redes_de_video():
         horarios = agenda.horarios_entre_com_chave(cfg, rede, inicio, fim)
         pendentes: list[tuple[datetime, str]] = []
         for i, (h, chave) in enumerate(horarios):
@@ -227,7 +233,8 @@ def montar_plano(cfg: Config, conn: sqlite3.Connection, agora: datetime | None =
             if agora <= h + tolerancia:
                 pendentes.append((h, "pendente"))
             else:
-                itens.append({"tipo": "horario", "rede": rede, "quando": h.timestamp(), "estado": "perdido"})
+                itens.append({"tipo": "horario", "rede": rede, "quando": h.timestamp(), "estado": "perdido",
+                              "midia": "video"})
         fila_rede = fila(cfg, conn, rede)
         abertos[rede] = (pendentes, fila_rede)
         if not sem_cortes_possiveis(cfg, rede):  # sem corte que caiba, editar mais não resolve
@@ -243,7 +250,7 @@ def montar_plano(cfg: Config, conn: sqlite3.Connection, agora: datetime | None =
         cabem = [c for c in previstos if maximo is None or c["fim"] - c["inicio"] <= maximo + 0.5]
         for j, (h, estado) in enumerate(pendentes):
             parada = rede in pausas and (pausas[rede] is None or h.timestamp() < pausas[rede])
-            item = {"tipo": "horario", "rede": rede, "quando": h.timestamp(),
+            item = {"tipo": "horario", "rede": rede, "quando": h.timestamp(), "midia": "video",
                     "estado": "pausado" if pausado or parada else estado}
             if j < len(fila_rede):
                 c = fila_rede[j]
