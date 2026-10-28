@@ -1049,5 +1049,143 @@ class TestPlanejadorImagens(BaseImagens):
         self.assertFalse(planejador.imagens_possiveis(self.cfg, self.conn, "instagram"))
 
 
+class TestPlanoImagens(BaseImagens):
+    def plano(self) -> dict:
+        return planejador.montar_plano(self.cfg, self.conn, agora=datetime.combine(date.today(), datetime.min.time()))
+
+    @staticmethod
+    def de_imagem(plano: dict, rede: str = "instagram") -> list[dict]:
+        return [i for i in plano["itens"] if i["tipo"] == "horario" and i["rede"] == rede and i["midia"] == "imagem"]
+
+    def test_descartado_perto_do_video(self):  # CA-10 (plano)
+        self.cfg["instagram"].update(horarios=["12:00", "19:00"], horarios_imagens=["11:30", "16:00"])
+        plano = self.plano()
+        horas = {datetime.fromtimestamp(i["quando"]).strftime("%H") for i in self.de_imagem(plano)}
+        self.assertEqual(horas, {"16"})
+        self.assertEqual(plano["descartados_imagem"],
+                         {"instagram": [{"horario": "11:30", "video": "12:00", "minutos": 30, "precisa": 70}]})
+        # imagens desligadas: nem horário nem descartado
+        self.cfg["instagram"]["imagens"] = False
+        plano = self.plano()
+        self.assertEqual((self.de_imagem(plano), plano["descartados_imagem"]), ([], {}))
+
+    def test_plano_igual_ao_motor(self):  # DF-4
+        self.cfg["geral"]["simulacao"] = True
+        self.so_imagens("instagram")
+        self.cfg["instagram"]["horarios_imagens"] = ["09:00", "13:00", "17:00"]
+        cortes = [self.novo_corte(inicio=100), self.novo_corte(inicio=200, frase=None), self.novo_corte(inicio=300)]
+        for i, c in enumerate(cortes):
+            self.na_fila(c, 1000 + i)
+        previstos = [(i["corte_id"], i["imagem_tipo"]) for i in self.de_imagem(self.plano())[:6]]
+        self.assertEqual(len(previstos), 6)
+        motor = []
+        for n in range(6):
+            (corte, tipo), = self.fila()
+            motor.append((corte, tipo))
+            self.postagem(corte, "instagram", "simulado", "imagem", tipo, criado_em=time.time() + n)
+        self.assertEqual(previstos, motor)
+        self.assertEqual(len(set(motor)), 6)  # nenhum (corte, tipo) repetido
+        self.assertNotIn((cortes[1], "frase"), motor)
+
+    def test_espera_video_e_sem_corte(self):
+        corte = self.novo_corte()
+        itens = self.de_imagem(self.plano())
+        video = [i for i in self.plano()["itens"] if i["tipo"] == "horario" and i["midia"] == "video"]
+        self.assertEqual(video[0]["corte_id"], corte)  # o vídeo das 12:15 de hoje leva o corte
+        self.assertEqual((itens[0]["motivo"], itens[0]["detalhe"]), ("sem_corte", "nenhum vídeo desta rede saiu ainda"))
+        self.assertTrue(itens[0]["sem_imagem"])
+        self.assertEqual(itens[1]["motivo"], "espera_video")  # o das 16:00 vem depois do vídeo das 12:15
+        # sem corte nenhum para o vídeo, nada a esperar
+        self.conn.execute("UPDATE cortes SET status='concluido' WHERE id=?", (corte,))
+        self.assertEqual({i["motivo"] for i in self.de_imagem(self.plano())}, {"sem_corte"})
+        # com o vídeo publicado, a imagem sai do corte dele
+        self.postagem(corte, "instagram", "publicado", criado_em=time.time() - 3600)
+        itens = self.de_imagem(self.plano())
+        self.assertEqual((itens[0]["corte_id"], itens[0]["imagem_tipo"]), (corte, "momento"))
+        self.assertEqual(itens[3]["motivo"], "sem_corte")
+        self.assertNotIn("detalhe", itens[3])
+
+    def test_motivos_sem_imagem(self):
+        self.so_imagens("instagram")
+        self.novo_corte()
+        planejador.gravar_estado_imagens(self.conn, "instagram", {"parado": "o campo não aceita imagem"})
+        self.assertEqual({i["motivo"] for i in self.de_imagem(self.plano())}, {"parado"})
+        planejador.limpar_estado_imagens(self.conn, "instagram")
+        self.cfg["imagens"]["tipos"] = ["carrossel"]
+        planejador.gravar_estado_imagens(self.conn, "instagram", {"sem_carrossel": "uma por vez"})
+        self.assertEqual({i["motivo"] for i in self.de_imagem(self.plano())}, {"sem_tipo"})
+        planejador.limpar_estado_imagens(self.conn, "instagram")
+        gravador.arquivo_roteiro(self.cfg, "instagram-imagem").unlink()
+        self.assertEqual({i["motivo"] for i in self.de_imagem(self.plano())}, {"sem_roteiro"})
+        self.roteiro_imagem("instagram")
+        self.cfg["agenda"]["pausado"] = True
+        self.assertEqual({i["estado"] for i in self.de_imagem(self.plano())}, {"pausado"})
+
+    def test_rede_so_de_imagens_no_plano(self):  # CA-21 (plano)
+        self.so_redes("tiktok", "instagram")
+        self.so_imagens("tiktok")
+        self.cfg["instagram"]["imagens"] = False
+        self.roteiro_imagem("tiktok")
+        corte = self.novo_corte()
+        plano = self.plano()
+        self.assertFalse([i for i in plano["itens"] if i["rede"] == "tiktok" and i["midia"] == "video"])
+        imagens = self.de_imagem(plano, "tiktok")
+        self.assertTrue(imagens)
+        self.assertEqual((imagens[0]["corte_id"], imagens[0]["imagem_tipo"]), (corte, "momento"))
+        self.assertFalse(self.de_imagem(plano, "instagram"))
+        self.assertNotIn("tiktok", plano["cobertura"]["por_rede"])
+
+
+class TestEstoqueSoDeImagens(BaseImagens):
+    def setUp(self):
+        super().setUp()
+        self.so_imagens("instagram")
+        self.prod = produtor.Produtor(self.cfg, threading.Event())
+
+    def prontos(self) -> int:
+        return self.conn.execute("SELECT COUNT(*) FROM cortes WHERE status='pronto'").fetchone()[0]
+
+    def test_estoque_cai_quando_os_tipos_saem(self):
+        corte = self.novo_corte()
+        self.novo_corte(status="revisao", inicio=300)
+        self.assertEqual(self.prod.prontos_pendentes(self.conn), 2)
+        for tipo in config.TIPOS_IMAGEM:
+            self.postagem(corte, "instagram", "publicado", "imagem", tipo)
+        self.assertEqual(self.prod.prontos_pendentes(self.conn), 1)  # só o da revisão
+        self.assertEqual(self.prontos(), 1)
+        # com uma rede de vídeo, o de hoje: a fila dela
+        self.so_redes("tiktok", "instagram")
+        self.assertEqual(self.prod.prontos_pendentes(self.conn),
+                         len(planejador.fila(self.cfg, self.conn, "tiktok")) + 1)
+
+    def test_sem_tipo_ou_sem_rendimento_para_no_buffer(self):  # CA-31 (produtor)
+        buffer = int(self.cfg["geral"]["buffer_cortes"])
+        for i in range(buffer):
+            self.novo_corte(inicio=float(i * 100), frase=None)
+        candidato = self.novo_corte(status="candidato", parte=None, inicio=9000)
+        self.cfg["imagens"]["tipos"] = ["frase"]
+        with self.assertLogs(util.log, "WARNING") as registro:
+            self.assertEqual(self.prod.prontos_pendentes(self.conn), self.prontos())
+        self.assertTrue([r for r in registro.output if "nenhum corte editado serve" in r])
+        self.cfg["imagens"]["tipos"] = ["carrossel"]
+        planejador.gravar_estado_imagens(self.conn, "instagram", {"sem_carrossel": "uma por vez"})
+        self.assertEqual(self.prod.prontos_pendentes(self.conn), self.prontos())
+        # o produtor não edita além do buffer_cortes, mesmo com candidato na mão
+        cand = self.corte_row(candidato)
+        with patch.object(produtor, "varrer_biblioteca", lambda cfg, conn: 0), \
+                patch.object(self.prod, "espera_runtime", lambda: None), \
+                patch.object(self.prod, "_completar_textos_ia", lambda conn: False), \
+                patch.object(self.prod, "proximo_candidato", lambda conn: cand), \
+                patch.object(self.prod, "minerar_mais", lambda conn: cand), \
+                patch.object(self.prod, "renderizar", side_effect=AssertionError("editou além do buffer")):
+            self.assertFalse(self.prod.ciclo(self.conn))
+        # ligar outro tipo volta a valer na hora, com a linha no registro
+        planejador.limpar_estado_imagens(self.conn, "instagram")
+        self.cfg["imagens"]["tipos"] = ["frase", "momento"]
+        with self.assertLogs(util.log, "INFO") as registro:
+            self.assertEqual(self.prod.prontos_pendentes(self.conn), buffer)
+        self.assertTrue([r for r in registro.output if "voltaram a render" in r])
+
+
 if __name__ == "__main__":
     unittest.main()

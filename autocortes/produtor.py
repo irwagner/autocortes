@@ -10,7 +10,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import analise, criacao, edicao, ferramentas, ia, modelos_visuais, selecao
+from . import analise, criacao, edicao, ferramentas, ia, modelos_visuais, planejador, selecao
 from .config import RAIZ, Config
 from .db import agora, transacao
 from .midia import Interrompido
@@ -163,6 +163,8 @@ class Produtor:
         self._runtime_falhou: dict | None = None
         self._esperando_runtime: set[int] = set()
         self._aviso_runtime: str | None = None
+        # redes de imagem em que os últimos cortes editados não rendem nenhum tipo ligado (já avisado)
+        self._sem_rendimento: set[str] = set()
 
     def pedir_varredura(self) -> None:
         self._ultima_varredura = 0.0
@@ -220,9 +222,33 @@ class Produtor:
         # estoque parecer sempre vazio e o motor editaria sem parar
         ativas = [r for r in self.cfg.redes_de_video() if not sem_cortes_possiveis(self.cfg, r)]
         if not ativas:
+            if not self.cfg.redes_de_video():
+                # só redes de imagem: nada conclui os cortes, então o estoque é o que ainda rende imagem
+                # (senão a contagem dos 'pronto' enchia e o produtor parava de editar para sempre)
+                possiveis = []
+                for rede in self.cfg.redes_de_imagem():
+                    self._anotar_rendimento(rede, planejador.imagens_sem_rendimento(self.cfg, conn, rede))
+                    if planejador.imagens_possiveis(self.cfg, conn, rede):
+                        possiveis.append(rede)
+                if possiveis:
+                    return min(planejador.estoque_imagens(self.cfg, conn, r) for r in possiveis) + em_revisao
+            # nenhuma rede rende: para no buffer_cortes em vez de editar e minerar até encher o disco
             prontos = conn.execute("SELECT COUNT(*) FROM cortes WHERE status='pronto'").fetchone()[0]
             return prontos + em_revisao
         return min(len(fila(self.cfg, conn, rede)) for rede in ativas) + em_revisao
+
+    def _anotar_rendimento(self, rede: str, sem: bool) -> None:
+        """Uma linha no registro quando os cortes editados deixam de render imagem na rede, e outra
+        quando voltam a render."""
+        if sem == (rede in self._sem_rendimento):
+            return
+        if sem:
+            self._sem_rendimento.add(rede)
+            log.warning("%s: nenhum corte editado serve para os tipos de imagem ligados; ligue outro tipo "
+                        "em Configurações > Imagens", rede)
+        else:
+            self._sem_rendimento.discard(rede)
+            log.info("%s: os cortes editados voltaram a render imagens", rede)
 
     def proximo_candidato(self, conn: sqlite3.Connection):
         # a mesma regra é simulada em planejador.previsao_edicao para o calendário

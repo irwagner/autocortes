@@ -7,7 +7,7 @@ from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
 
 from . import agenda, analise, db, gravador, roteiro
-from .config import TIPOS_IMAGEM, Config, motivo_sem_imagens
+from .config import REDES_IMAGEM, TIPOS_IMAGEM, Config, motivo_sem_imagens
 
 
 # falhas comuns de um corte numa rede antes de desistir dele (a última vira 'pulado', com o motivo)
@@ -510,6 +510,72 @@ def montar_plano(cfg: Config, conn: sqlite3.Connection, agora: datetime | None =
                 item["sem_corte"] = True
             itens.append(item)
 
+    # imagens: os horários de cada rede que posta imagens, com a mesma conta de atendido e perdido,
+    # e a previsão igual à do motor (fila_imagens simula os posts um a um)
+    for rede in cfg.redes_de_imagem():
+        horarios = agenda.horarios_entre_com_chave(cfg, rede, inicio, fim, "imagem")
+        pendentes = []
+        for i, (h, chave) in enumerate(horarios):
+            if h > agora:
+                pendentes.append((h, "agendado"))
+                continue
+            limite = horarios[i + 1][0] if i + 1 < len(horarios) else h + tolerancia
+            if horario_atendido(conn, rede, h.timestamp(), ocupam, min(limite, h + tolerancia).timestamp(), chave,
+                                "imagem"):
+                continue
+            if agora <= h + tolerancia:
+                pendentes.append((h, "pendente"))
+            else:
+                itens.append({"tipo": "horario", "rede": rede, "quando": h.timestamp(), "estado": "perdido",
+                              "midia": "imagem"})
+        if not pendentes:
+            continue
+        codigo, _ = _situacao_imagens(cfg, conn, rede)
+        sem_tipo = codigo is None and not tipos_efetivos(cfg, conn, rede)
+        previsao = fila_imagens(cfg, conn, rede, len(pendentes)) if codigo is None and not sem_tipo else []
+        com_videos = bool(cfg[rede].get("videos", True))
+        # os horários de vídeo desta rede que já têm corte previsto: a imagem deles vem depois
+        videos_previstos = [x["quando"] for x in itens if x["tipo"] == "horario" and x["rede"] == rede
+                            and x.get("midia") == "video" and x.get("corte_id") is not None]
+        saiu_video = com_videos and conn.execute(
+            "SELECT 1 FROM postagens WHERE plataforma=? AND midia='video' "
+            f"AND status IN ({_marcas(len(status_sucesso(cfg)))}) LIMIT 1", (rede, *status_sucesso(cfg)),
+        ).fetchone() is not None
+        for j, (h, estado) in enumerate(pendentes):
+            parada = rede in pausas and (pausas[rede] is None or h.timestamp() < pausas[rede])
+            item = {"tipo": "horario", "rede": rede, "quando": h.timestamp(), "midia": "imagem",
+                    "estado": "pausado" if pausado or parada else estado}
+            if codigo is not None:
+                item.update(sem_imagem=True, motivo=codigo)
+            elif sem_tipo:
+                item.update(sem_imagem=True, motivo="sem_tipo")
+            elif j < len(previsao):
+                c = previsao[j]["corte"]
+                item.update(imagem_tipo=previsao[j]["tipo"], corte_id=c["id"], filme=c["filme_titulo"],
+                            parte=c["parte"])
+            elif com_videos and any(q < h.timestamp() for q in videos_previstos):
+                item.update(sem_imagem=True, motivo="espera_video")
+            else:
+                item.update(sem_imagem=True, motivo="sem_corte")
+                if com_videos and not saiu_video:
+                    item["detalhe"] = "nenhum vídeo desta rede saiu ainda"
+            itens.append(item)
+
+    # os horários de imagem que saem do dia por ficarem perto de um vídeo (ou de outra imagem),
+    # uma vez cada par no período
+    descartados_imagem: dict[str, list[dict]] = {}
+    for rede in cfg.plataformas_ativas():
+        if rede not in REDES_IMAGEM or not cfg[rede].get("imagens"):
+            continue
+        vistos, lista = set(), []
+        for d in range(dias):
+            for x in agenda.horarios_imagem_descartados(cfg, rede, inicio.date() + timedelta(days=d)):
+                par = (x["horario"], x.get("video"), x.get("imagem"))
+                if par not in vistos:
+                    vistos.add(par)
+                    lista.append(x)
+        descartados_imagem[rede] = lista
+
     itens.sort(key=lambda x: x["quando"])
     return {
         "agora": agora.timestamp(),
@@ -517,5 +583,6 @@ def montar_plano(cfg: Config, conn: sqlite3.Connection, agora: datetime | None =
         "dias": dias,
         "pausado": pausado,
         "itens": itens,
+        "descartados_imagem": descartados_imagem,
         "cobertura": cobertura(cfg, conn),
     }
