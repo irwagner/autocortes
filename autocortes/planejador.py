@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime, time as dtime, timedelta
+from pathlib import Path
 
-from . import agenda
-from .config import Config
+from . import agenda, analise, db, gravador, roteiro
+from .config import TIPOS_IMAGEM, Config, motivo_sem_imagens
 
 
 # falhas comuns de um corte numa rede antes de desistir dele (a última vira 'pulado', com o motivo)
@@ -104,6 +105,253 @@ def horario_atendido(conn: sqlite3.Connection, rede: str, ts: float, sucesso: tu
         sql += " AND criado_em<?"
         params.append(limite_ts)
     return conn.execute(sql + " LIMIT 1", params).fetchone() is not None
+
+
+# ---------------------------------------------------------------- imagens
+
+# um post de imagem que falhou por culpa da gravação ("não saiu") ou do PC ("geração:") não gasta o corte
+_FALHA_DO_CORTE = "COALESCE(erro, '') NOT LIKE 'gravação:%' AND COALESCE(erro, '') NOT LIKE 'geração:%'"
+
+
+def ler_estado_imagens(conn: sqlite3.Connection, rede: str) -> dict:
+    """O que o envio e a gravação descobriram da rede: {sem_carrossel, parado, sem_fotos: mensagem}."""
+    valor = db.ler_estado(conn, f"imagens:{rede}", {})
+    return valor if isinstance(valor, dict) else {}
+
+
+def gravar_estado_imagens(conn: sqlite3.Connection, rede: str, valor: dict) -> None:
+    db.gravar_estado(conn, f"imagens:{rede}", valor)
+
+
+def limpar_estado_imagens(conn: sqlite3.Connection, rede: str) -> None:
+    db.apagar_estado(conn, f"imagens:{rede}")
+
+
+def _situacao_imagens(cfg: Config, conn: sqlite3.Connection, rede: str) -> tuple[str | None, str]:
+    """(None, "") quando a rede pode postar imagens; senão o código do motivo e o texto.
+
+    Códigos: "desligada" (fora de redes_de_imagem), "sem_roteiro" (falta o roteiro de imagem, ele
+    tem erro ou o campo de arquivo da conta não aceita foto) e "parado" (o envio parou a rede).
+    """
+    if rede not in cfg.redes_de_imagem():
+        return "desligada", motivo_sem_imagens(cfg, rede) or "as imagens estão desligadas nesta rede"
+    texto = gravador.carregar(cfg, roteiro.nome_roteiro(rede, "imagem"))
+    if texto is None:
+        return "sem_roteiro", "falta gravar o roteiro de imagem desta rede"
+    erros = roteiro.analisar(texto, roteiro.nome_roteiro(rede, "imagem"))[1]
+    if erros:
+        return "sem_roteiro", f"o roteiro de imagem tem erro: {erros[0]}"
+    estado = ler_estado_imagens(conn, rede)
+    if estado.get("sem_fotos"):
+        return "sem_roteiro", str(estado["sem_fotos"])
+    if estado.get("parado"):
+        return "parado", str(estado["parado"])
+    return None, ""
+
+
+def imagens_prontas(cfg: Config, conn: sqlite3.Connection, rede: str) -> tuple[bool, str]:
+    """A rede pode postar imagens agora (com o motivo em português quando não pode).
+
+    Não olha a pausa da rede: essa é do ciclo e do plano, a mesma dos vídeos.
+    """
+    codigo, motivo = _situacao_imagens(cfg, conn, rede)
+    return codigo is None, motivo
+
+
+def tipos_efetivos(cfg: Config, conn: sqlite3.Connection, rede: str) -> list[str]:
+    """Os [imagens].tipos na ordem fixa, sem o carrossel quando o campo da rede aceita uma imagem só."""
+    ligados = set(cfg["imagens"]["tipos"])
+    sem_carrossel = bool(ler_estado_imagens(conn, rede).get("sem_carrossel"))
+    return [t for t in TIPOS_IMAGEM if t in ligados and not (t == "carrossel" and sem_carrossel)]
+
+
+def _girar(tipos: list[str], ultimo: str | None) -> list[str]:
+    """Os tipos começando logo depois do último (na ordem fixa de TIPOS_IMAGEM, em roda)."""
+    if ultimo not in TIPOS_IMAGEM:
+        return list(tipos)
+    i = TIPOS_IMAGEM.index(ultimo)
+    return sorted(tipos, key=lambda t: (TIPOS_IMAGEM.index(t) - i - 1) % len(TIPOS_IMAGEM))
+
+
+def tipos_da_vez(cfg: Config, conn: sqlite3.Connection, rede: str) -> list[str]:
+    """Os tipos efetivos em rodízio, a partir do que vem depois da última imagem postada na rede.
+
+    A linha da gravação com menos imagens que os exemplos não tem tipo e não mexe no rodízio.
+    """
+    status = status_ocupam_horario(cfg) + ("pulado",)
+    ultima = conn.execute(
+        "SELECT imagem_tipo FROM postagens WHERE plataforma=? AND midia='imagem' AND imagem_tipo IS NOT NULL "
+        f"AND status IN ({_marcas(len(status))}) ORDER BY criado_em DESC, id DESC LIMIT 1",
+        (rede, *status),
+    ).fetchone()
+    return _girar(tipos_efetivos(cfg, conn, rede), ultima[0] if ultima else None)
+
+
+def video_publicado(conn: sqlite3.Connection, corte_id: int, rede: str, aceitar_simulado: bool) -> bool:
+    """O vídeo do corte saiu nesta rede (o simulado só conta com aceitar_simulado)."""
+    status = ("publicado", "simulado") if aceitar_simulado else ("publicado",)
+    return conn.execute(
+        "SELECT 1 FROM postagens WHERE corte_id=? AND plataforma=? AND midia='video' "
+        f"AND status IN ({_marcas(len(status))}) LIMIT 1",
+        (corte_id, rede, *status),
+    ).fetchone() is not None
+
+
+def _cortes_para_imagem(cfg: Config, conn: sqlite3.Connection, rede: str, limite: int, tipos: list[str],
+                        com_video: bool) -> list[sqlite3.Row]:
+    ef = [t for t in TIPOS_IMAGEM if t in tipos]
+    if not ef:
+        return []
+    concl = status_concluidos(cfg)
+    # só os cortes com algum tipo por fazer, filtrados antes do LIMIT: os esgotados nunca enchem a página
+    por_fazer, params_tipos = [], []
+    for tipo in ef:
+        cond = ("NOT EXISTS (SELECT 1 FROM postagens p WHERE p.corte_id = c.id AND p.plataforma = ? "
+                f"AND p.midia = 'imagem' AND p.imagem_tipo = ? AND p.status IN ({_marcas(len(concl))}))")
+        if tipo == "frase":
+            cond = "TRIM(COALESCE(c.frase, '')) <> '' AND " + cond
+        por_fazer.append(f"({cond})")
+        params_tipos += [rede, tipo, *concl]
+    sucesso = status_sucesso(cfg)
+    base = ("FROM cortes c JOIN filmes f ON f.id = c.filme_id "
+            "WHERE f.tipo = 'filme' AND f.status NOT IN ('ignorado', 'ausente') "
+            "AND c.status IN ('pronto', 'concluido') "
+            f"AND ({' OR '.join(por_fazer)}) ")
+    if com_video:
+        # a imagem chama para um vídeo que já saiu nesta rede: o mais recente primeiro
+        video = (f"FROM postagens v WHERE v.corte_id = c.id AND v.plataforma = ? AND v.midia = 'video' "
+                 f"AND v.status IN ({_marcas(len(sucesso))})")
+        sql = (f"SELECT c.*, f.titulo AS filme_titulo, f.ano AS filme_ano, f.caminho AS filme_caminho, "
+               f"(SELECT MAX(v.criado_em) {video}) AS video_em "
+               + base + f"AND EXISTS (SELECT 1 {video}) ORDER BY video_em DESC, c.id DESC LIMIT ? OFFSET ?")
+        params = [rede, *sucesso, *params_tipos, rede, *sucesso]
+    else:
+        sql = ("SELECT c.*, f.titulo AS filme_titulo, f.ano AS filme_ano, f.caminho AS filme_caminho, "
+               "NULL AS video_em " + base + "ORDER BY c.prioridade DESC, c.fila_em, c.id LIMIT ? OFFSET ?")
+        params = list(params_tipos)
+    # filme no disco (um HDD desligado tira os filmes dele sem gastar nada): um stat por filme
+    no_disco: dict[int, bool] = {}
+
+    def tem_disco(c) -> bool:
+        fid = c["filme_id"]
+        if fid not in no_disco:
+            no_disco[fid] = (Path(c["filme_caminho"]).is_file()
+                             and (analise.pasta_do_filme(cfg, fid) / "info.json").is_file())
+        return no_disco[fid]
+
+    saida: list[sqlite3.Row] = []
+    for pagina in range(3):
+        linhas = conn.execute(sql, [*params, limite, pagina * limite]).fetchall()
+        saida = [c for c in linhas if tem_disco(c)]
+        # a página inteira fora do disco: tenta a seguinte (até 3)
+        if saida or len(linhas) < limite:
+            break
+    return saida
+
+
+def cortes_para_imagem(cfg: Config, conn: sqlite3.Connection, rede: str, limite: int = 200,
+                       tipos: list[str] | None = None) -> list[sqlite3.Row]:
+    """Cortes de filme editados de onde pode sair uma imagem nesta rede, na ordem de preferência.
+
+    Rede com vídeos: só os cortes cujo vídeo já saiu nela, do vídeo mais recente para o mais velho.
+    Rede só de imagens: os editados (pronto/concluido) na ordem da fila. Nos dois, só os que têm algum
+    dos tipos (padrão: tipos_efetivos) por fazer, nunca candidato, revisão nem pauta, e só com o
+    filme e a análise dele no disco.
+    """
+    if tipos is None:
+        tipos = tipos_efetivos(cfg, conn, rede)
+    return _cortes_para_imagem(cfg, conn, rede, limite, tipos, bool(cfg[rede].get("videos", True)))
+
+
+def fila_imagens(cfg: Config, conn: sqlite3.Connection, rede: str, quantidade: int = 1,
+                 forcar_tipo: str | None = None, qualquer_editado: bool = False) -> list[dict]:
+    """As próximas imagens da rede, na ordem em que vão sair: [{"corte": Row, "tipo": str}].
+
+    O publicador pede uma; o plano pede a lista toda, simulando o motor: cada imagem prevista conta
+    como feita para a seguinte, e o rodízio dos tipos anda como andaria com o post gravado.
+    forcar_tipo (a gravação) troca o rodízio por esse tipo, ignorando [imagens].tipos e o
+    sem_carrossel. qualquer_editado (a gravação): sem nenhum corte com o vídeo publicado na rede,
+    vale o corte editado mais antigo da fila.
+    """
+    if quantidade <= 0:
+        return []
+    ordem = [forcar_tipo] if forcar_tipo else tipos_da_vez(cfg, conn, rede)
+    if not ordem:
+        return []
+    candidatos = cortes_para_imagem(cfg, conn, rede, tipos=ordem)
+    if not candidatos and qualquer_editado and cfg[rede].get("videos", True):
+        candidatos = _cortes_para_imagem(cfg, conn, rede, 200, ordem, com_video=False)
+    if not candidatos:
+        return []
+    concl = status_concluidos(cfg)
+    feitos = {(r[0], r[1]) for r in conn.execute(
+        "SELECT corte_id, imagem_tipo FROM postagens WHERE plataforma=? AND midia='imagem' "
+        f"AND imagem_tipo IS NOT NULL AND status IN ({_marcas(len(concl))})", (rede, *concl))}
+    falhas: dict[tuple[int, str], int] = {}
+    for r in conn.execute(
+        "SELECT corte_id, imagem_tipo, COUNT(*) FROM postagens WHERE plataforma=? AND midia='imagem' "
+        f"AND imagem_tipo IS NOT NULL AND status='falhou' AND {_FALHA_DO_CORTE} GROUP BY corte_id, imagem_tipo",
+        (rede,),
+    ):
+        falhas[(r[0], r[1])] = r[2]
+
+    saida: list[dict] = []
+    while len(saida) < quantidade:
+        escolha = None
+        for tipo in ordem:
+            for c in candidatos:
+                if (c["id"], tipo) in feitos or falhas.get((c["id"], tipo), 0) >= FALHAS_POR_CORTE:
+                    continue
+                if tipo == "frase" and not str(c["frase"] or "").strip():
+                    continue
+                escolha = (c, tipo)
+                break
+            if escolha:
+                break
+        if escolha is None:
+            break
+        c, tipo = escolha
+        saida.append({"corte": c, "tipo": tipo})
+        feitos.add((c["id"], tipo))
+        ordem = _girar(ordem, tipo)
+    return saida
+
+
+def estoque_imagens(cfg: Config, conn: sqlite3.Connection, rede: str) -> int:
+    """Quantos cortes ainda rendem alguma imagem nesta rede (o estoque das redes só de imagens)."""
+    return len(cortes_para_imagem(cfg, conn, rede))
+
+
+def imagens_sem_rendimento(cfg: Config, conn: sqlite3.Connection, rede: str) -> bool:
+    """Os últimos cortes editados não rendem nenhum dos tipos ligados (tipos = ["frase"] com filmes
+    sem fala, por exemplo), e nenhum deles já deu imagem nesta rede.
+
+    Com menos cortes editados que max(3, buffer_cortes), ainda não dá para dizer: falso.
+    """
+    n = max(3, int(cfg["geral"]["buffer_cortes"]))
+    recentes = conn.execute(
+        "SELECT c.id, c.frase FROM cortes c JOIN filmes f ON f.id = c.filme_id "
+        "WHERE f.tipo = 'filme' AND c.status IN ('pronto', 'concluido') "
+        "ORDER BY c.fila_em DESC, c.id DESC LIMIT ?", (n,)).fetchall()
+    if len(recentes) < n:
+        return False
+    ef = tipos_efetivos(cfg, conn, rede)
+    concl = status_concluidos(cfg)
+    for c in recentes:
+        if any(t != "frase" or str(c["frase"] or "").strip() for t in ef):
+            return False
+        if conn.execute(
+            "SELECT 1 FROM postagens WHERE corte_id=? AND plataforma=? AND midia='imagem' "
+            f"AND status IN ({_marcas(len(concl))}) LIMIT 1", (c["id"], rede, *concl),
+        ).fetchone():
+            return False
+    return True
+
+
+def imagens_possiveis(cfg: Config, conn: sqlite3.Connection, rede: str) -> bool:
+    """A rede pode render imagens: roteiro pronto, algum tipo ligado e os cortes recentes servindo."""
+    return (imagens_prontas(cfg, conn, rede)[0] and bool(tipos_efetivos(cfg, conn, rede))
+            and not imagens_sem_rendimento(cfg, conn, rede))
 
 
 def previsao_edicao(cfg: Config, conn: sqlite3.Connection, quantidade: int) -> list[dict]:

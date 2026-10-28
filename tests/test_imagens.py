@@ -834,5 +834,220 @@ class TestRoteiro(Base):
             self.assertEqual((r["midia"], r["tem_video"], r["tem_imagens"]), ("video", True, False))
 
 
+class BaseImagens(BaseBanco):
+    """Instagram com imagens ligadas, o roteiro de imagem gravado e o filme analisado no disco."""
+
+    def setUp(self):
+        super().setUp()
+        self.so_redes("instagram")
+        self.cfg["instagram"].update(imagens=True, envio="navegador")
+        self.analisado(self.filme)
+        self.roteiro_imagem("instagram")
+
+    def analisado(self, filme_id: int) -> None:
+        pasta = analise.pasta_do_filme(self.cfg, filme_id)
+        pasta.mkdir(parents=True, exist_ok=True)
+        (pasta / "info.json").write_text("{}", encoding="utf-8")
+
+    def roteiro_imagem(self, rede: str) -> None:
+        arquivo = gravador.arquivo_roteiro(self.cfg, roteiro.nome_roteiro(rede, "imagem"))
+        arquivo.parent.mkdir(parents=True, exist_ok=True)
+        arquivo.write_text(ROTEIRO_IMAGEM, encoding="utf-8")
+
+    def na_fila(self, corte_id: int, fila_em: float) -> None:
+        self.conn.execute("UPDATE cortes SET fila_em=? WHERE id=?", (fila_em, corte_id))
+
+    def fila(self, rede: str = "instagram", quantidade: int = 1, **kw) -> list[tuple[int, str]]:
+        return [(x["corte"]["id"], x["tipo"])
+                for x in planejador.fila_imagens(self.cfg, self.conn, rede, quantidade, **kw)]
+
+    def ids(self, rede: str = "instagram", **kw) -> list[int]:
+        return [c["id"] for c in planejador.cortes_para_imagem(self.cfg, self.conn, rede, **kw)]
+
+
+class TestPlanejadorImagens(BaseImagens):
+    def test_estado_e_imagens_prontas(self):
+        self.assertEqual(planejador.imagens_prontas(self.cfg, self.conn, "instagram"), (True, ""))
+        self.assertEqual(planejador.imagens_prontas(self.cfg, self.conn, "tiktok")[0], False)
+        planejador.gravar_estado_imagens(self.conn, "instagram", {"sem_carrossel": "uma imagem por vez"})
+        self.assertEqual(planejador.ler_estado_imagens(self.conn, "instagram"), {"sem_carrossel": "uma imagem por vez"})
+        self.assertEqual(planejador.tipos_efetivos(self.cfg, self.conn, "instagram"), ["momento", "frase"])
+        self.assertTrue(planejador.imagens_prontas(self.cfg, self.conn, "instagram")[0])
+        planejador.gravar_estado_imagens(self.conn, "instagram", {"parado": "o campo não aceita imagem"})
+        self.assertEqual(planejador.imagens_prontas(self.cfg, self.conn, "instagram"),
+                         (False, "o campo não aceita imagem"))
+        planejador.gravar_estado_imagens(self.conn, "instagram", {"sem_fotos": "sem fotos pelo computador"})
+        self.assertEqual(planejador.imagens_prontas(self.cfg, self.conn, "instagram"),
+                         (False, "sem fotos pelo computador"))
+        planejador.limpar_estado_imagens(self.conn, "instagram")
+        self.assertEqual(planejador.ler_estado_imagens(self.conn, "instagram"), {})
+        self.assertEqual(planejador.tipos_efetivos(self.cfg, self.conn, "instagram"), list(config.TIPOS_IMAGEM))
+        # roteiro com erro conta como faltando
+        gravador.arquivo_roteiro(self.cfg, "instagram-imagem").write_text("abrir https://x.com/\n", encoding="utf-8")
+        pronta, motivo = planejador.imagens_prontas(self.cfg, self.conn, "instagram")
+        self.assertFalse(pronta)
+        self.assertTrue(motivo.startswith("o roteiro de imagem tem erro"), motivo)
+        gravador.arquivo_roteiro(self.cfg, "instagram-imagem").unlink()
+        self.assertEqual(planejador.imagens_prontas(self.cfg, self.conn, "instagram"),
+                         (False, "falta gravar o roteiro de imagem desta rede"))
+
+    def test_rodizio_de_tipos(self):
+        self.so_imagens("instagram")
+        c = self.novo_corte()
+        self.assertEqual(self.fila(quantidade=4), [(c, "momento"), (c, "frase"), (c, "carrossel")])
+        self.postagem(c, "instagram", "publicado", "imagem", "frase")
+        self.assertEqual(planejador.tipos_da_vez(self.cfg, self.conn, "instagram"), ["carrossel", "momento", "frase"])
+        self.assertEqual(self.fila(), [(c, "carrossel")])
+        # a linha da gravação sem tipo não esgota nada nem mexe no rodízio
+        self.postagem(c, "instagram", "conferir", "imagem", None, criado_em=time.time() + 5)
+        self.assertEqual(planejador.tipos_da_vez(self.cfg, self.conn, "instagram"), ["carrossel", "momento", "frase"])
+        self.assertEqual(self.fila(quantidade=3), [(c, "carrossel"), (c, "momento")])
+        # um tipo desligado: o rodízio pula para o seguinte na ordem fixa
+        self.cfg["imagens"]["tipos"] = ["momento", "frase"]
+        self.assertEqual(planejador.tipos_da_vez(self.cfg, self.conn, "instagram"), ["momento", "frase"])
+        self.cfg["imagens"]["tipos"] = ["carrossel"]
+        self.assertEqual(self.fila(forcar_tipo="momento"), [(c, "momento")])
+
+    def test_rede_com_videos_precisa_do_video_publicado(self):
+        c1, c2 = self.novo_corte(inicio=100), self.novo_corte(inicio=200)
+        self.na_fila(c1, 1000)
+        self.na_fila(c2, 2000)
+        self.assertEqual(self.fila(), [])
+        self.assertFalse(planejador.video_publicado(self.conn, c1, "instagram", True))
+        self.postagem(c1, "instagram", "simulado")
+        self.assertTrue(planejador.video_publicado(self.conn, c1, "instagram", True))
+        self.assertFalse(planejador.video_publicado(self.conn, c1, "instagram", False))
+        self.assertEqual(self.fila(), [])  # fora da simulação, o simulado não vale
+        # a gravação (qualquer_editado) cai no editado mais antigo da fila
+        self.assertEqual(self.fila(forcar_tipo="carrossel", qualquer_editado=True), [(c1, "carrossel")])
+        agora_ = time.time()
+        self.postagem(c1, "instagram", "publicado", criado_em=agora_ - 100)
+        self.postagem(c2, "instagram", "publicado", criado_em=agora_)
+        self.postagem(c2, "tiktok", "publicado", "imagem", "momento")  # de outra rede: não conta
+        self.assertEqual(self.ids(), [c2, c1])  # o vídeo mais recente primeiro
+        self.assertEqual(self.fila(), [(c2, "momento")])
+        self.assertTrue(planejador.video_publicado(self.conn, c2, "instagram", False))
+        self.assertEqual(self.fila(forcar_tipo="carrossel", qualquer_editado=True), [(c2, "carrossel")])
+
+    def test_so_cortes_editados_de_filme(self):  # CA-15
+        self.so_imagens("instagram")
+        pronto = self.novo_corte(inicio=100)
+        concluido = self.novo_corte(status="concluido", inicio=200)
+        self.novo_corte(status="candidato", parte=None, inicio=300)
+        self.novo_corte(status="candidato", parte=2, inicio=400)  # "Editar de novo"
+        self.novo_corte(status="revisao", inicio=500)
+        pauta = self.novo_filme("Uma pauta", tipo="pauta")
+        self.analisado(pauta)
+        self.novo_corte(pauta, inicio=0)
+        for status in ("ignorado", "ausente"):
+            outro = self.novo_filme(f"Filme {status}", status=status)
+            self.analisado(outro)
+            self.novo_corte(outro)
+        self.assertEqual(self.ids(), [pronto, concluido])
+        vistos = {cid for cid, _ in self.fila(quantidade=20)}
+        self.assertEqual(vistos, {pronto, concluido})
+
+    def test_corte_sem_frase(self):  # CA-14
+        self.so_imagens("instagram")
+        mudo = self.novo_corte(frase="   ")
+        self.assertEqual(self.fila(quantidade=3), [(mudo, "momento"), (mudo, "carrossel")])
+        self.postagem(mudo, "instagram", "publicado", "imagem", "momento")
+        self.assertEqual(self.fila(), [(mudo, "carrossel")])  # o tipo seguinte assume a vez
+        self.assertEqual(self.ids(tipos=["frase"]), [])
+        self.novo_corte(frase=None, inicio=300)
+        self.assertEqual(self.ids(tipos=["frase"]), [])
+
+    def test_filme_fora_do_disco(self):  # CA-27 (a lista)
+        self.so_imagens("instagram")
+        c = self.novo_corte()
+        caminho = Path(self.conn.execute("SELECT caminho FROM filmes WHERE id=?", (self.filme,)).fetchone()[0])
+        caminho.rename(caminho.with_name("renomeado.mkv"))
+        self.assertEqual(self.ids(), [])
+        caminho.with_name("renomeado.mkv").rename(caminho)
+        self.assertEqual(self.ids(), [c])
+        info = analise.pasta_do_filme(self.cfg, self.filme) / "info.json"
+        info.unlink()
+        self.assertEqual(self.fila(), [])
+        self.analisado(self.filme)
+        self.assertEqual(self.fila(), [(c, "momento")])
+
+    def test_falhas_da_gravacao_e_da_geracao_nao_contam(self):
+        self.so_imagens("instagram")
+        c = self.novo_corte()
+        for i in range(planejador.FALHAS_POR_CORTE):
+            self.postagem(c, "instagram", "falhou", "imagem", "momento", erro="gravação: você conferiu: não saiu")
+            self.postagem(c, "instagram", "falhou", "imagem", "momento", erro="geração: o FFmpeg não abriu")
+        self.assertEqual(self.fila(), [(c, "momento")])
+        for i in range(planejador.FALHAS_POR_CORTE):
+            self.postagem(c, "instagram", "falhou", "imagem", "momento", erro="seletor sumiu")
+        self.assertEqual(self.fila(), [(c, "frase")])
+
+    def test_muitos_esgotados_nas_duas_listas(self):  # CA-31 (a lista)
+        self.so_redes("tiktok", "instagram")
+        self.so_imagens("instagram")
+        self.cfg["tiktok"].update(imagens=True, envio="navegador")
+        self.roteiro_imagem("tiktok")
+        base = time.time() - 100000
+        with db.transacao(self.conn):
+            for i in range(205):
+                c = self.novo_corte(inicio=float(i))
+                self.na_fila(c, base + i)
+                self.postagem(c, "tiktok", "publicado", criado_em=base + 1000 + i)
+                for rede in ("instagram", "tiktok"):
+                    for tipo in config.TIPOS_IMAGEM:
+                        self.postagem(c, rede, "publicado", "imagem", tipo, criado_em=base + 2000 + i)
+            novo = self.novo_corte(inicio=9999)
+            self.na_fila(novo, base + 500)  # o último da fila
+            self.postagem(novo, "tiktok", "publicado", criado_em=base)  # o vídeo mais velho
+        self.assertEqual(self.fila("instagram"), [(novo, "momento")])
+        self.assertEqual(self.fila("tiktok"), [(novo, "momento")])
+        self.assertEqual(planejador.estoque_imagens(self.cfg, self.conn, "instagram"), 1)
+        self.assertEqual(planejador.estoque_imagens(self.cfg, self.conn, "tiktok"), 1)
+
+    def test_pagina_inteira_fora_do_disco_e_cache(self):  # CA-31 (OFFSET) e DF-12
+        self.so_imagens("instagram")
+        longe = self.novo_filme("No HDD desligado")
+        self.analisado(longe)
+        with db.transacao(self.conn):
+            for i in range(200):
+                self.na_fila(self.novo_corte(longe, inicio=float(i)), 1000 + i)
+            perto = self.novo_corte(inicio=5000)
+            self.na_fila(perto, 9000)
+        caminho = Path(self.conn.execute("SELECT caminho FROM filmes WHERE id=?", (longe,)).fetchone()[0])
+        caminho.unlink()
+        original = Path.is_file
+        chamadas: list[Path] = []
+
+        def contar(p):
+            chamadas.append(p)
+            return original(p)
+
+        with patch.object(Path, "is_file", contar):
+            self.assertEqual(self.ids(), [perto])
+        # um stat por filme (e o do info.json só no filme que está no disco), não um por corte
+        self.assertEqual(len(chamadas), 3, chamadas)
+        self.assertEqual(len(set(chamadas)), 3)
+
+    def test_rendimento(self):
+        self.so_imagens("instagram")
+        self.cfg["imagens"]["tipos"] = ["frase"]
+        mudos = [self.novo_corte(frase=None, inicio=float(i)) for i in range(2)]
+        self.assertFalse(planejador.imagens_sem_rendimento(self.cfg, self.conn, "instagram"))  # poucos ainda
+        mudos.append(self.novo_corte(frase="", inicio=3.0))
+        self.assertTrue(planejador.imagens_sem_rendimento(self.cfg, self.conn, "instagram"))
+        self.assertFalse(planejador.imagens_possiveis(self.cfg, self.conn, "instagram"))
+        self.cfg["imagens"]["tipos"] = ["frase", "momento"]
+        self.assertFalse(planejador.imagens_sem_rendimento(self.cfg, self.conn, "instagram"))
+        self.assertTrue(planejador.imagens_possiveis(self.cfg, self.conn, "instagram"))
+        # um corte que já rendeu imagem não conta como sem rendimento
+        self.cfg["imagens"]["tipos"] = ["frase"]
+        self.postagem(mudos[0], "instagram", "publicado", "imagem", "momento")
+        self.assertFalse(planejador.imagens_sem_rendimento(self.cfg, self.conn, "instagram"))
+        # sem tipo efetivo, nunca é possível
+        self.cfg["imagens"]["tipos"] = ["carrossel"]
+        planejador.gravar_estado_imagens(self.conn, "instagram", {"sem_carrossel": "uma por vez"})
+        self.assertFalse(planejador.imagens_possiveis(self.cfg, self.conn, "instagram"))
+
+
 if __name__ == "__main__":
     unittest.main()
