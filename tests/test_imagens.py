@@ -1397,5 +1397,194 @@ class TestGeometria(Base):
         self.assertGreaterEqual(min(contagens.values()), 4, contagens)
 
 
+# filmes sintéticos: quatro cenas de 4 s com 2 s de preto no meio (8 a 10 s), 18 s no total
+FILMES_SINTETICOS = {"largo": (1920, 804), "quatro_tercos": (1440, 1080)}
+FALA = (5.0, 6.5, "Uma fala qualquer.")
+PRETO = (8.0, 10.0)
+
+
+class BaseGeracao(BaseBanco):
+    """Filmes de verdade (gerados por lavfi uma vez por classe), analisados e com uma fala."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        pasta = tempfile.TemporaryDirectory(prefix="autocortes-teste-imagens-filmes-")
+        cls.addClassCleanup(pasta.cleanup)
+        cls.pasta_filmes = Path(pasta.name)
+        (cls.pasta_filmes / "config.toml").write_text(CONFIG_MINIMO, encoding="utf-8")
+        cfg = config.carregar(cls.pasta_filmes / "config.toml")
+        cls.analises = {}
+        for nome, (w, h) in FILMES_SINTETICOS.items():
+            arquivo = cls.pasta_filmes / f"{nome}.mkv"
+            s = f"s={w}x{h}:r=24"
+            fontes = [f"testsrc2={s}:d=4", f"smptebars={s}:d=4", f"color=c=black:{s}:d=2",
+                      f"gradients={s}:d=4:speed=0.02", f"testsrc={s}:d=4"]
+            entradas = [x for f in fontes for x in ("-f", "lavfi", "-i", f)]
+            r = midia.executar(midia.base_ffmpeg(cfg["ferramentas"]["ffmpeg"]) + [
+                "-loglevel", "error", *entradas, "-filter_complex",
+                "".join(f"[{i}:v]" for i in range(len(fontes))) + f"concat=n={len(fontes)}:v=1:a=0,format=yuv420p[v]",
+                "-map", "[v]", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", str(arquivo)],
+                baixa_prioridade=False, timeout=300)
+            if r.codigo != 0:
+                raise RuntimeError(r.resumo_erro())
+            info = analise.resumo_midia(cfg, arquivo)
+            info["tamanho"] = arquivo.stat().st_size
+            info["crop"] = [w, h, 0, 0]
+            pasta_analise = cls.pasta_filmes / f"analise-{nome}"
+            pasta_analise.mkdir()
+            cenas = analise.detectar_cenas(cfg, arquivo, info, pasta_analise, nome, None)
+            cls.analises[nome] = (arquivo, info, cenas)
+
+    def setUp(self):
+        super().setUp()
+        self.ids_filme = {nome: self.filme_real(nome) for nome in FILMES_SINTETICOS}
+
+    def filme_real(self, nome: str, falas: tuple = (FALA,)) -> int:
+        arquivo, info, cenas = self.analises[nome]
+        t = time.time()
+        filme_id = self.conn.execute(
+            "INSERT INTO filmes (caminho, titulo, ano, tamanho, tipo, status, criado_em, atualizado_em) "
+            "VALUES (?, ?, 2001, ?, 'filme', 'analisado', ?, ?)",
+            (str(arquivo), f"Filme {nome}", arquivo.stat().st_size, t, t)).lastrowid
+        pasta = analise.pasta_do_filme(self.cfg, filme_id)
+        pasta.mkdir(parents=True, exist_ok=True)
+        util.salvar_json(pasta / "info.json", info)
+        util.salvar_json(pasta / "cenas.json", cenas)
+        frases = [legendas.Frase(a, b, txt, legendas.palavras_estimadas(a, b, txt)) for a, b, txt in falas]
+        legendas.salvar_transcricao(pasta / "transcricao.json", frases, "teste", "pt")
+        return filme_id
+
+    def filme_row(self, filme_id: int):
+        return self.conn.execute("SELECT * FROM filmes WHERE id=?", (filme_id,)).fetchone()
+
+    def corte_real(self, nome: str = "largo", inicio: float = 0.0, fim: float = 18.0, **kw) -> int:
+        return self.novo_corte(self.ids_filme[nome], inicio=inicio, fim=fim, **kw)
+
+    def medir(self, corte_id: int, **kw):
+        corte = self.corte_row(corte_id)
+        filme = self.filme_row(corte["filme_id"])
+        info, _ = analise.carregar_para_render(self.cfg, filme["id"])
+        return imagens.medir_quadros(self.cfg, filme, corte, info, **kw)
+
+    def escolher(self, corte_id: int, tipo: str, quadros: int = 4) -> dict:
+        corte = self.corte_row(corte_id)
+        _, frases = analise.carregar_para_render(self.cfg, corte["filme_id"])
+        return imagens.escolher(tipo, corte, self.medir(corte_id), imagens.cenas_do_filme(self.cfg, corte["filme_id"]),
+                                frases, quadros)
+
+
+class TestGeracao(BaseGeracao):
+    def test_cenas_do_filme_sintetico(self):
+        cenas = self.analises["largo"][2]
+        for troca in (4.0, 8.0, 10.0, 14.0):
+            self.assertTrue(any(abs(c - troca) < 0.1 for c in cenas), (troca, cenas))
+
+    def test_nenhum_quadro_escuro_nem_perto_de_troca(self):  # CA-17
+        for nome in FILMES_SINTETICOS:
+            corte = self.corte_real(nome)
+            amostras = {round(t, 3): y for t, y, _ in self.medir(corte)}
+            self.assertTrue(any(y < imagens.BRILHO_MIN for y in amostras.values()))  # o preto foi medido
+            cenas = imagens.cenas_do_filme(self.cfg, self.ids_filme[nome])
+            for tipo in config.TIPOS_IMAGEM:
+                with self.subTest(nome=nome, tipo=tipo):
+                    for t in self.escolher(corte, tipo)["tempos"]:
+                        self.assertGreaterEqual(amostras[round(t, 3)], imagens.BRILHO_MIN, t)
+                        self.assertFalse(PRETO[0] <= t <= PRETO[1], t)
+                        self.assertGreaterEqual(min(abs(t - c) for c in cenas), imagens.LONGE_DA_CENA, t)
+                        self.assertTrue(0.6 <= t <= 17.2, t)
+
+    def test_carrossel_com_cenas_diferentes_em_ordem(self):
+        corte = self.corte_real()
+        cenas = imagens.cenas_do_filme(self.cfg, self.ids_filme["largo"])
+        tempos = self.escolher(corte, "carrossel", 4)["tempos"]
+        self.assertEqual(tempos, sorted(tempos))
+        self.assertEqual(len(tempos), 4)
+        segmentos = {sum(1 for c in cenas if c <= t) for t in tempos}
+        self.assertEqual(len(segmentos), 4)
+        self.assertEqual(len(self.escolher(corte, "carrossel", 3)["tempos"]), 3)
+        # 5 pedidos com 4 cenas boas: completa com outro quadro, longe dos escolhidos
+        cinco = self.escolher(corte, "carrossel", 5)["tempos"]
+        self.assertEqual(len(cinco), 5)
+        self.assertTrue(all(b - a >= imagens.DISTANCIA_CARROSSEL for a, b in zip(cinco, cinco[1:])), cinco)
+
+    def test_carrossel_sem_3_quadros_e_do_corte(self):
+        corte = self.corte_real(inicio=7.0, fim=10.5)  # quase tudo preto
+        with self.assertRaises(imagens.ErroImagem) as erro:
+            self.escolher(corte, "carrossel")
+        self.assertTrue(erro.exception.do_corte)
+
+    def test_frase_no_tempo_da_fala(self):
+        corte = self.corte_real()
+        escolha = self.escolher(corte, "frase")
+        self.assertEqual(escolha["texto"], FALA[2])
+        self.assertTrue(FALA[0] - 0.3 <= escolha["tempos"][0] <= FALA[1] + 0.3, escolha)
+
+    def test_plano_b_da_frase(self):
+        # a frase do corte não está mais na transcrição (refeita): vale a melhor fala do trecho
+        corte = self.corte_real(frase="Uma frase que a transcrição nova não tem.")
+        escolha = self.escolher(corte, "frase")
+        self.assertEqual(escolha["texto"], FALA[2])
+        self.assertTrue(FALA[0] - 0.3 <= escolha["tempos"][0] <= FALA[1] + 0.3)
+        # sem nenhuma fala no trecho: é do corte
+        sem_fala = self.corte_real(inicio=10.0, fim=18.0)
+        with self.assertRaises(imagens.ErroImagem) as erro:
+            self.escolher(sem_fala, "frase")
+        self.assertTrue(erro.exception.do_corte)
+        self.assertEqual(str(erro.exception), "o trecho não tem fala")
+
+    def test_cache_reaproveitado(self):
+        corte = self.corte_real()
+        primeira = self.medir(corte)
+        self.assertTrue((imagens.pasta_imagens(self.cfg, corte) / "quadros.json").is_file())
+        self.assertFalse((imagens.pasta_imagens(self.cfg, corte) / "quadros.txt").exists())
+        with patch.object(imagens, "executar", side_effect=AssertionError("mediu de novo")):
+            self.assertEqual(self.medir(corte), primeira)
+        # trecho diferente: mede de novo
+        self.conn.execute("UPDATE cortes SET fim=17 WHERE id=?", (corte,))
+        self.assertLess(max(t for t, _, _ in self.medir(corte)), 17.0)
+
+    def test_sem_blurdetect_mede_so_o_brilho(self):
+        corte = self.corte_real()
+        with patch.object(imagens, "_FILTRO_NITIDEZ", "blurdetectquenaoexiste"), \
+                patch.object(imagens, "_SEM_NITIDEZ_AVISADO", False), \
+                self.assertLogs(util.log, "WARNING") as registro:
+            amostras = self.medir(corte)
+        self.assertTrue(amostras)
+        self.assertTrue(all(b is None for _, _, b in amostras))
+        self.assertTrue([r for r in registro.output if "só pelo brilho" in r])
+        validos = imagens.quadros_validos(amostras, 0, 18, [])
+        self.assertTrue(validos)
+        self.assertTrue(all(q.nota == 0.65 for q in validos))  # 0,7 x 0,5 + 0,3 sem troca de cena
+
+    def test_zero_amostras_e_falha_do_ffmpeg_sao_do_pc(self):  # DF-5
+        depois_do_fim = self.corte_real(inicio=100.0, fim=110.0)
+        with self.assertRaises(imagens.ErroImagem) as erro:
+            self.medir(depois_do_fim)
+        self.assertFalse(erro.exception.do_corte)
+        self.assertEqual(str(erro.exception), "o FFmpeg não mediu nenhum quadro do trecho")  # saiu com 0
+        self.assertFalse((imagens.pasta_imagens(self.cfg, depois_do_fim) / "quadros.json").exists())
+        # arquivo que não é vídeo: o FFmpeg sai com erro
+        estragado = self.raiz / "filmes" / "estragado.mkv"
+        estragado.write_bytes(b"isto nao e um video" * 100)
+        self.conn.execute("UPDATE filmes SET caminho=? WHERE id=?", (str(estragado), self.ids_filme["largo"]))
+        with self.assertRaises(imagens.ErroImagem) as erro:
+            self.medir(self.corte_real())
+        self.assertFalse(erro.exception.do_corte)
+        # prazo já gasto
+        self.conn.execute("UPDATE filmes SET caminho=? WHERE id=?", (str(self.analises["largo"][0]),
+                                                                     self.ids_filme["largo"]))
+        with self.assertRaises(imagens.ErroImagem) as erro:
+            self.medir(self.corte_real(inicio=1.0), relogio=imagens.Relogio(0))
+        self.assertFalse(erro.exception.do_corte)
+        self.assertIn("passou de 0 s", str(erro.exception))
+
+    def test_amostras_lidas_todas_ruins_sao_do_corte(self):  # DF-5
+        corte = self.corte_real(inicio=7.5, fim=10.5)
+        with self.assertRaises(imagens.ErroImagem) as erro:
+            self.escolher(corte, "momento")
+        self.assertTrue(erro.exception.do_corte)
+
+
 if __name__ == "__main__":
     unittest.main()

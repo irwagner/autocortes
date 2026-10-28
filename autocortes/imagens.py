@@ -11,12 +11,17 @@ from __future__ import annotations
 import math
 import re
 import threading
+import time
 from dataclasses import dataclass
+from pathlib import Path
 
+from . import analise, selecao
 from .config import FORMATOS_IMAGEM, Config
 from .edicao import LARGURA_TITULO, SEGURO_BASE, SEGURO_TOPO, fonte_do_topo
-from .legendas import largura_texto
-from .textos import limitar
+from .legendas import Frase, largura_texto
+from .midia import ErroMidia, base_ffmpeg, caminho_filtro, executar
+from .textos import limitar, normalizar
+from .util import ler_json, log, salvar_json
 
 # chaves do metadata=mode=print medidas no FFmpeg 9.0.2 (out/2026) com signalstats e blurdetect num
 # testsrc2: cada quadro começa com "frame:N pts:N pts_time:T", e as linhas seguintes são "chave=valor"
@@ -313,3 +318,256 @@ def geometria(cfg: Config, formato: str, aspecto: float, topo: str = "", chamada
         estreitos |= cruzam
         g = _montar(cfg, formato, aspecto, topo, chamada, frase, estreitos)
     return g
+
+
+# ---------------------------------------------------------------- quadros do trecho
+
+# quadros medidos por segundo do trecho
+QUADROS_POR_SEGUNDO = 4
+# regras do quadro bom: longe das bordas do trecho e das trocas de cena, nem escuro nem estourado
+MARGEM_INICIO = 0.6
+MARGEM_FIM = 0.8
+LONGE_DA_CENA = 0.35
+BRILHO_MIN = 40
+BRILHO_MAX = 235
+# no carrossel, o quadro que completa as cenas fica pelo menos isto longe dos outros
+DISTANCIA_CARROSSEL = 1.5
+# nome do filtro de nitidez (trocado no teste para simular um FFmpeg sem ele)
+_FILTRO_NITIDEZ = "blurdetect"
+_SEM_NITIDEZ_AVISADO = False
+
+
+@dataclass(frozen=True)
+class Quadro:
+    t: float        # segundo do filme
+    brilho: float   # YAVG do signalstats (0 a 255)
+    nota: float
+
+
+class Relogio:
+    """O prazo único de uma geração (medição e renders): o que sobra vai como prazo de cada FFmpeg."""
+
+    def __init__(self, prazo: float):
+        self.prazo = float(prazo)
+        self.fim = time.monotonic() + self.prazo
+
+    def restante(self) -> float:
+        return self.fim - time.monotonic()
+
+    def erro(self) -> "ErroImagem":
+        if self.prazo >= 60 and self.prazo % 60 == 0:
+            texto = f"{int(self.prazo // 60)} min"
+        else:
+            texto = f"{int(round(self.prazo))} s"
+        return ErroImagem(f"a geração das imagens passou de {texto}", False)
+
+    def conferir(self) -> float:
+        """O tempo que sobra; acabou, ErroImagem (do PC, não gasta o corte)."""
+        sobra = self.restante()
+        if sobra <= 0:
+            raise self.erro()
+        return sobra
+
+
+def pasta_imagens(cfg: Config, corte_id: int) -> Path:
+    return cfg.pasta_dados / "imagens" / str(corte_id)
+
+
+def _ler_amostras(texto: str, inicio: float) -> list[tuple[float, float, float | None]]:
+    """Amostras (t, brilho, blur) do arquivo do metadata=mode=print, com o tempo somado ao início."""
+    amostras: list[list] = []
+    chave_tempo = CHAVES_METADADO["tempo"] + ":"
+    chave_brilho = CHAVES_METADADO["brilho"] + "="
+    chave_nitidez = CHAVES_METADADO["nitidez"] + "="
+    for linha in texto.splitlines():
+        linha = linha.strip()
+        try:
+            if linha.startswith("frame:") and chave_tempo in linha:
+                amostras.append([inicio + float(linha.split(chave_tempo, 1)[1].split()[0]), None, None])
+            elif amostras and linha.startswith(chave_brilho):
+                amostras[-1][1] = float(linha.split("=", 1)[1])
+            elif amostras and linha.startswith(chave_nitidez):
+                amostras[-1][2] = float(linha.split("=", 1)[1])
+        except (ValueError, IndexError):
+            continue
+    # o blurdetect dá NaN num quadro todo preto: sem nitidez nesse quadro
+    return [(round(t, 3), y, b if b is not None and math.isfinite(b) else None)
+            for t, y, b in amostras if y is not None and math.isfinite(y)]
+
+
+def medir_quadros(cfg: Config, filme, corte, info: dict, parar: threading.Event | None = None,
+                  relogio: Relogio | None = None) -> list[tuple[float, float, float | None]]:
+    """Brilho e nitidez do trecho a 4 quadros por segundo, numa passada do FFmpeg: [(t, brilho, blur)].
+
+    Cache em dados/imagens/<corte>/quadros.json, que vale enquanto o início, o fim e o tamanho do
+    arquivo do filme forem os mesmos. Sem o blurdetect no FFmpeg, mede só o brilho (blur = None).
+    Falha do FFmpeg, prazo e nenhuma amostra lida são do PC: ErroImagem(do_corte=False).
+    """
+    global _SEM_NITIDEZ_AVISADO
+    relogio = relogio or Relogio(300)
+    caminho = Path(filme["caminho"])
+    inicio, fim = float(corte["inicio"]), float(corte["fim"])
+    try:
+        tamanho = caminho.stat().st_size
+    except OSError as erro:
+        raise ErroImagem("o arquivo do filme não está na pasta agora", False, sem_linha=True) from erro
+    pasta = pasta_imagens(cfg, corte["id"])
+    arquivo_cache = pasta / "quadros.json"
+    cache = ler_json(arquivo_cache)
+    if (isinstance(cache, dict) and cache.get("inicio") == inicio and cache.get("fim") == fim
+            and cache.get("tamanho_filme") == tamanho and cache.get("amostras")):
+        return [(float(t), float(y), None if b is None else float(b)) for t, y, b in cache["amostras"]]
+
+    pasta.mkdir(parents=True, exist_ok=True)
+    bruto = pasta / "quadros.txt"
+    dur = max(0.1, fim - inicio)
+    cw, ch, cx, cy = info["crop"]
+    com_nitidez = not _SEM_NITIDEZ_AVISADO
+    while True:
+        filtros = f"fps={QUADROS_POR_SEGUNDO},crop={cw}:{ch}:{cx}:{cy},scale=320:-2,signalstats"
+        if com_nitidez:
+            filtros += f",{_FILTRO_NITIDEZ}"
+        filtros += f",metadata=mode=print:file={caminho_filtro(bruto)}"
+        prazo = min(max(120.0, dur * 4), relogio.conferir())
+        bruto.unlink(missing_ok=True)
+        try:
+            r = executar(
+                base_ffmpeg(cfg["ferramentas"]["ffmpeg"]) + [
+                    "-loglevel", "error", "-ss", f"{inicio:.3f}", "-t", f"{dur:.3f}", "-i", str(caminho),
+                    "-map", f"0:{info['video']['indice']}", "-an", "-sn", "-dn", "-vf", filtros, "-f", "null", "-"],
+                parar=parar, baixa_prioridade=cfg["geral"]["prioridade_baixa"], timeout=prazo)
+        except ErroMidia as erro:
+            bruto.unlink(missing_ok=True)
+            if relogio.restante() <= 1:
+                raise relogio.erro() from erro
+            raise ErroImagem(f"a medição dos quadros falhou: {erro}", False) from erro
+        except BaseException:
+            bruto.unlink(missing_ok=True)
+            raise
+        if r.codigo != 0 and com_nitidez and _FILTRO_NITIDEZ in r.resumo_erro(8):
+            com_nitidez = False  # FFmpeg sem o blurdetect: vale só o brilho
+            if not _SEM_NITIDEZ_AVISADO:
+                _SEM_NITIDEZ_AVISADO = True
+                log.warning("O FFmpeg não tem o filtro %s: as imagens escolhem os quadros só pelo brilho",
+                            _FILTRO_NITIDEZ)
+            continue
+        break
+    try:
+        texto = bruto.read_text(encoding="utf-8", errors="replace") if bruto.exists() else ""
+    finally:
+        bruto.unlink(missing_ok=True)
+    if r.codigo != 0:
+        raise ErroImagem(f"o FFmpeg falhou ao medir os quadros: {r.resumo_erro(2)}", False)
+    amostras = _ler_amostras(texto, inicio)
+    if not amostras:  # código 0 sem nada lido: é do PC ou do FFmpeg, não do trecho
+        raise ErroImagem("o FFmpeg não mediu nenhum quadro do trecho", False)
+    salvar_json(arquivo_cache, {"inicio": inicio, "fim": fim, "tamanho_filme": tamanho,
+                                "amostras": [list(a) for a in amostras]})
+    return amostras
+
+
+def cenas_do_filme(cfg: Config, filme_id: int) -> list[float]:
+    """As trocas de cena gravadas na análise (sem o cache, nenhuma: o trecho vira uma cena só)."""
+    cenas = ler_json(analise.pasta_do_filme(cfg, filme_id) / "cenas.json", [])
+    return sorted(float(c) for c in cenas if isinstance(c, (int, float))) if isinstance(cenas, list) else []
+
+
+def quadros_validos(amostras: list[tuple[float, float, float | None]], inicio: float, fim: float,
+                    cenas: list[float]) -> list[Quadro]:
+    """Os quadros que podem sair, com a nota (0,7 da nitidez e 0,3 da distância da troca de cena)."""
+    blurs = [b for _, _, b in amostras if b is not None]
+    maior_blur = max(blurs, default=0.0)
+    saida = []
+    for t, brilho, blur in amostras:
+        if t < inicio + MARGEM_INICIO or t > fim - MARGEM_FIM:
+            continue
+        if brilho < BRILHO_MIN or brilho > BRILHO_MAX:
+            continue
+        distancia = min((abs(t - c) for c in cenas), default=2.0)
+        if distancia < LONGE_DA_CENA:
+            continue
+        nitidez = 0.5 if blur is None or maior_blur <= 0 else 1 - blur / maior_blur
+        saida.append(Quadro(t, brilho, round(0.7 * nitidez + 0.3 * min(distancia, 2.0) / 2, 4)))
+    return saida
+
+
+def _melhor(quadros: list[Quadro]) -> Quadro | None:
+    return max(quadros, key=lambda q: (q.nota, -q.t), default=None)
+
+
+def _frase_pelo_texto(frases: list[Frase], texto: str, inicio: float, fim: float) -> Frase | None:
+    """A primeira fala dentro do trecho (com 0,2 s de folga) com o mesmo texto normalizado."""
+    alvo = normalizar(str(texto or "")).strip()
+    if not alvo:
+        return None
+    for f in frases:
+        if f.ini >= inicio - 0.2 and f.fim <= fim + 0.2 and normalizar(f.txt).strip() == alvo:
+            return f
+    return None
+
+
+def _escolher_momento(validos: list[Quadro]) -> Quadro:
+    melhor = _melhor(validos)
+    if melhor is None:
+        raise ErroImagem("o trecho não tem nenhum quadro bom (escuro, estourado ou em troca de cena)", True)
+    return melhor
+
+
+def _escolher_frase(corte, frases: list[Frase], validos: list[Quadro], inicio: float,
+                    fim: float) -> tuple[Frase, Quadro]:
+    chaves = set(corte.keys())
+    frase = _frase_pelo_texto(frases, corte["frase"] if "frase" in chaves else "", inicio, fim)
+    if frase is None:  # a transcrição foi refeita: a melhor fala do trecho, como na mineração
+        frase = _frase_pelo_texto(frases, selecao.melhor_frase(frases, inicio, fim), inicio, fim)
+    if frase is None:
+        raise ErroImagem("o trecho não tem fala", True)
+    durante = [q for q in validos if frase.ini - 0.3 <= q.t <= frase.fim + 0.3]
+    quadro = _melhor(durante)
+    if quadro is None:  # nenhum bom durante a fala: o mais perto, a até 1,5 s
+        perto = [q for q in validos if frase.ini - 1.5 <= q.t <= frase.fim + 1.5]
+        quadro = min(perto, key=lambda q: max(frase.ini - q.t, q.t - frase.fim, 0), default=None)
+    if quadro is None:
+        quadro = _escolher_momento(validos)
+        log.info("Imagem de frase do corte %s: nenhum quadro bom perto da fala, usando o melhor do trecho",
+                 corte["id"])
+    return frase, quadro
+
+
+def _escolher_carrossel(validos: list[Quadro], cenas: list[float], inicio: float, fim: float,
+                        n: int) -> list[Quadro]:
+    """O melhor quadro de cada cena, as n cenas de maior nota, em ordem de tempo."""
+    cortes_cena = [inicio] + [c for c in cenas if inicio < c < fim] + [fim + 1]
+    por_cena = []
+    for a, b in zip(cortes_cena, cortes_cena[1:]):
+        melhor = _melhor([q for q in validos if a <= q.t < b])
+        if melhor is not None:
+            por_cena.append(melhor)
+    escolhidos = sorted(por_cena, key=lambda q: (-q.nota, q.t))[:n]
+    if len(escolhidos) < n:  # poucas cenas: completa com os melhores restantes, longe dos já escolhidos
+        for q in sorted(validos, key=lambda q: (-q.nota, q.t)):
+            if len(escolhidos) >= n:
+                break
+            if all(abs(q.t - e.t) >= DISTANCIA_CARROSSEL for e in escolhidos):
+                escolhidos.append(q)
+    if len(escolhidos) < 3:
+        raise ErroImagem("o trecho não tem 3 quadros bons diferentes", True)
+    return sorted(escolhidos, key=lambda q: q.t)
+
+
+def escolher(tipo: str, corte, amostras: list[tuple[float, float, float | None]], cenas: list[float],
+             frases: list[Frase], quadros: int = 4) -> dict:
+    """Os segundos do filme usados na imagem e, no tipo frase, a fala desenhada.
+
+    Devolve {"tempos": [...], "texto": str}. Trecho sem quadro bom, sem fala ou sem 3 quadros
+    diferentes no carrossel: ErroImagem(do_corte=True), o corte sai deste tipo.
+    """
+    inicio, fim = float(corte["inicio"]), float(corte["fim"])
+    validos = quadros_validos(amostras, inicio, fim, cenas)
+    if tipo == "momento":
+        return {"tempos": [_escolher_momento(validos).t], "texto": ""}
+    if tipo == "frase":
+        frase, quadro = _escolher_frase(corte, frases, validos, inicio, fim)
+        return {"tempos": [quadro.t], "texto": frase.txt.strip()}
+    if tipo == "carrossel":
+        return {"tempos": [q.t for q in _escolher_carrossel(validos, cenas, inicio, fim, int(quadros))], "texto": ""}
+    raise ValueError(f"tipo de imagem desconhecido: {tipo}")
