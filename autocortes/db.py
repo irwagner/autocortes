@@ -72,6 +72,30 @@ CREATE TABLE IF NOT EXISTS postagens (
     atualizado_em REAL NOT NULL
 );
 
+-- imagens geradas de um corte para os posts de imagem (uma por corte, tipo e formato)
+CREATE TABLE IF NOT EXISTS imagens (
+    id          INTEGER PRIMARY KEY,
+    corte_id    INTEGER NOT NULL REFERENCES cortes(id) ON DELETE CASCADE,
+    -- momento | frase | carrossel
+    tipo        TEXT NOT NULL,
+    -- 4x5 | 9x16
+    formato     TEXT NOT NULL,
+    -- JSON: caminhos absolutos, na ordem do post
+    arquivos    TEXT NOT NULL,
+    -- JSON: segundos do filme usados, na mesma ordem
+    quadros     TEXT NOT NULL,
+    -- a frase desenhada (tipo frase)
+    texto       TEXT,
+    -- 1 = a chamada para o vídeo foi desenhada (e vai na legenda)
+    com_chamada INTEGER NOT NULL DEFAULT 0,
+    -- sha256 curto do visual e dos modelos usados
+    assinatura  TEXT NOT NULL,
+    -- edicao.modelo na hora da geração
+    modelo      TEXT,
+    criado_em   REAL NOT NULL,
+    UNIQUE (corte_id, tipo, formato)
+);
+
 CREATE TABLE IF NOT EXISTS estado (
     chave         TEXT PRIMARY KEY,
     valor         TEXT NOT NULL,
@@ -167,6 +191,12 @@ _COLUNAS_NOVAS = {
         "compartilhamentos": "INTEGER",
         "metricas_extra": "TEXT",
         "metricas_em": "REAL",
+        # 'video' (o corte) ou 'imagem' (um post de imagem tirado do corte); as antigas viram 'video'
+        "midia": "TEXT NOT NULL DEFAULT 'video'",
+        # momento | frase | carrossel (NULL no vídeo)
+        "imagem_tipo": "TEXT",
+        # imagens.id postado (sem FK: as duas linhas só somem juntas, pelo CASCADE do corte)
+        "imagem_id": "INTEGER",
     },
 }
 
@@ -183,6 +213,7 @@ def _migrar(conn: sqlite3.Connection) -> None:
     # índices sobre colunas que vieram depois: só dá para criar com as colunas já no lugar
     conn.execute("CREATE INDEX IF NOT EXISTS idx_filmes_tipo ON filmes(tipo, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_postagens_slot ON postagens(plataforma, slot)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_postagens_midia ON postagens(plataforma, midia, criado_em)")
 
 
 @contextmanager
@@ -259,9 +290,9 @@ def recuperar_estados_pendentes(conn: sqlite3.Connection, redes_ocupadas=(), edi
         "atualizado_em=? WHERE status='enviando' AND plataforma='facebook' AND url IS NOT NULL" + fora,
         (t, *ocupadas),
     )
-    # a rede já tinha recebido o vídeo (o id é gravado nessa hora): repetir postaria duas vezes
+    # a rede já tinha recebido o post (o id é gravado nessa hora): repetir postaria duas vezes
     conn.execute(
-        "UPDATE postagens SET status='conferir', erro='o AutoCortes fechou depois que a rede recebeu o vídeo; "
+        "UPDATE postagens SET status='conferir', erro='o AutoCortes fechou depois que a rede recebeu o post; "
         "confira se ele saiu', atualizado_em=? WHERE status='enviando' AND id_remoto IS NOT NULL" + fora,
         (t, *ocupadas),
     )
