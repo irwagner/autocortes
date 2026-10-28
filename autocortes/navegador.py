@@ -43,6 +43,8 @@ PROGRAMAS = (
 )
 # eventos que dizem que a aba acabou: esperar a resposta dela não adianta mais
 _EVENTOS_FIM = ("Inspector.detached", "Inspector.targetCrashed")
+# o `accept` de um campo que aceita JPEG (a mesma expressão do JS do gravador)
+_ACEITA_IMAGEM = r"/(^|,)\s*(image\/\*|image\/jpeg|\.jpe?g)\s*(,|$)/i"
 
 
 class ErroNavegador(Exception):
@@ -52,13 +54,17 @@ class ErroNavegador(Exception):
     sem resposta): não adianta esperar a página mudar, o passo falha na hora.
     persistente=True é o bloqueio que não passa sozinho (a rede pediu verificação): a rede só
     volta quando você resolve na janela e testa a conta de novo.
+    parado=True (só com o tipo "formato") quer dizer que as imagens da rede param até você gravar
+    o roteiro de imagem de novo: o campo não aceita imagem ou o roteiro de imagem sumiu.
     """
 
-    def __init__(self, mensagem: str, tipo: str = "temporario", conexao: bool = False, persistente: bool = False):
+    def __init__(self, mensagem: str, tipo: str = "temporario", conexao: bool = False, persistente: bool = False,
+                 parado: bool = False):
         super().__init__(mensagem)
         self.tipo = tipo
         self.conexao = conexao
         self.persistente = persistente
+        self.parado = parado
 
 
 class _Websocket(Websocket):
@@ -585,29 +591,85 @@ class Aba:
         self.digitar_alvos(css(seletor), texto, segundos)
 
     def enviar_arquivo(self, seletor, arquivo: Path, segundos: float = 30) -> None:
-        """Entrega o arquivo ao <input type=file> da página (mesmo escondido ou no shadow DOM)."""
-        if not Path(arquivo).is_file():
-            # o Chrome aceita caminho inexistente sem reclamar, e o envio falharia lá na frente
-            raise ErroNavegador(f"o vídeo não está mais em {arquivo}", "corte")
-        alvo = self.primeiro(seletor, segundos, "campo de arquivo")
+        """Entrega o vídeo ao <input type=file> da página (mesmo escondido ou no shadow DOM)."""
+        self.enviar_arquivos(seletor, [arquivo], segundos)
+
+    def _soltar(self, id_objeto: str) -> None:
+        try:
+            self.comando("Runtime.releaseObject", objectId=id_objeto)
+        except ErroNavegador as e:
+            if e.conexao:
+                raise
+
+    def _campo_de_imagem(self, seletores: list[str], alvo: str, midia: str, quantos: int) -> str:
+        """O objeto do campo que recebe estes arquivos, conferindo `multiple` e `accept`.
+
+        Com imagem, fica com o primeiro campo (entre os que casam com o seletor) que aceita imagem:
+        a página pode ter um campo de vídeo antes do de foto.
+        """
+        lista = [alvo] + [s for s in seletores if s != alvo]
+        objeto = self.avaliar(
+            "(() => { const v = []; for (const s of " + json.dumps(lista) + ") { for (const el of __ac.todos(s)) "
+            "{ if (!v.includes(el)) v.push(el); } } return v; })()", objeto=True)
+        id_lista = objeto.get("objectId") if isinstance(objeto, dict) else None
+        if not id_lista:
+            raise ErroNavegador(f"o campo de arquivo não virou objeto ({alvo}): {objeto}")
+        try:
+            r = self.comando(
+                "Runtime.callFunctionOn", objectId=id_lista, returnByValue=True,
+                functionDeclaration="function () { return this.map((el) => ({ multiplo: !!el.multiple, "
+                                    f"aceita: !el.accept || {_ACEITA_IMAGEM}.test(el.accept) }})); }}")
+            campos = (r.get("result") or {}).get("value") or []
+            if not campos:
+                raise ErroNavegador(f"o campo de arquivo sumiu da página ({alvo})")
+            indice = 0
+            if midia == "imagem":
+                indice = next((i for i, c in enumerate(campos) if c.get("aceita")), -1)
+                if indice < 0:
+                    raise ErroNavegador("o campo de arquivo desta página não aceita imagem", "formato", parado=True)
+            if quantos > 1 and not campos[indice].get("multiplo"):
+                raise ErroNavegador("o campo de arquivo aceita uma imagem por vez: o carrossel não sai por este "
+                                    "roteiro", "formato")
+            r = self.comando("Runtime.callFunctionOn", objectId=id_lista,
+                             functionDeclaration="function (i) { return this[i]; }", arguments=[{"value": indice}])
+            id_objeto = (r.get("result") or {}).get("objectId")
+            if not id_objeto:
+                raise ErroNavegador(f"o campo de arquivo não virou objeto ({alvo})")
+            return id_objeto
+        finally:
+            self._soltar(id_lista)
+
+    def enviar_arquivos(self, seletor, arquivos, segundos: float = 30, midia: str = "video") -> None:
+        """Entrega os arquivos, na ordem, ao <input type=file> da página (mesmo escondido ou no shadow DOM).
+
+        O vídeo (um arquivo) segue o caminho de sempre, sem conferir o campo. Com imagem ou com mais
+        de um arquivo, confere antes se o campo aceita imagem e mais de um arquivo (tipo "formato").
+        """
+        arquivos = [Path(a) for a in arquivos]
+        for arquivo in arquivos:
+            if not arquivo.is_file():
+                # o Chrome aceita caminho inexistente sem reclamar, e o envio falharia lá na frente
+                o_que = "a imagem" if midia == "imagem" else "o vídeo"
+                raise ErroNavegador(f"{o_que} não está mais em {arquivo}", "corte")
+        seletores = [seletor] if isinstance(seletor, str) else list(seletor)
+        alvo = self.primeiro(seletores, segundos, "campo de arquivo")
         # pelo objeto, e não por DOM.querySelector: este acha também o que está dentro do shadow DOM
         self._garantir_ajudante()
-        objeto = self.avaliar(f"__ac.achar({json.dumps(alvo)})", objeto=True)
-        id_objeto = objeto.get("objectId") if isinstance(objeto, dict) else None
-        if not id_objeto:
-            raise ErroNavegador(f"o campo de arquivo não virou objeto ({alvo}): {objeto}")
+        if midia == "imagem" or len(arquivos) > 1:
+            id_objeto = self._campo_de_imagem(seletores, alvo, midia, len(arquivos))
+        else:
+            objeto = self.avaliar(f"__ac.achar({json.dumps(alvo)})", objeto=True)
+            id_objeto = objeto.get("objectId") if isinstance(objeto, dict) else None
+            if not id_objeto:
+                raise ErroNavegador(f"o campo de arquivo não virou objeto ({alvo}): {objeto}")
         try:
             self.comando("DOM.getDocument", depth=0)  # sem isto o DOM não sabe mapear o objeto
             no = self.comando("DOM.requestNode", objectId=id_objeto).get("nodeId")
             if not no:
                 raise ErroNavegador(f"não consegui apontar o campo de arquivo ({alvo})")
-            self.comando("DOM.setFileInputFiles", nodeId=no, files=[str(Path(arquivo).resolve())])
+            self.comando("DOM.setFileInputFiles", nodeId=no, files=[str(a.resolve()) for a in arquivos])
         finally:
-            try:
-                self.comando("Runtime.releaseObject", objectId=id_objeto)
-            except ErroNavegador as e:
-                if e.conexao:
-                    raise
+            self._soltar(id_objeto)
         self.pausa(2.0)
 
     def captura(self, destino: Path) -> Path | None:

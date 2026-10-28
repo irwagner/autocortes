@@ -33,21 +33,26 @@ class ErroPublicacao(Exception):
            "corte":      este vídeo não serve para esta rede; pula para o próximo
            "bloqueio":   login/config com problema; para de postar nesta rede
            "ensaio":     o modo ensaio preencheu tudo e parou antes de publicar
+           "formato":    a página não aceita este post de imagem (campo sem foto ou sem várias) ou o
+                         roteiro de imagem sumiu; nada saiu, e só as imagens da rede mudam
 
     rede_falhou: a internet caiu antes de a rede responder (nada saiu; não conta como falha do corte)
     ambiente:    cota ou limite da rede (nada saiu; a rede espera pausa_seg antes de tentar de novo)
     pausa_seg:   quanto esperar antes da próxima tentativa nesta rede
     persistente: bloqueio que não passa sozinho (só some quando você testa a conta de novo)
+    parado:      no "formato", as imagens da rede param até você gravar o roteiro de imagem de novo
     """
 
     def __init__(self, mensagem: str, tipo: str = "temporario", *, rede_falhou: bool = False,
-                 ambiente: bool = False, pausa_seg: float | None = None, persistente: bool = False):
+                 ambiente: bool = False, pausa_seg: float | None = None, persistente: bool = False,
+                 parado: bool = False):
         super().__init__(ocultar_segredos(mensagem))
         self.tipo = tipo
         self.rede_falhou = rede_falhou
         self.ambiente = ambiente
         self.pausa_seg = pausa_seg
         self.persistente = persistente
+        self.parado = parado
 
 
 @dataclass
@@ -140,6 +145,11 @@ class Plataforma:
     def publicar(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None,
                  entrega: Entrega | None = None) -> Resultado:
         raise NotImplementedError
+
+    def publicar_imagens(self, arquivos: list[Path], conteudo: Conteudo, parar: threading.Event | None = None,
+                         entrega: Entrega | None = None) -> Resultado:
+        # só o navegador posta imagens (a validação exige o envio pelo navegador nas redes com imagens)
+        raise ErroPublicacao("esta forma de envio não posta imagens", "formato")
 
     # ---- HTTP
     def requisicao(self, metodo: str, url: str, **kwargs) -> requests.Response:

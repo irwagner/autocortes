@@ -20,9 +20,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from autocortes import (agenda, analise, cli, config, db, edicao, gravador, imagens, legendas, loop, midia, planejador,
-                        produtor, publicador, roteiro, selecao, textos, util)
+from autocortes import (agenda, analise, cli, config, db, edicao, gravador, imagens, legendas, loop, midia, navegador,
+                        planejador, produtor, publicador, roteiro, selecao, textos, util)
 from autocortes.painel import api
+from autocortes.plataformas import base as plat_base
+from autocortes.plataformas import navegador as plat_nav
 from autocortes.painel.erros import ErroHttp
 from autocortes.config import PADRAO, RAIZ, Config, ErroConfig
 
@@ -1820,6 +1822,173 @@ class TestPreparar(BaseGeracao):
         pasta = imagens.pasta_imagens(self.cfg, corte)
         self.assertEqual([p.name for p in pasta.iterdir() if ".parcial." in p.name], [])
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM imagens").fetchone()[0], 0)
+
+
+class _WsFalso:
+    """Websocket de mentira para a Aba: anota cada comando do CDP e responde como a página falsa manda.
+
+    campos: os <input type=file> da página, na ordem do DOM ({"seletores", "accept", "multiple"}).
+    """
+
+    def __init__(self, campos: list[dict]):
+        self.campos = campos
+        self.chamadas: list[tuple[str, dict]] = []
+        self._fila: list[str] = []
+        self.objetos: dict[str, object] = {}
+
+    def enviar(self, texto: str) -> None:
+        msg = json.loads(texto)
+        metodo, params = msg["method"], msg.get("params") or {}
+        self.chamadas.append((metodo, params))
+        self._fila.append(json.dumps({"id": msg["id"], "result": self.responder(metodo, params)}))
+
+    def receber(self) -> str:
+        return self._fila.pop(0)
+
+    def metodos(self) -> list[str]:
+        return [m for m, _ in self.chamadas]
+
+    def _objeto(self, valor) -> dict:
+        objeto_id = f"obj-{len(self.objetos) + 1}"
+        self.objetos[objeto_id] = valor
+        return {"type": "object", "objectId": objeto_id}
+
+    def _casam(self, lista: list[str]) -> list[int]:
+        vistos: list[int] = []
+        for s in lista:
+            vistos += [i for i, c in enumerate(self.campos) if s in c["seletores"] and i not in vistos]
+        return vistos
+
+    def responder(self, metodo: str, params: dict) -> dict:
+        if metodo == "Runtime.evaluate":
+            expr = params["expression"]
+            if not params.get("returnByValue"):
+                lista = re.search(r"of (\[.*?\])\)", expr)
+                if expr.startswith("__ac.achar("):
+                    alvo = json.loads(expr[len("__ac.achar("):-1])
+                    casam = self._casam([alvo])
+                    return {"result": self._objeto(casam[0] if casam else None)}
+                casam = self._casam(json.loads(lista.group(1)))
+                return {"result": self._objeto(("lista", casam))}
+            if expr.startswith("typeof window.__ac"):
+                return {"result": {"value": 1}}
+            if expr.startswith("(() => { for (const s of "):
+                lista = json.loads(re.search(r"of (\[.*?\])\)", expr).group(1))
+                return {"result": {"value": next((s for s in lista if self._casam([s])), 0)}}
+            return {"result": {"value": None}}
+        if metodo == "Runtime.callFunctionOn":
+            casam = self._valor(params["objectId"])[1]
+            if params.get("returnByValue"):
+                valor = [{"multiplo": bool(self.campos[i].get("multiple")),
+                          "aceita": _aceita_imagem(self.campos[i].get("accept", ""))} for i in casam]
+                return {"result": {"value": valor}}
+            indice = params["arguments"][0]["value"]
+            return {"result": self._objeto(casam[indice])}
+        if metodo == "DOM.requestNode":
+            return {"nodeId": 100 + self._valor(params["objectId"])}
+        return {}
+
+    def _valor(self, objeto_id: str):
+        return self.objetos[objeto_id]
+
+
+def _aceita_imagem(accept: str) -> bool:
+    """A mesma regra do JS do gravador e do enviar_arquivos (o falso responde com ela)."""
+    return not accept or bool(re.search(r"(^|,)\s*(image/\*|image/jpeg|\.jpe?g)\s*(,|$)", accept, re.I))
+
+
+# o envio de um vídeo pela Aba no código do bd7de20 (CA-35): nenhum comando do CDP a mais
+METODOS_VIDEO_MAIN = ["Runtime.evaluate", "Runtime.evaluate", "Runtime.evaluate", "Runtime.evaluate",
+                      "DOM.getDocument", "DOM.requestNode", "DOM.setFileInputFiles", "Runtime.releaseObject"]
+
+
+class TestEnvio(Base):
+    """Aba.enviar_arquivos com uma página falsa que anota os comandos do CDP (CA-35, DF-11)."""
+
+    def aba(self, campos: list[dict]):
+        ws = _WsFalso(campos)
+        aba = navegador.Aba(ws, ritmo=(0, 0))
+        ws.chamadas.clear()
+        return aba, ws
+
+    def arquivos(self, n: int, extensao: str = "jpg") -> list[Path]:
+        saida = []
+        for i in range(1, n + 1):
+            arquivo = self.raiz / f"arquivo-{i}.{extensao}"
+            arquivo.write_bytes(b"x")
+            saida.append(arquivo)
+        return saida
+
+    def entregues(self, ws: _WsFalso) -> tuple[int, list[str]]:
+        params = next(p for m, p in ws.chamadas if m == "DOM.setFileInputFiles")
+        return params["nodeId"] - 100, params["files"]
+
+    def test_video_faz_as_mesmas_chamadas_de_hoje(self):  # CA-35
+        campos = [{"seletores": ["input[type=file]"], "accept": "video/*"}]
+        aba, ws = self.aba(campos)
+        video = self.arquivos(1, "mp4")[0]
+        aba.enviar_arquivo("input[type=file]", video)
+        self.assertEqual(ws.metodos(), METODOS_VIDEO_MAIN)
+        self.assertEqual(self.entregues(ws), (0, [str(video.resolve())]))
+        aba, ws = self.aba(campos)
+        aba.enviar_arquivos(["input[type=file]"], [video])
+        self.assertEqual(ws.metodos(), METODOS_VIDEO_MAIN)
+        self.assertNotIn("Runtime.callFunctionOn", ws.metodos())
+
+    def test_imagem_vai_para_o_campo_que_aceita_imagem(self):  # DF-11
+        campos = [{"seletores": ["input[type=file]"], "accept": "video/mp4,video/*"},
+                  {"seletores": ["input[type=file]"], "accept": "image/png, image/jpeg", "multiple": True}]
+        aba, ws = self.aba(campos)
+        fotos = self.arquivos(3)
+        aba.enviar_arquivos(["input[type=file]"], fotos, midia="imagem")
+        self.assertEqual(self.entregues(ws), (1, [str(f.resolve()) for f in fotos]))  # na ordem
+        # os objetos que pedi à página são soltos
+        soltos = [p["objectId"] for m, p in ws.chamadas if m == "Runtime.releaseObject"]
+        self.assertEqual(len(soltos), 2)
+
+    def test_nenhum_campo_aceita_imagem(self):  # DF-11
+        aba, ws = self.aba([{"seletores": ["input[type=file]"], "accept": "video/*"},
+                            {"seletores": ["input[type=file]"], "accept": ".mp4,.mov"}])
+        with self.assertRaises(navegador.ErroNavegador) as erro:
+            aba.enviar_arquivos("input[type=file]", self.arquivos(1), midia="imagem")
+        self.assertEqual((erro.exception.tipo, erro.exception.parado), ("formato", True))
+        self.assertNotIn("video", str(erro.exception))  # o accept não vai para a mensagem
+        self.assertNotIn("DOM.setFileInputFiles", ws.metodos())
+
+    def test_sem_multiple_com_tres_imagens(self):
+        aba, ws = self.aba([{"seletores": ["input[type=file]"], "accept": "image/*"}])
+        with self.assertRaises(navegador.ErroNavegador) as erro:
+            aba.enviar_arquivos("input[type=file]", self.arquivos(3), midia="imagem")
+        self.assertEqual((erro.exception.tipo, erro.exception.parado), ("formato", False))
+        self.assertNotIn("DOM.setFileInputFiles", ws.metodos())
+        # uma imagem só no mesmo campo passa
+        aba, ws = self.aba([{"seletores": ["input[type=file]"], "accept": ""}])
+        aba.enviar_arquivos("input[type=file]", self.arquivos(1), midia="imagem")
+        self.assertEqual(self.entregues(ws)[0], 0)
+
+    def test_arquivo_sumido(self):
+        aba, ws = self.aba([{"seletores": ["input[type=file]"], "accept": "image/*", "multiple": True}])
+        fotos = self.arquivos(2)
+        fotos[1].unlink()
+        with self.assertRaises(navegador.ErroNavegador) as erro:
+            aba.enviar_arquivos("input[type=file]", fotos, midia="imagem")
+        self.assertEqual(erro.exception.tipo, "corte")
+        self.assertIn("a imagem não está mais em", str(erro.exception))
+        self.assertEqual(ws.metodos(), [])
+
+    def test_erros_com_parado_e_formato(self):
+        self.assertFalse(navegador.ErroNavegador("x").parado)
+        e = plat_base.ErroPublicacao("x", "formato", parado=True)
+        self.assertEqual((e.tipo, e.parado, e.persistente), ("formato", True, False))
+        self.assertFalse(plat_base.ErroPublicacao("x").parado)
+        p = plat_base.Plataforma.__new__(plat_base.Plataforma)
+        with self.assertRaises(plat_base.ErroPublicacao) as erro:
+            p.publicar_imagens([], None)
+        self.assertEqual(erro.exception.tipo, "formato")
+
+    def test_link_de_post_de_fotos_do_tiktok(self):  # DF-12
+        self.assertRegex("https://www.tiktok.com/@x/photo/123", plat_nav._LINK_POST)
+        self.assertEqual(plat_nav._chave_do_link("https://www.tiktok.com/@x/photo/123"), "123")
 
 
 if __name__ == "__main__":

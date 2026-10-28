@@ -88,7 +88,7 @@ BLOQUEIO = (
 # imagens de tela guardadas por rede (as mais antigas saem)
 MAX_IMAGENS = 30
 # link de um post publicado
-_LINK_POST = r"youtu\.be/|/shorts/|/video/|/reel/|/p/|bilibili\.com/video/"
+_LINK_POST = r"youtu\.be/|/shorts/|/video/|/reel/|/p/|/photo/|bilibili\.com/video/"
 # espera do passo que publica e da confirmação: o botão só libera quando o envio do vídeo termina
 ESPERA_PUBLICAR = 900
 
