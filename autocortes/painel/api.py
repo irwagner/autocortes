@@ -16,8 +16,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .. import (__version__, agenda, analise, canais, canais_conta, config, criacao, edicao, ferramentas, gravador,
-                ia, metricas, modelos_visuais, perfis, planejador, roteiro, voz)
-from ..config import ENVIOS, PLATAFORMAS, ROTULOS, ErroConfig
+                ia, imagens, metricas, modelos_visuais, perfis, planejador, roteiro, voz)
+from ..config import (ENVIOS, FORMATOS_IMAGEM, IMAGEM_INDISPONIVEL, PLATAFORMAS, REDES_IMAGEM, ROTULOS, TIPOS_IMAGEM,
+                      ErroConfig)
 from ..midia import ErroMidia, Interrompido, base_ffmpeg, executar
 from ..navegador import ErroNavegador
 from ..plataformas import ErroPublicacao, criar
@@ -221,7 +222,7 @@ def ocupado(painel) -> bool:
     postando, baixando dos canais, gravando um roteiro, conectando uma conta (de uma rede, ou a janela
     da conta separada dos canais) ou numa tarefa do painel. Vai no /saude, e a atualização automática
     espera todos os perfis ficarem livres."""
-    if TRAVA_EDICAO.locked() or TRAVA_ANALISE.locked() or canais.TRAVA.locked():
+    if TRAVA_EDICAO.locked() or TRAVA_ANALISE.locked() or canais.TRAVA.locked() or imagens.TRAVA.locked():
         return True
     if any(trava.locked() for trava in TRAVAS_REDE.values()) or tarefas_rodando():
         return True
@@ -277,13 +278,12 @@ def _resumo_redes(ctx: Contexto) -> dict:
         bloqueio = bloqueadas.get(rede)
         proximo = None
         videos = bool(cfg[rede].get("videos", True))
-        if cfg[rede]["ativo"] and videos:
-            # rede pausada: o próximo horário é o primeiro depois da pausa; parada até você
-            # resolver (login, conta, configuração), não há próximo
-            ate = bloqueio.get("ate") if bloqueio and not cfg.simulacao else 0
-            if ate is not None:
-                depois = max(agora, datetime.fromtimestamp(float(ate))) if ate else agora
-                proximo = agenda.proximo_horario(cfg, rede, depois)
+        # rede pausada: o próximo horário é o primeiro depois da pausa; parada até você
+        # resolver (login, conta, configuração), não há próximo
+        ate = bloqueio.get("ate") if bloqueio and not cfg.simulacao else 0
+        depois = None if ate is None else (max(agora, datetime.fromtimestamp(float(ate))) if ate else agora)
+        if cfg[rede]["ativo"] and videos and depois is not None:
+            proximo = agenda.proximo_horario(cfg, rede, depois)
         saida[rede] = {
             "ativo": bool(cfg[rede]["ativo"]),
             "via": plataforma.via,
@@ -314,7 +314,40 @@ def _resumo_redes(ctx: Contexto) -> dict:
                 **(roteiro.resumo(texto, rede) if texto else {}),
             }
             saida[rede]["gravando"] = rede in ctx.painel.gravacoes
+            gravacao = ctx.painel.gravacoes.get(rede)
+            saida[rede]["gravando_midia"] = getattr(gravacao, "midia", "video") if gravacao is not None else None
+        saida[rede].update(_resumo_imagens(ctx, rede, videos, depois))
     return saida
+
+
+def _resumo_imagens(ctx: Contexto, rede: str, videos: bool, depois: datetime | None) -> dict:
+    """As caixas Vídeos e Imagens da rede, por que as imagens não saem e o próximo horário de imagem."""
+    cfg = ctx.cfg
+    motivo = config.motivo_sem_imagens(cfg, rede)
+    dados = {
+        "videos": videos,
+        "imagens": bool(cfg[rede].get("imagens", False)),
+        "imagens_disponivel": motivo is None,
+        # YouTube, Kwai e Bilibili (IMAGEM_INDISPONIVEL) ou o envio que não é pelo navegador
+        "imagens_motivo": motivo,
+    }
+    if rede not in REDES_IMAGEM:
+        return dados
+    nome = roteiro.nome_roteiro(rede, "imagem")
+    texto = gravador.carregar(cfg, nome)
+    pronta, porque = planejador.imagens_prontas(cfg, ctx.conn, rede)
+    ligada = rede in cfg.redes_de_imagem()
+    proximo = agenda.proximo_horario(cfg, rede, depois, "imagem") if ligada and depois is not None else None
+    dados.update({
+        "roteiro_imagem": {"tem": bool(texto), **(roteiro.resumo(texto, nome) if texto else {})},
+        "imagens_prontas": pronta,
+        "imagens_prontas_motivo": porque,
+        # o que o envio e a gravação descobriram: sem_carrossel, parado ou sem_fotos (com a mensagem)
+        "estado_imagens": planejador.ler_estado_imagens(ctx.conn, rede),
+        "proximo_imagem": proximo.timestamp() if proximo else None,
+        "imagens_por_semana": agenda.posts_por_semana(cfg, rede, midia="imagem") if ligada else 0,
+    })
+    return dados
 
 
 def _tarefas(conn: sqlite3.Connection, limite: int = 30) -> list[dict]:
@@ -339,18 +372,48 @@ def _a_conferir(conn: sqlite3.Connection, limite: int = 30) -> list[dict]:
     """Posts que a rede recebeu sem confirmar: você diz se saíram (nada é repetido sozinho)."""
     itens = []
     for p in conn.execute(
-        "SELECT p.id, p.plataforma, p.url, p.erro, p.criado_em, p.manual, c.id AS corte_id, c.parte, c.arquivo, "
-        "c.renderizado_em, f.titulo AS filme FROM postagens p JOIN cortes c ON c.id = p.corte_id "
-        "JOIN filmes f ON f.id = c.filme_id WHERE p.status='conferir' ORDER BY p.criado_em, p.id LIMIT ?",
+        "SELECT p.id, p.plataforma, p.url, p.erro, p.criado_em, p.manual, p.midia, p.imagem_tipo, p.imagem_id, "
+        "c.id AS corte_id, c.parte, c.arquivo, c.renderizado_em, f.titulo AS filme FROM postagens p "
+        "JOIN cortes c ON c.id = p.corte_id JOIN filmes f ON f.id = c.filme_id WHERE p.status='conferir' "
+        "ORDER BY p.criado_em, p.id LIMIT ?",
         (limite,),
     ):
         video, miniatura = _urls(p["corte_id"], p["arquivo"], p["renderizado_em"])
         itens.append({
             "id": p["id"], "rede": p["plataforma"], "url": p["url"], "erro": p["erro"], "quando": p["criado_em"],
             "manual": bool(p["manual"]), "corte_id": p["corte_id"], "parte": p["parte"], "filme": p["filme"],
-            "video": video, "miniatura": miniatura,
+            "video": video, "miniatura": miniatura, **_midia_do_post(p),
         })
+    _anexar_imagens(conn, itens)
     return itens
+
+
+def _midia_do_post(p: sqlite3.Row) -> dict:
+    return {"midia": p["midia"] or "video", "imagem_tipo": p["imagem_tipo"], "imagem_id": p["imagem_id"]}
+
+
+def _url_imagem(imagem_id: int, n: int, versao: float | None) -> str:
+    return f"/media/imagem/{imagem_id}/{n}.jpg?v={int(versao or 0)}"
+
+
+def _anexar_imagens(conn: sqlite3.Connection, itens: list[dict]) -> None:
+    """Nos posts de imagem, a miniatura é a primeira imagem postada (a do vídeo fica em "video")."""
+    ids = sorted({i["imagem_id"] for i in itens if i.get("midia") == "imagem" and i.get("imagem_id")})
+    if not ids:
+        return
+    primeira: dict[int, str] = {}
+    for r in conn.execute(f"SELECT id, arquivos, criado_em FROM imagens WHERE id IN ({_marc(ids)})", ids):
+        try:
+            arquivos = json.loads(r["arquivos"] or "[]")
+        except ValueError:
+            arquivos = []
+        if arquivos and Path(arquivos[0]).is_file():
+            primeira[r["id"]] = _url_imagem(r["id"], 1, r["criado_em"])
+    for item in itens:
+        if item.get("midia") == "imagem":
+            item["imagem"] = primeira.get(item.get("imagem_id"))
+            if item["imagem"]:
+                item["miniatura"] = item["imagem"]
 
 
 def _anexar_midia(conn: sqlite3.Connection, itens: list[dict]) -> None:
@@ -370,17 +433,18 @@ def _anexar_midia(conn: sqlite3.Connection, itens: list[dict]) -> None:
 def _ultimas_postagens(conn: sqlite3.Connection, limite: int) -> list[dict]:
     itens = []
     for p in conn.execute(
-        "SELECT p.id, p.plataforma, p.status, p.url, p.erro, p.criado_em, p.manual, c.id AS corte_id, c.parte, "
-        "c.arquivo, c.renderizado_em, f.titulo AS filme FROM postagens p JOIN cortes c ON c.id = p.corte_id "
-        "JOIN filmes f ON f.id = c.filme_id ORDER BY p.id DESC LIMIT ?",
+        "SELECT p.id, p.plataforma, p.status, p.url, p.erro, p.criado_em, p.manual, p.midia, p.imagem_tipo, "
+        "p.imagem_id, c.id AS corte_id, c.parte, c.arquivo, c.renderizado_em, f.titulo AS filme FROM postagens p "
+        "JOIN cortes c ON c.id = p.corte_id JOIN filmes f ON f.id = c.filme_id ORDER BY p.id DESC LIMIT ?",
         (limite,),
     ):
         video, miniatura = _urls(p["corte_id"], p["arquivo"], p["renderizado_em"])
         itens.append({
             "id": p["id"], "rede": p["plataforma"], "estado": p["status"], "url": p["url"], "erro": p["erro"],
             "quando": p["criado_em"], "manual": bool(p["manual"]), "corte_id": p["corte_id"], "parte": p["parte"],
-            "filme": p["filme"], "video": video, "miniatura": miniatura,
+            "filme": p["filme"], "video": video, "miniatura": miniatura, **_midia_do_post(p),
         })
+    _anexar_imagens(conn, itens)
     return itens
 
 
@@ -424,6 +488,17 @@ def _alertas(ctx: Contexto, filmes: dict, cortes: dict, cobertura: dict, redes: 
             add("erro", f"{ROTULOS[rede]} pausado{quando}: {v['bloqueada']}", "redes")
         elif not v["pronta"]:
             add("info" if cfg.simulacao else "erro", f"{ROTULOS[rede]}: {v['motivo']}.", "redes")
+    for rede in ativas:
+        if not cfg[rede].get("imagens"):
+            continue
+        v = redes[rede]
+        if v.get("imagens_motivo"):  # envio que não é pelo navegador
+            add("aviso", f"{ROTULOS[rede]}: as imagens não saem: {v['imagens_motivo']}.", "redes")
+        elif not v.get("imagens_prontas"):  # sem roteiro de imagem, roteiro com erro, parado ou sem fotos
+            add("aviso", f"{ROTULOS[rede]}: as imagens não saem: {v.get('imagens_prontas_motivo')}.", "redes")
+        elif not planejador.tipos_efetivos(cfg, ctx.conn, rede) or planejador.imagens_sem_rendimento(cfg, ctx.conn, rede):
+            add("aviso", f"Nenhum corte editado serve para os tipos de imagem ligados no {ROTULOS[rede]}: "
+                "ligue outro tipo em Configurações > Imagens.", "config?aba=imagens")
     conferir = n_conferir if n_conferir is not None else sum(v.get("conferir", 0) for v in redes.values())
     if conferir:
         add("aviso", f"{conferir} post(s) a conferir: a rede recebeu o post, mas eu não vi a confirmação. "
@@ -632,6 +707,11 @@ def _meta_config(ctx: Contexto) -> dict:
         "ia_hardware": sistema.info_ia(),
         "presets": agenda.PRESETS,
         "envios": ENVIOS,
+        # posts de imagem: os tipos, as redes que podem, o formato de cada uma e por que as outras não
+        "tipos_imagem": list(TIPOS_IMAGEM),
+        "redes_imagem": list(REDES_IMAGEM),
+        "formatos_imagem": FORMATOS_IMAGEM,
+        "imagem_indisponivel": IMAGEM_INDISPONIVEL,
         "max_tarefas": tarefas_manual.MAX_TAREFAS_POR_REDE,
         "tiktok_redirect": f"http://127.0.0.1:{int(cfg['tiktok']['porta_redirect'])}/callback/",
         # opções já salvas que só valem depois de fechar e abrir o AutoCortes
@@ -767,6 +847,33 @@ def previa(ctx: Contexto):
         except ErroMidia as e:
             raise ErroHttp(500, str(e)) from e
     return {"url": f"/media/previa.jpg?v={int(time.time() * 1000)}", "quadro_real": quadro is not None}
+
+
+@rota("POST", r"/imagens/previa")
+def previa_imagem(ctx: Contexto):
+    """As imagens de um tipo no formato da rede, com as opções de [imagens] ainda não salvas."""
+    tipo, rede = ctx.corpo.get("tipo"), ctx.corpo.get("rede")
+    _exigir(isinstance(tipo, str) and tipo in TIPOS_IMAGEM, "Tipo de imagem inválido")
+    _exigir(isinstance(rede, str) and rede in REDES_IMAGEM, "Rede sem imagens")
+    alteracoes = ctx.corpo.get("alteracoes")
+    try:
+        temporario = config.simular(ctx.cfg, alteracoes if isinstance(alteracoes, dict) else {})
+    except ErroConfig as e:
+        raise ErroHttp(400, "Configuração inválida para a prévia", {"erros": e.erros}) from e
+    with TRAVA_PREVIA:
+        # a mesma trava do motor e da gravação: com uma geração no meio, desiste em vez de esperar minutos
+        _exigir(imagens.TRAVA.acquire(timeout=5), "o AutoCortes está gerando imagens agora", 409)
+        try:
+            arquivos, real = imagens.previa(temporario, ctx.conn, tipo, rede, ctx.cfg.pasta_previa,
+                                            ctx.painel.encerrar)
+        except (ErroMidia, imagens.ErroImagem) as e:
+            raise ErroHttp(500, str(e)) from e
+        finally:
+            imagens.TRAVA.release()
+    formato = FORMATOS_IMAGEM[rede]["nome"]
+    versao = int(time.time() * 1000)
+    return {"urls": [f"/media/previa-imagem/{tipo}-{formato}-{n}.jpg?v={versao}" for n in range(1, len(arquivos) + 1)],
+            "real": real}
 
 
 # ---------------------------------------------------------------- estúdio: modelos visuais e molduras
@@ -1144,10 +1251,15 @@ def listar_cortes(ctx: Contexto):
     itens.sort(key=ordem)
     filmes = [dict(r) for r in conn.execute(
         "SELECT id, titulo FROM filmes WHERE id IN (SELECT DISTINCT filme_id FROM cortes) ORDER BY titulo")]
+    sucesso = planejador.status_sucesso(cfg)
+    publicadas = dict(conn.execute(
+        f"SELECT corte_id, COUNT(*) FROM postagens WHERE midia='imagem' AND status IN ({_marc(sucesso)}) "
+        "GROUP BY corte_id", sucesso).fetchall())
     return {
         "aba": aba,
         "contagem": contagem,
-        "itens": [_corte_json(c, ultima.get(c["id"], {})) for c in itens[:limite]],
+        "itens": [{**_corte_json(c, ultima.get(c["id"], {})), "imagens_publicadas": publicadas.get(c["id"], 0)}
+                  for c in itens[:limite]],
         "total": len(itens),
         "filmes": filmes,
         "ativas": ativas,
@@ -1184,14 +1296,87 @@ def _corte_detalhe(ctx: Contexto, corte_id) -> dict:
     }
     dados["historico"] = [
         {"rede": p["plataforma"], "estado": p["status"], "url": p["url"], "erro": p["erro"],
-         "quando": p["criado_em"], "manual": bool(p["manual"])}
+         "quando": p["criado_em"], "manual": bool(p["manual"]), "midia": p["midia"] or "video",
+         "imagem_tipo": p["imagem_tipo"]}
         for p in conn.execute("SELECT * FROM postagens WHERE corte_id=? ORDER BY id DESC", (c["id"],))
     ]
-    dados["ativas"] = cfg.plataformas_ativas()
+    # rede só de imagens não recebe o vídeo: o "Postar agora" dela recusaria
+    dados["ativas"] = cfg.redes_de_video()
     dados["envios"] = {rede: cfg[rede]["envio"] for rede in PLATAFORMAS}
     dados["facebook"] = _facebook_ligado(cfg)
     dados["youtube_max"] = int(cfg["youtube"]["max_segundos"])
+    dados.update(_imagens_do_corte(ctx, c))
     return dados
+
+
+def _filme_no_disco(cfg, c: sqlite3.Row) -> bool:
+    """O arquivo do filme e a análise dele estão no disco (as imagens saem do arquivo original)."""
+    return bool(c["filme_caminho"]) and Path(c["filme_caminho"]).is_file() \
+        and (analise.pasta_do_filme(cfg, c["filme_id"]) / "info.json").is_file()
+
+
+def _por_que_sem_imagem(cfg, c: sqlite3.Row) -> str | None:
+    """Por que deste corte não sai imagem agora (None quando sai). Vale para o detalhe e para a rota."""
+    if (c["filme_tipo"] or "filme") != "filme":
+        return "vídeo criado de uma pauta não tem imagem"
+    if c["status"] not in ("pronto", "concluido"):
+        # o candidato pode ser apagado pela próxima mineração (e o CASCADE levaria a postagem)
+        return "Este corte ainda não foi editado"
+    if not _filme_no_disco(cfg, c):
+        return "O arquivo do filme não está na pasta agora"
+    return None
+
+
+def _imagens_do_corte(ctx: Contexto, c: sqlite3.Row) -> dict:
+    """As imagens geradas do corte, o último post de imagem por rede e tipo e o que o "Postar imagem
+    agora" pode fazer (redes prontas, tipos, o que já saiu e se a chamada para o vídeo vai junto)."""
+    cfg, conn = ctx.cfg, ctx.conn
+    geradas = []
+    for r in conn.execute("SELECT * FROM imagens WHERE corte_id=?", (c["id"],)):
+        try:
+            arquivos = json.loads(r["arquivos"] or "[]")
+        except ValueError:
+            arquivos = []
+        geradas.append({
+            "id": r["id"], "tipo": r["tipo"], "formato": r["formato"],
+            "urls": [_url_imagem(r["id"], n, r["criado_em"]) for n, a in enumerate(arquivos, 1) if Path(a).is_file()],
+            "texto": r["texto"], "com_chamada": bool(r["com_chamada"]), "criado_em": r["criado_em"],
+            "modelo": r["modelo"],
+        })
+    ordem = {t: i for i, t in enumerate(TIPOS_IMAGEM)}
+    geradas.sort(key=lambda g: (ordem.get(g["tipo"], 9), g["formato"]))
+    redes = cfg.redes_de_imagem()
+    por_rede: dict[str, dict] = {rede: {} for rede in redes}
+    concl = set(planejador.status_concluidos(cfg))
+    ja_saiu: dict[str, set[str]] = {rede: set() for rede in redes}
+    for p in conn.execute("SELECT plataforma, imagem_tipo, status, url, erro, criado_em FROM postagens "
+                          "WHERE corte_id=? AND midia='imagem' ORDER BY id", (c["id"],)):
+        if p["plataforma"] not in por_rede:
+            continue
+        # a linha sem tipo é o post feito na gravação com menos imagens que os exemplos
+        por_rede[p["plataforma"]][p["imagem_tipo"] or "gravacao"] = {
+            "estado": p["status"], "url": p["url"], "erro": p["erro"], "quando": p["criado_em"]}
+        if p["imagem_tipo"] and p["status"] in concl:
+            ja_saiu[p["plataforma"]].add(p["imagem_tipo"])
+    motivo = _por_que_sem_imagem(cfg, c)
+    return {
+        "imagens": geradas,
+        "imagens_por_rede": por_rede,
+        "pode_imagem": {
+            "motivo": motivo,
+            "redes": [] if motivo else [r for r in redes if planejador.imagens_prontas(cfg, conn, r)[0]],
+            "tipos": [t for t in TIPOS_IMAGEM if t != "frase" or str(c["frase"] or "").strip()],
+            "por_rede": {
+                rede: {
+                    "ja_saiu": [t for t in TIPOS_IMAGEM if t in ja_saiu[rede]],
+                    # a mesma regra do preparar: sem o vídeo desta parte na rede, a imagem vai sem a chamada
+                    "com_chamada": bool(cfg[rede].get("videos", True) and c["parte"] and planejador.video_publicado(
+                        conn, c["id"], rede, aceitar_simulado=cfg.simulacao)),
+                }
+                for rede in redes
+            },
+        },
+    }
 
 
 @rota("GET", r"/cortes/(\d+)")
@@ -1576,6 +1761,62 @@ def postar_corte(ctx: Contexto, corte_id):
             conn.close()
 
     _em_segundo_plano(f"postar-{rede}", trabalho)
+    return {"ok": True, "simulacao": cfg.simulacao}
+
+
+def _exigir_rede_livre(ctx: Contexto, rede: str) -> None:
+    """Fora da simulação, a conta pronta e a rede sem pausa: "postar agora" não fura um bloqueio (409)."""
+    if ctx.cfg.simulacao:
+        return
+    pronta, motivo = criar(rede, ctx.cfg).pronta()
+    _exigir(pronta, f"{ROTULOS[rede]}: {motivo}")
+    bloqueio = ler_bloqueios(ctx.conn).get(rede)
+    if bloqueio and bloqueio.get("tipo") != "rede":
+        ate = bloqueio.get("ate")
+        quando = ("até você testar a conta em Redes sociais" if ate is None
+                  else f"até {datetime.fromtimestamp(ate).strftime('%d/%m %H:%M')}")
+        raise ErroHttp(409, f"O {ROTULOS[rede]} está pausado {quando}: {bloqueio.get('motivo')}")
+
+
+@rota("POST", r"/cortes/(\d+)/postar-imagem")
+def postar_imagem_corte(ctx: Contexto, corte_id):
+    """Gera e posta agora uma imagem do corte (rede e tipo escolhidos por você).
+
+    Não confere se o tipo já saiu na rede, como o "Postar agora" do vídeo: a janela avisa antes
+    (pode_imagem.ja_saiu). Sem o vídeo desta parte publicado na rede, a imagem sai sem a chamada.
+    """
+    cfg, painel = ctx.cfg, ctx.painel
+    rede, tipo = ctx.corpo.get("rede"), ctx.corpo.get("tipo")
+    _exigir(isinstance(rede, str) and rede in REDES_IMAGEM, "Rede sem imagens")
+    _exigir(isinstance(tipo, str) and tipo in TIPOS_IMAGEM, "Tipo de imagem inválido")
+    rotulo = ROTULOS[rede]
+    _exigir(bool(cfg[rede]["ativo"]), f"O {rotulo} está desativado. Ative em Redes sociais.")
+    _exigir(bool(cfg[rede].get("imagens")), f"As imagens do {rotulo} estão desligadas: ligue Imagens em Redes sociais")
+    motivo = config.motivo_sem_imagens(cfg, rede)
+    _exigir(motivo is None, f"{rotulo}: {motivo}")
+    pronta, motivo = planejador.imagens_prontas(cfg, ctx.conn, rede)
+    _exigir(pronta, f"{rotulo}: {motivo}")
+    c = _corte(ctx.conn, corte_id)
+    motivo = _por_que_sem_imagem(cfg, c)
+    _exigir(motivo is None, motivo or "")
+    _exigir(tipo != "frase" or bool(str(c["frase"] or "").strip()), "Este trecho não tem fala")
+    _exigir_rede_livre(ctx, rede)
+    _exigir(not TRAVAS_REDE[rede].locked(), f"Já existe um envio para o {rotulo} em andamento", 409)
+    corte_num = c["id"]
+
+    def trabalho():
+        conn = painel.conectar()
+        try:
+            corte = conn.execute("SELECT * FROM cortes WHERE id=?", (corte_num,)).fetchone()
+            if corte is None:
+                return  # descartado no meio
+            resultado = Publicador(painel.cfg, painel.encerrar).postar_imagem(conn, rede, corte, tipo, manual=True)
+            if resultado == "ocupado":
+                log.warning("%s: já havia um envio em andamento; tente de novo em instantes", rotulo)
+        finally:
+            conn.close()
+
+    _em_segundo_plano(f"imagem-{rede}", trabalho)
     return {"ok": True, "simulacao": cfg.simulacao}
 
 
@@ -2884,6 +3125,27 @@ def midia(painel, caminho: str, tratador) -> None:
         arquivo = edicao.caminho_moldura(cfg)
         _exigir(arquivo is not None and arquivo.suffix.lower() == ".png", "Moldura não encontrada", 404)
         return tratador.enviar_arquivo(arquivo, "image/png")
+    achado = re.fullmatch(r"previa-imagem/(momento|frase|carrossel)-(4x5|9x16)-([1-5])\.jpg", caminho)
+    if achado:
+        arquivo = cfg.pasta_previa / f"imagem-{achado.group(1)}-{achado.group(2)}-{achado.group(3)}.jpg"
+        _exigir(arquivo.is_file(), "Prévia ainda não gerada", 404)
+        return tratador.enviar_arquivo(arquivo, "image/jpeg")
+    achado = re.fullmatch(r"imagem/(\d+)/(\d+)\.jpg", caminho)
+    if achado:  # o n-ésimo arquivo (1, 2...) de uma linha de imagens, só de dentro da pasta de dados
+        conn = painel.conectar()
+        try:
+            linha = conn.execute("SELECT arquivos FROM imagens WHERE id=?", (int(achado.group(1)),)).fetchone()
+        finally:
+            conn.close()
+        try:
+            arquivos = json.loads(linha["arquivos"] or "[]") if linha is not None else []
+        except ValueError:
+            arquivos = []
+        n = int(achado.group(2))
+        _exigir(1 <= n <= len(arquivos), "Imagem não encontrada", 404)
+        arquivo = Path(arquivos[n - 1])
+        _exigir(_dentro(arquivo, cfg.pasta_dados) and arquivo.is_file(), "Imagem não encontrada", 404)
+        return tratador.enviar_arquivo(arquivo, "image/jpeg")
     achado = re.fullmatch(r"corte/(\d+)\.(mp4|jpg)", caminho)
     _exigir(achado is not None, "Mídia não encontrada", 404)
     conn = painel.conectar()

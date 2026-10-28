@@ -2698,5 +2698,243 @@ class TestPublicador(BaseImagens):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM postagens WHERE midia='imagem'").fetchone()[0], 0)
 
 
+class _Tratador:
+    """O lado do servidor que a rota de mídia usa: anota o arquivo que seria enviado."""
+
+    def __init__(self):
+        self.enviados: list[tuple[Path, str]] = []
+
+    def enviar_arquivo(self, caminho, tipo):
+        self.enviados.append((Path(caminho), tipo))
+
+
+class _PublicadorFalso:
+    """Publicador de mentira para as rotas do painel: anota o postar_imagem."""
+
+    chamadas: list[tuple] = []
+
+    def __init__(self, cfg, parar):
+        pass
+
+    def postar_imagem(self, conn, nome, corte, tipo, horario=None, manual=False, chave=None):
+        _PublicadorFalso.chamadas.append((nome, corte["id"], tipo, manual))
+        return "publicado"
+
+
+class TestPainel(BaseImagens):
+    """As rotas do painel para as imagens (C18), com o painel montado à mão."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg["transcricao"]["fonte"] = "nenhuma"
+        motor = SimpleNamespace(publicador=None, rodando=False, parando=False, iniciado_em=None)
+        self.painel = SimpleNamespace(cfg=self.cfg, motor=motor, gravacoes={}, logins={}, reinicio={},
+                                      encerrar=threading.Event(), conta_canais=None,
+                                      conectar=lambda: db.conectar(self.cfg.banco))
+        self.corte = self.novo_corte()
+        _PublicadorFalso.chamadas = []
+
+    def ctx(self, corpo=None, consulta=None):
+        return SimpleNamespace(cfg=self.cfg, conn=self.conn, painel=self.painel, corpo=corpo or {},
+                               consulta=consulta or {}, tratador=None)
+
+    def erro(self, funcao, *args, corpo=None) -> ErroHttp:
+        with self.assertRaises(ErroHttp) as erro:
+            funcao(self.ctx(corpo), *args)
+        return erro.exception
+
+    def postar(self, tipo: str = "momento", rede: str = "instagram", corte: int | None = None):
+        return api.postar_imagem_corte(self.ctx({"rede": rede, "tipo": tipo}), str(corte or self.corte))
+
+    def alertas(self) -> list[dict]:
+        redes = api._resumo_redes(self.ctx())
+        return api._alertas(self.ctx(), {"analisado": 1}, {}, {"dias": None}, redes, {}, 0)
+
+    def sincrono(self):
+        """O trabalho em segundo plano roda na hora, com o publicador de mentira."""
+        pilha = contextlib.ExitStack()
+        pilha.enter_context(patch.object(api, "_em_segundo_plano", side_effect=lambda nome, trabalho: trabalho()))
+        pilha.enter_context(patch.object(api, "Publicador", _PublicadorFalso))
+        return pilha
+
+    def test_envio_errado_no_estado_e_alerta(self):  # CA-02
+        self.cfg["instagram"]["envio"] = "oficial"
+        redes = api._resumo_redes(self.ctx())
+        ig = redes["instagram"]
+        self.assertEqual(ig["imagens_motivo"], config.SO_PELO_NAVEGADOR)
+        self.assertFalse(ig["imagens_disponivel"])
+        self.assertTrue(ig["imagens"])
+        self.assertIsNone(ig["proximo_imagem"])
+        self.assertEqual(redes["youtube"]["imagens_motivo"], config.IMAGEM_INDISPONIVEL["youtube"])
+        self.assertNotIn("roteiro_imagem", redes["youtube"])
+        alerta = [a for a in self.alertas() if config.SO_PELO_NAVEGADOR in a["texto"]]
+        self.assertEqual([a["destino"] for a in alerta], ["redes"])
+
+    def test_resumo_com_as_imagens_prontas(self):
+        ig = api._resumo_redes(self.ctx())["instagram"]
+        self.assertTrue(ig["roteiro_imagem"]["tem"])
+        self.assertEqual(ig["roteiro_imagem"]["midia"], "imagem")
+        self.assertEqual((ig["imagens_prontas"], ig["imagens_prontas_motivo"]), (True, ""))
+        self.assertIsNotNone(ig["proximo_imagem"])
+        self.assertEqual(ig["imagens_por_semana"], agenda.posts_por_semana(self.cfg, "instagram", midia="imagem"))
+        self.assertGreater(ig["imagens_por_semana"], 0)
+        self.assertEqual(ig["estado_imagens"], {})
+        self.assertFalse([a for a in self.alertas() if "imagens" in a["texto"].lower()])
+        # sem o roteiro de imagem: o alerta leva para Redes sociais
+        gravador.arquivo_roteiro(self.cfg, "instagram-imagem").unlink()
+        alerta = [a for a in self.alertas() if "as imagens não saem" in a["texto"]]
+        self.assertEqual([a["destino"] for a in alerta], ["redes"])
+        self.assertIn("falta gravar o roteiro de imagem", alerta[0]["texto"])
+
+    def test_sem_tipo_que_renda_leva_as_configuracoes(self):  # DF-12
+        self.cfg["imagens"]["tipos"] = ["carrossel"]
+        planejador.gravar_estado_imagens(self.conn, "instagram", {"sem_carrossel": "uma imagem por vez"})
+        alerta = [a for a in self.alertas() if "Nenhum corte editado serve" in a["texto"]]
+        self.assertEqual([a["destino"] for a in alerta], ["config?aba=imagens"])
+
+    def test_meta_config(self):
+        with patch.object(api.sistema, "fontes_disponiveis", return_value=[]), \
+                patch.object(api.sistema, "inicializacao_ativa", return_value=False), \
+                patch.object(api.sistema, "inicializacao_de_outra_pasta", return_value=False), \
+                patch.object(api.sistema, "info_ia", return_value={}):
+            meta = api._meta_config(self.ctx())
+        self.assertEqual(meta["tipos_imagem"], ["momento", "frase", "carrossel"])
+        self.assertEqual(meta["redes_imagem"], ["tiktok", "instagram"])
+        self.assertEqual(meta["formatos_imagem"]["instagram"]["nome"], "4x5")
+        self.assertIn("kwai", meta["imagem_indisponivel"])
+
+    def test_postar_imagem_recusa(self):  # CA-18 e CA-26
+        casos = [
+            ({"rede": "instagram", "tipo": "outro"}, 400, "Tipo de imagem inválido"),
+            ({"rede": "youtube", "tipo": "momento"}, 400, "Rede sem imagens"),
+        ]
+        for corpo, status, texto in casos:
+            e = self.erro(api.postar_imagem_corte, str(self.corte), corpo=corpo)
+            self.assertEqual((e.status, texto in str(e)), (status, True), corpo)
+        candidato = self.novo_corte(status="candidato", parte=None, inicio=300.0, fim=340.0)
+        e = self.erro(api.postar_imagem_corte, str(candidato), corpo={"rede": "instagram", "tipo": "momento"})
+        self.assertEqual((e.status, str(e)), (400, "Este corte ainda não foi editado"))
+        sem_fala = self.novo_corte(inicio=400.0, fim=440.0, frase=None)
+        e = self.erro(api.postar_imagem_corte, str(sem_fala), corpo={"rede": "instagram", "tipo": "frase"})
+        self.assertEqual((e.status, str(e)), (400, "Este trecho não tem fala"))
+        pauta = self.novo_corte(self.novo_filme("Pauta", tipo="pauta"), inicio=0.0, fim=30.0)
+        e = self.erro(api.postar_imagem_corte, str(pauta), corpo={"rede": "instagram", "tipo": "momento"})
+        self.assertIn("pauta", str(e))
+        # a rede pausada: 409, como o "Postar agora" do vídeo
+        publicador.bloquear(self.conn, "instagram", "a rede pediu verificação", "bloqueio", None)
+        with patch.object(api, "criar", return_value=SimpleNamespace(pronta=lambda: (True, "ok"))):
+            e = self.erro(api.postar_imagem_corte, str(self.corte), corpo={"rede": "instagram", "tipo": "momento"})
+        self.assertEqual(e.status, 409)
+        publicador.desbloquear(self.conn, "instagram", persistente=True)
+        with patch.object(api, "criar", return_value=SimpleNamespace(pronta=lambda: (True, "ok"))), \
+                publicador.TRAVAS_REDE["instagram"]:
+            e = self.erro(api.postar_imagem_corte, str(self.corte), corpo={"rede": "instagram", "tipo": "momento"})
+        self.assertEqual(e.status, 409)
+        # sem o roteiro de imagem: 400 com o motivo
+        gravador.arquivo_roteiro(self.cfg, "instagram-imagem").unlink()
+        e = self.erro(api.postar_imagem_corte, str(self.corte), corpo={"rede": "instagram", "tipo": "momento"})
+        self.assertEqual(e.status, 400)
+        self.assertIn("falta gravar o roteiro de imagem", str(e))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM postagens").fetchone()[0], 0)
+
+    def test_postar_imagem_sem_video_e_tipo_que_ja_saiu(self):  # CA-24
+        self.cfg["geral"]["simulacao"] = True
+        pode = api.detalhe_corte(self.ctx(), str(self.corte))["pode_imagem"]
+        self.assertEqual(pode["redes"], ["instagram"])
+        self.assertIsNone(pode["motivo"])
+        self.assertEqual(pode["por_rede"]["instagram"], {"ja_saiu": [], "com_chamada": False})
+        with self.sincrono():
+            self.assertEqual(self.postar("momento"), {"ok": True, "simulacao": True})
+        self.assertEqual(_PublicadorFalso.chamadas, [("instagram", self.corte, "momento", True)])
+        # com o vídeo e a imagem já na rede: a chamada vai junto, e o mesmo tipo é aceito (só a janela avisa)
+        self.postagem(self.corte, "instagram", "publicado")
+        self.postagem(self.corte, "instagram", "publicado", "imagem", "momento")
+        pode = api.detalhe_corte(self.ctx(), str(self.corte))["pode_imagem"]
+        self.assertEqual(pode["por_rede"]["instagram"], {"ja_saiu": ["momento"], "com_chamada": True})
+        with self.sincrono():
+            self.postar("momento")
+        self.assertEqual(len(_PublicadorFalso.chamadas), 2)
+        # o candidato não oferece rede nenhuma
+        candidato = self.novo_corte(status="candidato", parte=None, inicio=300.0, fim=340.0)
+        pode = api.detalhe_corte(self.ctx(), str(candidato))["pode_imagem"]
+        self.assertEqual((pode["redes"], pode["motivo"]), ([], "Este corte ainda não foi editado"))
+
+    def test_detalhe_lista_e_inicio(self):
+        pasta = imagens.pasta_imagens(self.cfg, self.corte)
+        pasta.mkdir(parents=True)
+        arquivos = [pasta / f"carrossel-4x5-{n}.jpg" for n in (1, 2, 3)]
+        for a in arquivos:
+            a.write_bytes(b"jpg")
+        linha = _linha_de_imagem(self.conn, self.corte_row(self.corte), "carrossel", arquivos)
+        p = self.postagem(self.corte, "instagram", "conferir", "imagem", "carrossel")
+        self.conn.execute("UPDATE postagens SET imagem_id=? WHERE id=?", (linha["id"], p))
+        self.postagem(self.corte, "instagram", "publicado", "imagem", "momento")
+        d = api.detalhe_corte(self.ctx(), str(self.corte))
+        self.assertEqual([(g["tipo"], len(g["urls"])) for g in d["imagens"]], [("carrossel", 3)])
+        self.assertTrue(d["imagens"][0]["urls"][1].startswith(f"/media/imagem/{linha['id']}/2.jpg"))
+        self.assertEqual(d["imagens_por_rede"]["instagram"]["carrossel"]["estado"], "conferir")
+        self.assertEqual({h["midia"] for h in d["historico"]}, {"imagem"})
+        lista = api.listar_cortes(self.ctx(consulta={"aba": "fila"}))
+        self.assertEqual(lista["itens"][0]["imagens_publicadas"], 1)
+        conferir = api._a_conferir(self.conn)
+        self.assertEqual((conferir[0]["midia"], conferir[0]["imagem_tipo"]), ("imagem", "carrossel"))
+        self.assertTrue(conferir[0]["miniatura"].startswith(f"/media/imagem/{linha['id']}/1.jpg"))
+        ultimas = api._ultimas_postagens(self.conn, 8)
+        self.assertEqual([u["midia"] for u in ultimas], ["imagem", "imagem"])
+
+    def test_midia_da_imagem_so_de_dentro_da_pasta(self):
+        pasta = imagens.pasta_imagens(self.cfg, self.corte)
+        pasta.mkdir(parents=True)
+        dentro = pasta / "momento-4x5-1.jpg"
+        dentro.write_bytes(b"jpg")
+        fora = self.raiz / "fora.jpg"
+        fora.write_bytes(b"jpg")
+        linha = _linha_de_imagem(self.conn, self.corte_row(self.corte), "momento", [dentro, fora])
+        tratador = _Tratador()
+        api.midia(self.painel, f"imagem/{linha['id']}/1.jpg", tratador)
+        self.assertEqual(tratador.enviados, [(dentro, "image/jpeg")])
+        for caminho in (f"imagem/{linha['id']}/2.jpg", f"imagem/{linha['id']}/3.jpg", f"imagem/{linha['id']}/0.jpg",
+                        "imagem/999/1.jpg", "previa-imagem/momento-4x5-1.jpg"):
+            with self.assertRaises(ErroHttp) as erro:
+                api.midia(self.painel, caminho, tratador)
+            self.assertEqual(erro.exception.status, 404, caminho)
+        previa = self.cfg.pasta_previa / "imagem-momento-4x5-1.jpg"
+        previa.parent.mkdir(parents=True, exist_ok=True)
+        previa.write_bytes(b"jpg")
+        api.midia(self.painel, "previa-imagem/momento-4x5-1.jpg", tratador)
+        self.assertEqual(tratador.enviados[-1], (previa, "image/jpeg"))
+
+    def test_previa(self):
+        e = self.erro(api.previa_imagem, corpo={"tipo": "outro", "rede": "instagram"})
+        self.assertEqual(e.status, 400)
+        e = self.erro(api.previa_imagem, corpo={"tipo": "momento", "rede": "youtube"})
+        self.assertEqual(e.status, 400)
+        presa = SimpleNamespace(acquire=lambda timeout=None: False, release=lambda: None, locked=lambda: True)
+        with patch.object(imagens, "TRAVA", presa):
+            e = self.erro(api.previa_imagem, corpo={"tipo": "momento", "rede": "instagram"})
+        self.assertEqual((e.status, str(e)), (409, "o AutoCortes está gerando imagens agora"))
+        vistos = []
+
+        def previa_falsa(cfg, conn, tipo, rede, destino, parar=None):
+            vistos.append((cfg["imagens"]["topo"], tipo, rede, imagens.TRAVA.locked()))
+            return [destino / f"imagem-{tipo}-9x16-{n}.jpg" for n in (1, 2, 3, 4)], False
+
+        with patch.object(imagens, "previa", side_effect=previa_falsa):
+            r = api.previa_imagem(self.ctx({"tipo": "carrossel", "rede": "tiktok",
+                                            "alteracoes": {"imagens": {"topo": "Outro topo"}}}))
+        self.assertFalse(r["real"])
+        self.assertEqual([u.split("?")[0] for u in r["urls"]],
+                         [f"/media/previa-imagem/carrossel-9x16-{n}.jpg" for n in (1, 2, 3, 4)])
+        self.assertEqual(vistos, [("Outro topo", "carrossel", "tiktok", True)])
+        self.assertFalse(imagens.TRAVA.locked())
+        self.assertNotEqual(self.cfg["imagens"]["topo"], "Outro topo")
+
+    def test_ocupado_com_a_geracao(self):
+        painel = SimpleNamespace(gravacoes={}, logins={}, conta_canais=None)
+        self.assertFalse(api.ocupado(painel))
+        with imagens.TRAVA:
+            self.assertTrue(api.ocupado(painel))
+
+
 if __name__ == "__main__":
     unittest.main()
