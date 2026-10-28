@@ -197,7 +197,12 @@ def fonte_dos_textos(corte) -> str:
     return "ia" if textos_ia(corte) else "modelo"
 
 
-def montar_conteudo(cfg: Config, filme: dict, corte: dict, usar_ia: bool = True) -> Conteudo:
+def _variaveis_e_tags(cfg: Config, filme: dict, corte: dict,
+                      usar_ia: bool) -> tuple[dict[str, str], list[str], str, int | str | None]:
+    """As variáveis dos modelos de texto, as hashtags (já normalizadas), o nome e o ano do filme.
+
+    Fonte única do post de vídeo (montar_conteudo) e do post de imagem (montar_conteudo_imagem).
+    """
     meta = ler_metadados(Path(filme["caminho"]))
     titulo_filme = str(meta.get("titulo") or filme["titulo"])
     ano = meta.get("ano") or filme["ano"]
@@ -235,6 +240,13 @@ def montar_conteudo(cfg: Config, filme: dict, corte: dict, usar_ia: bool = True)
         "canal": str(meta.get("canal") or ""),
         "link_original": str(meta.get("url") or ""),
     }
+    return variaveis, tags, titulo_filme, ano or None
+
+
+def montar_conteudo(cfg: Config, filme: dict, corte: dict, usar_ia: bool = True) -> Conteudo:
+    variaveis, tags, titulo_filme, ano = _variaveis_e_tags(cfg, filme, corte, usar_ia)
+    t = cfg["textos"]
+    ia = textos_ia(corte) if usar_ia else {}
     # ordem: texto escrito à mão no painel > texto da IA > modelos do [textos]
     chaves = set(corte.keys())
     titulo_custom = (corte["titulo_custom"] or "").strip() if "titulo_custom" in chaves else ""
@@ -247,7 +259,51 @@ def montar_conteudo(cfg: Config, filme: dict, corte: dict, usar_ia: bool = True)
         hashtags=tags,
         duracao=float(corte["fim"]) - float(corte["inicio"]),
         filme=titulo_filme,
-        ano=ano or None,
+        ano=ano,
+    )
+
+
+# variáveis que podem ficar vazias na legenda da imagem: a linha que usa uma delas e ficou vazia sai
+OPCIONAIS_IMAGEM = ("parte", "canal", "link_original", "titulo_ia", "descricao_ia", "frase", "chamada_perfil")
+
+
+def aplicar_modelo_sem_vazias(modelo: str, variaveis: dict, opcionais: tuple[str, ...] = OPCIONAIS_IMAGEM) -> str:
+    """Como o aplicar_modelo, mas a linha que usa uma variável opcional vazia sai inteira.
+
+    A legenda_momento padrão começa com {titulo_ia}: sem IA, o post começaria com uma linha em branco.
+    """
+    vazias = {nome for nome in opcionais if not str(variaveis.get(nome, "") or "").strip()}
+    linhas = []
+    for linha in str(modelo).split("\n"):
+        usadas = set(re.findall(r"\{(\w+)\}", linha))
+        if usadas & vazias:
+            continue
+        linhas.append(linha)
+    return aplicar_modelo("\n".join(linhas), variaveis)
+
+
+def montar_conteudo_imagem(cfg: Config, filme: dict, corte: dict, tipo: str, n_quadros: int, rede: str,
+                           frase: str, com_chamada: bool) -> Conteudo:
+    """Legenda do post de imagem pelo [imagens].legenda_<tipo>.
+
+    O texto escrito à mão no corte (titulo_custom/descricao_custom) vale só para o vídeo. A {frase} é a
+    frase desenhada (a da linha de imagens), e a {chamada_perfil} só entra com com_chamada, o mesmo valor
+    que decidiu se a chamada foi desenhada: o desenho e o texto nunca discordam. A rede só entra nos
+    limites, pelo plataformas.manual.textos.
+    """
+    im = cfg["imagens"]
+    variaveis, tags, titulo_filme, ano = _variaveis_e_tags(cfg, filme, corte, bool(im["usar_ia"]))
+    variaveis["quadros"] = str(n_quadros or "")
+    variaveis["frase"] = (frase or "").strip()
+    variaveis["chamada_perfil"] = aplicar_modelo_sem_vazias(str(im["chamada"]), variaveis) if com_chamada else ""
+    return Conteudo(
+        # sem a parte (corte antigo), só o nome do filme
+        titulo=aplicar_modelo_sem_vazias("{filme} - Parte {parte}", variaveis, ("parte",)) or titulo_filme,
+        descricao=aplicar_modelo_sem_vazias(str(im[f"legenda_{tipo}"]), variaveis),
+        hashtags=tags,
+        duracao=0.0,
+        filme=titulo_filme,
+        ano=ano,
     )
 
 

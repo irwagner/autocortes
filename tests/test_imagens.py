@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from autocortes import (agenda, analise, cli, config, db, gravador, loop, planejador, produtor, publicador, roteiro,
-                        selecao, util)
+                        selecao, textos, util)
 from autocortes.painel import api
 from autocortes.painel.erros import ErroHttp
 from autocortes.config import PADRAO, RAIZ, Config, ErroConfig
@@ -1185,6 +1185,96 @@ class TestEstoqueSoDeImagens(BaseImagens):
         with self.assertLogs(util.log, "INFO") as registro:
             self.assertEqual(self.prod.prontos_pendentes(self.conn), buffer)
         self.assertTrue([r for r in registro.output if "voltaram a render" in r])
+
+
+_HASHTAGS_SEM_IA = ["#OFilme", "#terrorantigo", "#Classico", "#filmes", "#cinema", "#cenasdefilmes", "#filme"]
+_HASHTAGS_COM_IA = ["#OFilme", "#terrorantigo", "#Classico", "#ia1", "#iadois", "#filmes", "#cinema", "#cenasdefilmes"]
+_DESCRICAO_SEM_IA = "Uma fala.\n\nO Filme (1999) - Parte 2\n\n" + " ".join(_HASHTAGS_SEM_IA)
+_DESCRICAO_COM_IA = "Descrição da IA\n\nO Filme (1999) - Parte 2\n\n" + " ".join(_HASHTAGS_COM_IA)
+# o Conteudo que o montar_conteudo do bd7de20 devolveu nestes cenários, gravado antes da refatoração (C10):
+# (cenário, usar_ia) -> (titulo, descricao, hashtags)
+CONTEUDO_MAIN = {
+    ("sem_ia", True): ("O Filme - Parte 2", _DESCRICAO_SEM_IA, _HASHTAGS_SEM_IA),
+    ("sem_ia", False): ("O Filme - Parte 2", _DESCRICAO_SEM_IA, _HASHTAGS_SEM_IA),
+    ("com_ia", True): ("Título da IA | O Filme - Parte 2", _DESCRICAO_COM_IA, _HASHTAGS_COM_IA),
+    ("com_ia", False): ("O Filme - Parte 2", _DESCRICAO_SEM_IA, _HASHTAGS_SEM_IA),
+    ("custom", True): ("Meu título O Filme", _DESCRICAO_COM_IA, _HASHTAGS_COM_IA),
+    ("custom", False): ("Meu título O Filme", _DESCRICAO_SEM_IA, _HASHTAGS_SEM_IA),
+}
+
+
+class TestTextos(Base):
+    IA = '{"titulo": "Título da IA", "descricao": "Descrição da IA", "hashtags": ["#ia1", "ia dois"]}'
+
+    def setUp(self):
+        super().setUp()
+        arquivo = self.raiz / "filmes" / "O Filme.mkv"
+        arquivo.parent.mkdir(parents=True)
+        arquivo.write_bytes(b"x")
+        (self.raiz / "filmes" / "O Filme.mkv.json").write_text(
+            '{"hashtags": ["terror antigo", "#Classico"], "canal": "Canal X", "url": "https://y/1"}', encoding="utf-8")
+        self.filme_d = {"caminho": str(arquivo), "titulo": "O Filme", "ano": 1999}
+        self.base = {"parte": 2, "frase": " Uma fala. ", "inicio": 10.0, "fim": 52.5, "ia_textos": None,
+                     "titulo_custom": None, "descricao_custom": None}
+        self.cenarios = {
+            "sem_ia": dict(self.base),
+            "com_ia": dict(self.base, ia_textos=self.IA),
+            "custom": dict(self.base, ia_textos=self.IA, titulo_custom="Meu título {filme}", descricao_custom="  "),
+        }
+
+    def imagem(self, tipo="momento", com_chamada=False, corte=None, rede="instagram", frase="", n=0):
+        return textos.montar_conteudo_imagem(self.cfg, self.filme_d, corte or self.cenarios["sem_ia"], tipo, n, rede,
+                                             frase, com_chamada)
+
+    def test_montar_conteudo_igual_ao_do_main(self):
+        for (nome, usar_ia), (titulo, descricao, tags) in CONTEUDO_MAIN.items():
+            with self.subTest(nome, usar_ia=usar_ia):
+                c = textos.montar_conteudo(self.cfg, self.filme_d, self.cenarios[nome], usar_ia=usar_ia)
+                self.assertEqual((c.titulo, c.descricao, c.hashtags, c.duracao, c.filme, c.ano),
+                                 (titulo, descricao, tags, 42.5, "O Filme", 1999))
+
+    def test_legenda_sem_ia_comeca_pelo_filme(self):
+        c = self.imagem("momento")
+        self.assertTrue(c.descricao.startswith("O Filme (1999) - Parte 2"), c.descricao)
+        self.assertEqual((c.titulo, c.duracao, c.filme, c.ano), ("O Filme - Parte 2", 0.0, "O Filme", 1999))
+        self.assertNotIn("\n\n\n", c.descricao)
+        # com a IA, o título dela vem em cima; com usar_ia desligado, não
+        com_ia = self.imagem("momento", corte=self.cenarios["com_ia"])
+        self.assertTrue(com_ia.descricao.startswith("Título da IA\n\nO Filme (1999)"), com_ia.descricao)
+        self.cfg["imagens"]["usar_ia"] = False
+        self.assertTrue(self.imagem("momento", corte=self.cenarios["com_ia"]).descricao.startswith("O Filme (1999)"))
+
+    def test_chamada_so_com_com_chamada(self):
+        for tipo in config.TIPOS_IMAGEM:
+            with self.subTest(tipo):
+                sem = self.imagem(tipo, False, frase="Fala desenhada", n=4)
+                self.assertNotIn("está no perfil", sem.descricao)
+        self.assertIn("\nA Parte 2 completa está no perfil\n", self.imagem("momento", True).descricao)
+        self.assertIn("em 4 cenas.\nA Parte 2 completa está no perfil", self.imagem("carrossel", True, n=4).descricao)
+
+    def test_frase_e_o_parametro_e_custom_nao_vale(self):
+        corte = self.cenarios["custom"]
+        c = self.imagem("frase", corte=corte, frase="A frase desenhada.")
+        self.assertTrue(c.descricao.startswith("“A frase desenhada.”\n\nO Filme (1999)"), c.descricao)
+        self.assertNotIn("Uma fala", c.descricao)
+        self.assertNotIn("Meu título", c.titulo + c.descricao)
+        # corte antigo sem parte: a linha da parte sai e o título fica só com o filme
+        sem_parte = self.imagem("momento", True, corte=dict(self.base, parte=None))
+        self.assertEqual(sem_parte.titulo, "O Filme")
+        self.assertNotIn("Parte", sem_parte.descricao)
+
+    def test_aplicar_modelo_sem_vazias(self):
+        v = {"filme": "X", "titulo_ia": "", "hashtags": "#a"}
+        self.assertEqual(textos.aplicar_modelo_sem_vazias("{titulo_ia}\n\n\n\n{filme}\n{canal}\n\n{hashtags}\n", v),
+                         "X\n\n#a")
+
+    def test_instagram_com_no_maximo_5_hashtags(self):
+        from autocortes.plataformas import manual
+        c = self.imagem("momento", corte=self.cenarios["com_ia"])
+        self.assertGreater(c.descricao.count("#"), 5)
+        legenda = manual.textos(self.cfg, "instagram", c)["legenda"]
+        self.assertEqual(legenda.count("#"), 5)
+        self.assertIn("#OFilme", legenda)
 
 
 if __name__ == "__main__":
