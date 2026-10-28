@@ -1754,7 +1754,8 @@ def acao_filme(ctx: Contexto, filme_id):
     _exigir(f["tipo"] == "filme" or acao == "mostrar", "Isto é uma pauta de vídeo criado: use a tela Criação")
     if acao in ("reanalisar", "reanalisar_tudo"):
         _exigir(f["status"] != "analisando", "O filme está sendo analisado agora")
-        conn.execute("DELETE FROM cortes WHERE filme_id=? AND status='candidato'", (f["id"],))
+        # o candidato com parte já foi editado uma vez: apagá-lo levaria o histórico das postagens junto
+        conn.execute("DELETE FROM cortes WHERE filme_id=? AND status='candidato' AND parte IS NULL", (f["id"],))
         pasta = analise.pasta_do_filme(cfg, f["id"])
         if acao == "reanalisar_tudo":
             shutil.rmtree(pasta, ignore_errors=True)

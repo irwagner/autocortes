@@ -411,15 +411,17 @@ class Produtor:
             usados = [
                 (r["inicio"], r["fim"])
                 for r in conn.execute(
-                    # descartados também contam: o trecho que você recusou não volta como candidato
-                    "SELECT inicio, fim FROM cortes WHERE filme_id=? AND status != 'candidato'",
+                    # descartados também contam: o trecho que você recusou não volta como candidato. O
+                    # candidato com parte já foi editado uma vez ("Editar de novo", edição interrompida):
+                    # ele fica, e o trecho dele também não volta
+                    "SELECT inicio, fim FROM cortes WHERE filme_id=? AND (status != 'candidato' OR parte IS NOT NULL)",
                     (filme["id"],),
                 )
             ]
             # o máximo é do filme inteiro: a mineração de mais trechos não passa dele
             editados = conn.execute(
-                "SELECT COUNT(*) FROM cortes WHERE filme_id=? AND status IN ('renderizando', 'revisao', 'pronto', "
-                "'concluido')", (filme["id"],),
+                "SELECT COUNT(*) FROM cortes WHERE filme_id=? AND (status IN ('renderizando', 'revisao', 'pronto', "
+                "'concluido') OR (status = 'candidato' AND parte IS NOT NULL))", (filme["id"],),
             ).fetchone()[0]
             vagas = max(0, int(self.cfg["cortes"]["max_por_filme"]) - editados)
             candidatos = selecao.gerar_candidatos(
@@ -427,7 +429,9 @@ class Produtor:
             ) if vagas else []
             t = agora()
             with transacao(conn):
-                conn.execute("DELETE FROM cortes WHERE filme_id=? AND status='candidato'", (filme["id"],))
+                # só os que nunca foram editados: o CASCADE levaria o histórico das postagens do corte
+                conn.execute("DELETE FROM cortes WHERE filme_id=? AND status='candidato' AND parte IS NULL",
+                             (filme["id"],))
                 conn.executemany(
                     "INSERT INTO cortes (filme_id, inicio, fim, pontuacao, detalhes, frase, status, criado_em) "
                     "VALUES (?, ?, ?, ?, ?, ?, 'candidato', ?)",

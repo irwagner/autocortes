@@ -18,7 +18,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from autocortes import agenda, cli, config, db, loop, planejador, publicador, util
+from autocortes import agenda, analise, cli, config, db, loop, planejador, produtor, publicador, selecao, util
 from autocortes.painel import api
 from autocortes.painel.erros import ErroHttp
 from autocortes.config import PADRAO, RAIZ, Config, ErroConfig
@@ -488,6 +488,90 @@ class TestSoImagensNasTelas(BaseBanco):
         texto = loop.resumo(self.cfg, self.conn)
         self.assertIn("tiktok: próxima imagem ", texto)
         self.assertIn("instagram ", texto)
+
+
+class TestReanalise(BaseBanco):
+    """CA-26, CA-32 e DF-8: a reanálise e a mineração poupam o corte já editado que voltou a candidato."""
+
+    def setUp(self):
+        super().setUp()
+        self.so_redes("instagram")
+        self.corte = self.novo_corte(inicio=100, fim=140, parte=1)
+        self.postagem(self.corte, "instagram", "publicado")
+        self.postagem(self.corte, "instagram", "publicado", "imagem", "momento")
+        self.conn.execute(
+            "INSERT INTO imagens (corte_id, tipo, formato, arquivos, quadros, assinatura, criado_em) "
+            "VALUES (?, 'momento', '4x5', '[]', '[100.5]', 'abc', ?)", (self.corte, time.time()))
+        self.sem_parte = self.novo_corte(status="candidato", parte=None, inicio=500, fim=540)
+        self.ctx = SimpleNamespace(cfg=self.cfg, conn=self.conn, consulta={}, corpo={},
+                                   painel=SimpleNamespace(motor=SimpleNamespace(publicador=None, rodando=False)))
+
+    def editar_de_novo(self) -> None:
+        with patch.object(api, "_editar_em_segundo_plano") as editar:
+            api._aplicar_acao(self.ctx, api._corte(self.conn, self.corte), "reeditar")
+        editar.assert_called_once()
+        linha = self.corte_row(self.corte)
+        self.assertEqual((linha["status"], linha["parte"]), ("candidato", 1))
+
+    def conferir_historico(self) -> None:
+        self.assertIsNotNone(self.corte_row(self.corte))
+        n = self.conn.execute("SELECT COUNT(*) FROM postagens WHERE corte_id=?", (self.corte,)).fetchone()[0]
+        self.assertEqual(n, 2)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM imagens WHERE corte_id=?",
+                                           (self.corte,)).fetchone()[0], 1)
+
+    def minerar(self) -> dict:
+        """Produtor._analisar com a análise e a seleção trocadas: devolve o que a seleção recebeu."""
+        recebido: dict = {}
+
+        def gerar(cfg, duracao, cenas, volume, falas, frases, ocupados, limite):
+            recebido.update(ocupados=list(ocupados), limite=limite)
+            return [SimpleNamespace(inicio=300.0, fim=340.0, pontuacao=2.0, detalhes={}, frase="Outra fala.")]
+
+        a = SimpleNamespace(info={"duracao": 3600.0}, cenas=[], volume=[], falas=[], frases=[])
+        filme = self.conn.execute("SELECT * FROM filmes WHERE id=?", (self.filme,)).fetchone()
+        with patch.object(analise, "analisar", return_value=a), patch.object(selecao, "gerar_candidatos", gerar):
+            self.assertEqual(produtor.Produtor(self.cfg, threading.Event())._analisar(self.conn, filme), 1)
+        return recebido
+
+    def candidatos_sem_parte(self) -> list[tuple]:
+        return [tuple(r) for r in self.conn.execute(
+            "SELECT inicio, fim FROM cortes WHERE status='candidato' AND parte IS NULL ORDER BY inicio")]
+
+    def test_editar_de_novo_e_reanalisar_pelo_painel(self):  # CA-32
+        self.editar_de_novo()
+        api.acao_filme(SimpleNamespace(**{**vars(self.ctx), "corpo": {"acao": "reanalisar"}}), str(self.filme))
+        self.conferir_historico()
+        self.assertEqual(self.candidatos_sem_parte(), [])  # o candidato nunca editado saiu, como antes
+
+    def test_editar_de_novo_e_reanalisar_pela_cli(self):  # CA-32
+        self.editar_de_novo()
+        args = SimpleNamespace(config=str(self.caminho), filme=self.filme, tudo=False, detalhado=False)
+        with patch.object(util, "configurar_log"), patch.object(cli, "_travar"), \
+                patch.object(cli, "_conn", return_value=self.conn), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.cmd_reanalisar(args), 0)
+        self.conferir_historico()
+        self.assertEqual(self.candidatos_sem_parte(), [])
+
+    def test_editar_de_novo_e_minerar(self):  # CA-32 e DF-8
+        self.cfg["cortes"]["max_por_filme"] = 5
+        self.novo_corte(inicio=200, fim=240, parte=2)  # outro editado
+        self.editar_de_novo()
+        recebido = self.minerar()
+        self.conferir_historico()
+        self.assertIn((100.0, 140.0), recebido["ocupados"])  # o trecho do corte não volta como candidato
+        self.assertEqual(recebido["limite"], 3)  # o max_por_filme conta o candidato com parte
+        self.assertEqual(self.candidatos_sem_parte(), [(300.0, 340.0)])  # o sem parte foi refeito
+
+    def test_corte_pronto_com_imagem_fica(self):  # CA-26
+        self.cfg["cortes"]["max_por_filme"] = 5
+        recebido = self.minerar()
+        self.conferir_historico()
+        self.assertIn((100.0, 140.0), recebido["ocupados"])
+        self.assertEqual(recebido["limite"], 4)
+        api.acao_filme(SimpleNamespace(**{**vars(self.ctx), "corpo": {"acao": "reanalisar"}}), str(self.filme))
+        self.conferir_historico()
+        self.assertEqual(self.corte_row(self.corte)["status"], "pronto")
 
 
 class TestConfig(Base):

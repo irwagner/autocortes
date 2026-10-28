@@ -446,7 +446,8 @@ def cmd_reanalisar(args) -> int:
         print(f"#{args.filme} é uma pauta de vídeo criado: para refazer, use o \"Recriar\" do painel.",
               file=sys.stderr)
         return 1
-    conn.execute("DELETE FROM cortes WHERE filme_id=? AND status='candidato'", (filme["id"],))
+    # o candidato com parte já foi editado uma vez: apagá-lo levaria o histórico das postagens junto
+    conn.execute("DELETE FROM cortes WHERE filme_id=? AND status='candidato' AND parte IS NULL", (filme["id"],))
     pasta = pasta_do_filme(cfg, filme["id"])
     if args.tudo:
         shutil.rmtree(pasta, ignore_errors=True)
