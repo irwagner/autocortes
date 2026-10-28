@@ -8,6 +8,7 @@ const ABAS_CONFIG = [
   ["video", "Vídeo", "video", "Qualidade da edição e volume do som. O visual (moldura, legenda, título) fica no Estúdio."],
   ["criacao", "Criação", "varinha", "Vídeos montados do zero: imagens de fundo, narração e música. As pautas ficam na aba Criação."],
   ["textos", "Textos dos posts", "lapis", "Título, descrição e hashtags de cada postagem."],
+  ["imagens", "Imagens", "imagem", "Posts de imagem tirados dos cortes: quais tipos saem, o que vai escrito e a legenda. Cada rede liga as imagens em Redes sociais."],
   ["ia", "IA", "varinha", "Textos dos posts escritos por uma IA a partir da fala de cada corte. É opcional."],
   ["transcricao", "Transcrição", "microfone", "De onde vêm as falas usadas nas legendas e na escolha dos trechos."],
   ["sistema", "Sistema", "cpu", "Inicialização, desempenho, métricas, ferramentas e pastas."],
@@ -57,6 +58,7 @@ const PgConfig = {
   baixandoVisto: false,
   modeloBaixando: "",
   ultimoCampo: null,
+  imgPrevia: null, // a última prévia de imagem pedida na aba Imagens ({tipo, rede, urls, real} ou o erro)
 };
 
 /* ------------------------------------------------------------ pedaços reutilizados */
@@ -305,9 +307,104 @@ function cfgAbaSistema() {
   ];
 }
 
+/* ------------------------------------------------------------ imagens */
+
+const CFG_IMG_TIPOS = [
+  ["momento", "Momento", "Um quadro do trecho com o nome do filme e a parte."],
+  ["frase", "Frase", "A fala real do trecho escrita sobre o quadro dela. Só sai de trecho com fala."],
+  ["carrossel", "Carrossel", "Alguns quadros de cenas diferentes, em ordem."],
+];
+const CFG_IMG_VARS = ["{filme}", "{ano}", "{ano_parenteses}", "{parte}", "{frase}", "{quadros}", "{chamada_perfil}", "{hashtags}",
+  "{titulo_ia}", "{descricao_ia}", "{canal}", "{link_original}"];
+// os formatos que a prévia mostra: o 4:5 do Instagram e o 9:16 do TikTok
+const CFG_IMG_FORMATOS = [["instagram", "4:5 (Instagram)"], ["tiktok", "9:16 (TikTok)"]];
+const CFG_IMG_DIREITOS = "O quadro do filme tem os mesmos direitos do vídeo. Desde 13/03/2026 a Meta trata como não original juntar trechos com mudanças pequenas (bordas, legendas), e isso vale também para imagens.";
+
+function cfgImgTiposHtml() {
+  const ligados = new Set(valor("imagens.tipos") || []);
+  // caixas sem data-acao nem data-campo: o change delegado (cfgImgAoMudar) monta a lista
+  return linhaCampo("Tipos", "Os tipos se revezam em cada rede. Pelo menos um, se alguma rede tiver imagens.",
+    h`<div class="cfg-img-tipos">${CFG_IMG_TIPOS.map(([id, rotulo, ajuda]) => h`<label class="caixa" title="${ajuda}"><input type="checkbox" data-cfg-img-tipo="${id}" ${ligados.has(id) ? raw("checked") : ""}><span>${rotulo}</span></label>`)}</div>`, true);
+}
+
+function cfgAbaImagens() {
+  return [
+    secao("O que sai"),
+    cfgImgTiposHtml(),
+    campo({ chave: "imagens.quadros_carrossel", tipo: "range", min: 3, max: 5, rotulo: "Quadros do carrossel" }),
+    campo({ chave: "imagens.usar_ia", tipo: "switch", rotulo: "Usar o texto da IA", ajuda: "{titulo_ia} e {descricao_ia} vêm do que a IA já escreveu para o corte. Ela não é chamada de novo." }),
+    secao("Escrito na imagem"),
+    campo({ chave: "imagens.topo", tipo: "textarea", linhas: 2, larga: true, id: "cfg-img-topo", rotulo: "Em cima do quadro" }),
+    campo({ chave: "imagens.chamada", tipo: "texto", larga: true, id: "cfg-img-chamada", rotulo: "Chamada para o vídeo", ajuda: "Desenhada embaixo só quando o vídeo daquela parte já saiu na rede." }),
+    cfgVariaveis(["{filme}", "{ano}", "{ano_parenteses}", "{parte}"], "cfg-img-topo cfg-img-chamada"),
+    h`<p class="nota">A fonte e as cores vêm do modelo visual em uso (Estúdio).</p>`,
+    secao("Legenda do post"),
+    campo({ chave: "imagens.legenda_momento", tipo: "textarea", linhas: 4, larga: true, id: "cfg-img-leg-momento", rotulo: "Momento" }),
+    campo({ chave: "imagens.legenda_frase", tipo: "textarea", linhas: 4, larga: true, id: "cfg-img-leg-frase", rotulo: "Frase" }),
+    campo({ chave: "imagens.legenda_carrossel", tipo: "textarea", linhas: 4, larga: true, id: "cfg-img-leg-carrossel", rotulo: "Carrossel" }),
+    cfgVariaveis(CFG_IMG_VARS, "cfg-img-leg-momento cfg-img-leg-frase cfg-img-leg-carrossel"),
+    h`<p class="nota">{frase} é a frase desenhada na imagem, {quadros} é o número de quadros do carrossel e {chamada_perfil} é a chamada para o vídeo, que só aparece quando o vídeo daquela parte já saiu na rede (sem ele, a linha some). No Instagram vão no máximo 5 hashtags.</p>`,
+    h`<p class="nota">${CFG_IMG_DIREITOS}</p>`,
+    h`<div class="linha-botoes rodape-card"><button type="button" class="btn primario" data-acao="cfg-img-salvar">${ic("check")}Salvar as imagens</button></div>`,
+  ];
+}
+
+function cfgImgPreviaHtml() {
+  const p = PgConfig.imgPrevia;
+  const botoes = [];
+  for (const [rede, rotulo] of CFG_IMG_FORMATOS) {
+    for (const [tipo, nome] of CFG_IMG_TIPOS) {
+      const atual = p && p.tipo === tipo && p.rede === rede;
+      botoes.push(h`<button type="button" class="btn pequeno ${atual ? "primario" : ""}" data-acao="cfg-img-previa" data-tipo="${tipo}" data-rede="${rede}">${nome} · ${rotulo}</button>`);
+    }
+  }
+  let corpo = h`<p class="nota">Escolha um tipo e um formato. A prévia usa o que está nesta aba, mesmo antes de salvar.</p>`;
+  if (p && p.carregando) corpo = h`<div class="carregando-bloco"><span class="giro"></span></div>`;
+  else if (p && p.erro) corpo = h`<p class="erro-texto">${p.erro}</p>`;
+  else if (p && p.urls) {
+    corpo = h`<div class="cfg-img-previa">${p.urls.map((u, i) => h`<img src="${midia(u)}" alt="Prévia ${TIPOS_IMAGEM[p.tipo] || p.tipo}, imagem ${i + 1}">`)}</div>
+      ${p.real ? h`<p class="nota">Com um corte de verdade da sua fila.</p>` : h`<p class="nota">Prévia com uma imagem de teste: adicione um filme para ver um quadro de verdade.</p>`}`;
+  }
+  return h`<div class="card"><div class="card-topo"><h3>${ic("olho")}Prévia</h3></div><div class="grupo-botoes">${botoes}</div><div id="cfg-img-previa">${corpo}</div></div>`;
+}
+
+/** Caixas dos tipos: a marcação chega pelo change, sem data-acao (o clique global desfaria a marca). */
+function cfgImgAoMudar(ev) {
+  const caixa = ev.target;
+  if (!caixa || !caixa.dataset || !caixa.dataset.cfgImgTipo) return;
+  const marcados = [...document.querySelectorAll("[data-cfg-img-tipo]")].filter((c) => c.checked).map((c) => c.dataset.cfgImgTipo);
+  definirValor("imagens.tipos", CFG_IMG_TIPOS.map(([id]) => id).filter((id) => marcados.includes(id)));
+}
+$("#conteudo").addEventListener("change", cfgImgAoMudar);
+
+App.acoes["cfg-img-salvar"] = async (el) => {
+  if (vazio(pendentesDe(["imagens"]))) { toast("Nada mudou nas imagens", "info"); return; }
+  if (await ocupado(el, () => salvarConfig(["imagens"]))) toast("Imagens salvas");
+};
+
+App.acoes["cfg-img-previa"] = async (el) => {
+  const tipo = el.dataset.tipo;
+  const rede = el.dataset.rede;
+  const token = App.navegacao;
+  PgConfig.imgPrevia = { tipo, rede, carregando: true };
+  montarSeMudou($("#cfg-lado"), cfgImgPreviaHtml());
+  const pendente = obter(App.pendente, "imagens");
+  let resultado;
+  try {
+    const r = await post("/imagens/previa", { tipo, rede, alteracoes: pendente && !vazio(pendente) ? { imagens: pendente } : {} });
+    resultado = { tipo, rede, urls: r.urls, real: r.real };
+  } catch (e) {
+    resultado = { tipo, rede, erro: e.message };
+  }
+  // a geração leva alguns segundos: só desenha se você ainda está nesta aba
+  if (!App.ativa(token) || PgConfig.aba !== "imagens") return;
+  PgConfig.imgPrevia = resultado;
+  montarSeMudou($("#cfg-lado"), cfgImgPreviaHtml());
+};
+
 const CFG_ABAS_FN = {
   geral: cfgAbaGeral, cortes: cfgAbaCortes, canais: cfgAbaCanais, video: cfgAbaVideo, criacao: cfgAbaCriacao,
-  textos: cfgAbaTextos, ia: cfgAbaIa, transcricao: cfgAbaTranscricao, sistema: cfgAbaSistema,
+  textos: cfgAbaTextos, imagens: cfgAbaImagens, ia: cfgAbaIa, transcricao: cfgAbaTranscricao, sistema: cfgAbaSistema,
 };
 
 /* ------------------------------------------------------------ cartões do lado */
@@ -442,11 +539,12 @@ function cfgLadoTranscricaoHtml() {
 }
 
 function cfgTemLado(aba) {
-  return ["textos", "ia", "transcricao"].includes(aba);
+  return ["textos", "imagens", "ia", "transcricao"].includes(aba);
 }
 
 function cfgLadoHtml(aba) {
   if (aba === "textos") return cfgAmostraHtml();
+  if (aba === "imagens") return cfgImgPreviaHtml();
   if (aba === "ia") return cfgAjudaIaHtml();
   if (aba === "transcricao") return cfgLadoTranscricaoHtml();
   return "";

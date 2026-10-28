@@ -568,6 +568,31 @@ details.guia a { color: #ffc766; text-decoration: underline; }
 /* marca de post de imagem (Início, Agenda, Cortes) */
 .marca-imagem { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border-radius: 99px; font-size: 11px; line-height: 18px; font-weight: 600; color: #c4b5fd; background: rgba(167, 139, 250, .12); border: 1px solid rgba(167, 139, 250, .3); white-space: nowrap; vertical-align: middle; }
 .marca-imagem .ic { width: 12px; height: 12px; }
+/* Agenda: a linha "Imagens" de cada rede e o post de imagem no calendário */
+.agenda-imagens { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--borda-2); }
+.agenda-imagens .rotulo-campo .ic { width: 13px; height: 13px; margin-right: 4px; vertical-align: -2px; }
+.agenda-imagens.apagada { opacity: .55; }
+.agenda-imagens .aviso-rede { margin: 8px 0 0; }
+.slot-marca { margin-top: 3px; }
+/* Início: a marca de imagem por cima da miniatura */
+.miniatura-com-marca { position: relative; flex: none; display: inline-flex; }
+.miniatura-com-marca .marca-imagem { position: absolute; left: 50%; bottom: -6px; transform: translateX(-50%); font-size: 9.5px; line-height: 14px; padding: 0 4px; background: #1d1830; }
+/* Configurações > Imagens */
+.cfg-img-tipos { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.cfg-img-tipos label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.cfg-img-tipos input { accent-color: var(--acento); }
+.cfg-img-previa { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 6px; }
+.cfg-img-previa img { width: calc(50% - 4px); border-radius: 8px; border: 1px solid var(--borda); background: #05070a; }
+/* detalhe do corte: as imagens geradas e o estado de cada tipo por rede */
+.cor-img-galeria { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.cor-img-mini { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px; border-radius: 10px; border: 1px solid var(--borda); background: var(--bg-2); color: var(--texto-2); cursor: pointer; }
+.cor-img-mini:hover, .cor-img-mini:focus-visible { border-color: var(--acento); }
+.cor-img-mini img { width: 56px; height: 70px; object-fit: cover; border-radius: 6px; background: #05070a; }
+.cor-img-mini small { font-size: 11px; }
+.cor-img-tipos { display: flex; flex-wrap: wrap; gap: 6px 10px; justify-content: flex-end; }
+.cor-img-tipo { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--texto-2); }
+.cor-img-tipo .ic { width: 12px; height: 12px; }
+.cor-img-ver img { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto 12px; border-radius: 10px; background: #05070a; }
 .contas-ig { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
 .contas-ig label { display: flex; gap: 10px; align-items: center; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--borda-2); background: var(--bg-2); cursor: pointer; }
 .contas-ig input { accent-color: var(--acento); }

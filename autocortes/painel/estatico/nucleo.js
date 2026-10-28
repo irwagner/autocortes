@@ -252,9 +252,19 @@ const TIPOS_IMAGEM = { momento: "Momento", frase: "Frase", carrossel: "Carrossel
 /** Marca de post de imagem com o tipo. Recebe o tipo ou um item com imagem_tipo (sem tipo: o post da gravação). */
 function marcaImagem(item) {
   const tipo = typeof item === "string" ? item : item && item.imagem_tipo;
-  const nome = TIPOS_IMAGEM[tipo] || "Imagem da gravação";
+  // horário de imagem ainda sem tipo: "Imagem"; postagem sem tipo: o post feito na gravação
+  const nome = TIPOS_IMAGEM[tipo] || (item && item.tipo === "horario" ? "Imagem" : "Imagem da gravação");
   return h`<span class="marca-imagem" title="Post de imagem: ${nome.toLowerCase()}">${ic("imagem")}${nome}</span>`;
 }
+// por que um horário de imagem do plano está sem imagem (planejador.montar_plano, "motivo")
+const MOTIVO_SEM_IMAGEM = {
+  sem_roteiro: "falta o roteiro de imagem desta rede",
+  parado: "as imagens desta rede pararam (veja Redes sociais)",
+  sem_tipo: "nenhum tipo de imagem ligado serve nesta rede",
+  espera_video: "depende de um vídeo sair antes",
+  sem_corte: "nenhum corte serve para imagem agora",
+};
+const semImagemTexto = (i) => (i.motivo === "sem_corte" && i.detalhe ? i.detalhe : MOTIVO_SEM_IMAGEM[i.motivo] || "sem imagem");
 function vazioBloco(icone, titulo, texto = "", grande = false) {
   return h`<div class="vazio${grande ? " grande" : ""}">${ic(icone)}<b>${titulo}</b>${texto}</div>`;
 }

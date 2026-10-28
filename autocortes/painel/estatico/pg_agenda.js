@@ -37,7 +37,8 @@ function agendaPendente() {
   if (geral && !vazio(geral)) return true;
   return ORDEM_REDES.some((r) => {
     const p = obter(App.pendente, r);
-    return p && (p.horarios !== undefined || p.dias !== undefined || p.ativo !== undefined);
+    return p && (p.horarios !== undefined || p.dias !== undefined || p.ativo !== undefined
+      || p.horarios_imagens !== undefined || p.dias_imagens !== undefined || p.imagens !== undefined);
   });
 }
 
@@ -89,16 +90,20 @@ function slotHtml(i) {
   const rede = REDES[i.rede];
   const estado = i.tipo === "postagem" ? estadoPost(i.estado) : i.estado === "agendado" ? null : ESTADO_HORARIO[i.estado];
   let texto = "";
+  const imagem = i.midia === "imagem";
   // a parte vem antes: numa coluna estreita o nome do filme é que some nas reticências
   if (i.filme) texto = `Parte ${i.parte} · ${i.filme}`;
+  else if (imagem && i.sem_imagem) texto = `Sem imagem: ${semImagemTexto(i)}`;
   else if (i.tipo === "horario" && i.estado !== "perdido") texto = "Sem corte pronto";
   const classes = ["slot"];
   if (i.corte_id) classes.push("clicavel");
   if (i.tipo === "postagem") classes.push("feito");
   if (i.estado === "perdido") classes.push("perdido");
+  if (imagem) classes.push("slot-imagem");
   const attrs = i.corte_id ? h`data-acao="abrir-corte" data-corte="${i.corte_id}" role="button" tabindex="0"` : "";
-  return h`<div class="${classes.join(" ")}" style="--cor:${rede.cor}" ${attrs} title="${rede.nome}${i.manual ? " (pedido por você, fora da agenda)" : ""}">
+  return h`<div class="${classes.join(" ")}" style="--cor:${rede.cor}" ${attrs} title="${rede.nome}${imagem ? " · post de imagem" : ""}${i.manual ? " (pedido por você, fora da agenda)" : ""}">
     <div class="slot-hora">${logoRede(i.rede)}${fmtHora(i.quando)}${estado ? badge(estado, true) : ""}</div>
+    ${imagem ? h`<div class="slot-marca">${marcaImagem(i)}</div>` : ""}
     ${texto ? h`<div class="slot-filme" title="${texto}">${texto}</div>` : ""}
     ${i.previsto ? h`<div class="slot-filme texto-suave">vai ser editado</div>` : ""}
   </div>`;
@@ -121,7 +126,7 @@ function calendarioHtml(p) {
 function calendarioCardHtml() {
   return h`<div class="card"><div class="card-topo"><h3>${ic("calendario")}Próximos ${Agenda.dias} dias</h3><div class="abas">${[7, 14].map((d) => h`<button type="button" class="aba ${Agenda.dias === d ? "ativa" : ""}" data-acao="agenda-dias" data-dias="${d}">${d} dias</button>`)}</div></div>
     <div id="agenda-aviso"></div>
-    <div class="legenda-cal">${ORDEM_REDES.map((r) => h`<span>${logoRede(r)}${REDES[r].rotulo}</span>`)}<span>${badge(["Agora", "acento"], true)}no horário</span><span>${badge(["Não postado", "aviso"], true)}horário perdido</span><span class="texto-suave">Clique num post para ver o corte</span></div>
+    <div class="legenda-cal">${ORDEM_REDES.map((r) => h`<span>${logoRede(r)}${REDES[r].rotulo}</span>`)}<span>${marcaImagem("momento")}post de imagem e o tipo</span><span>${badge(["Agora", "acento"], true)}no horário</span><span>${badge(["Não postado", "aviso"], true)}horário perdido</span><span class="texto-suave">Clique num post para ver o corte</span></div>
     <div id="agenda-calendario">${Agenda.plano ? calendarioHtml(Agenda.plano) : ""}</div></div>`;
 }
 
@@ -131,15 +136,49 @@ function avisoAgendaHtml() {
 
 /* ------------------------------------------------------------ horários por rede */
 
-function chipsHorasHtml(rede, lista, gerais) {
+// midia "imagem": a linha Imagens da rede usa as mesmas ações, nas chaves horarios_imagens e dias_imagens
+function chipsHorasHtml(rede, lista, gerais, midia = "video") {
   if (!lista.length) return h`<span class="nota">Nenhum horário</span>`;
   return lista.map((hh, i) => gerais
     ? h`<span class="chip-hora geral" title="Horário geral">${hh}</span>`
-    : h`<span class="chip-hora">${hh}<button type="button" data-acao="hora-remover" data-rede="${rede}" data-indice="${i}" aria-label="Remover ${hh}">${ic("x")}</button></span>`);
+    : h`<span class="chip-hora">${hh}<button type="button" data-acao="hora-remover" data-rede="${rede}" data-midia="${midia}" data-indice="${i}" aria-label="Remover ${hh}">${ic("x")}</button></span>`);
 }
 
-function diasBotoesHtml(rede, lista) {
-  return DIAS.map(([k, r]) => h`<button type="button" class="dia-bt ${lista.includes(k) ? "on" : ""}" data-acao="dia-alternar" data-rede="${rede}" data-dia="${k}" aria-pressed="${lista.includes(k)}">${r}</button>`);
+function diasBotoesHtml(rede, lista, midia = "video") {
+  return DIAS.map(([k, r]) => h`<button type="button" class="dia-bt ${lista.includes(k) ? "on" : ""}" data-acao="dia-alternar" data-rede="${rede}" data-midia="${midia}" data-dia="${k}" aria-pressed="${lista.includes(k)}">${r}</button>`);
+}
+
+/* ------------------------------------------------------------ horários de imagem */
+
+const agImgRedes = () => (App.meta && App.meta.redes_imagem) || ["tiktok", "instagram"];
+
+/** Os dias de imagem da rede: os próprios ou, vazio, os mesmos dos vídeos. */
+function agImgDias(rede) {
+  const proprios = valor(`${rede}.dias_imagens`) || [];
+  return proprios.length ? { lista: proprios, iguais: false } : { lista: diasEfetivos(rede).lista, iguais: true };
+}
+
+/** O horário de imagem que sai do dia, com os números que o servidor calculou (agenda salva). */
+function agImgDescartadoTexto(x) {
+  const perto = x.video ? `do vídeo das ${x.video}` : `da imagem das ${x.imagem}`;
+  return `${x.horario} sai do dia: fica a ${x.minutos} min ${perto}, e o intervalo pede ${x.precisa} min.`;
+}
+
+function agImgLinhaHtml(rede) {
+  const info = REDES[rede];
+  const ligada = Boolean(valor(`${rede}.imagens`));
+  const lista = valor(`${rede}.horarios_imagens`) || [];
+  const dias = agImgDias(rede);
+  const descartados = ((Agenda.plano && Agenda.plano.descartados_imagem) || {})[rede] || [];
+  return h`<div class="agenda-imagens${ligada ? "" : " apagada"}">
+    <div class="rotulo-campo">${ic("imagem")}Imagens${ligada ? h` <small class="texto-suave">· ${plural(estimarSemana(lista, dias.lista), "post", "posts")} por semana</small>` : ""}</div>
+    ${ligada ? "" : h`<p class="nota">Imagens desligadas nesta rede. Ligue em Redes sociais.</p>`}
+    <div class="horarios">${chipsHorasHtml(rede, lista, false, "imagem")}</div>
+    <div class="add-hora"><input type="time" id="hora-${rede}-imagem" value="15:00" aria-label="Novo horário de imagem para o ${info.rotulo}"><button type="button" class="btn pequeno" data-acao="hora-adicionar" data-rede="${rede}" data-midia="imagem">${ic("mais")}Adicionar</button></div>
+    <div class="dias">${diasBotoesHtml(rede, dias.lista, "imagem")}</div>
+    ${dias.iguais ? h`<p class="nota">Dias iguais aos vídeos.</p>` : ""}
+    ${ligada && descartados.length ? h`<div class="aviso-rede">${ic("alerta")}<span>${descartados.map((x) => h`${agImgDescartadoTexto(x)}<br>`)}</span></div>` : ""}
+  </div>`;
 }
 
 function redeAgendaHtml(rede) {
@@ -150,7 +189,7 @@ function redeAgendaHtml(rede) {
   const semana = estimarSemana(horarios.lista, dias.lista);
   const aMao = valor(`${rede}.envio`) === "manual" ? " · à mão: cada horário vira uma tarefa" : "";
   return h`<div class="card rede-agenda ${ativo ? "" : "inativa"}" style="--cor:${info.cor}">
-    <div class="rede-titulo">${logoRede(rede)}<div><b>${info.nome}</b><small>${ativo ? `${semana} posts por semana${aMao}` : "Desativada em Redes sociais"}</small></div></div>
+    <div class="rede-titulo">${logoRede(rede)}<div><b>${info.nome}</b><small>${!ativo ? "Desativada em Redes sociais" : valor(`${rede}.videos`) === false ? "Só imagens: os horários de vídeo não valem" : `${semana} vídeos por semana${aMao}`}</small></div></div>
     <div class="rotulo-campo">Horários</div>
     <div class="horarios">${chipsHorasHtml(rede, horarios.lista, horarios.gerais)}</div>
     ${horarios.gerais ? h`<p class="nota">Usando os horários gerais. Adicione um horário para esta rede ter os próprios.</p>` : ""}
@@ -158,6 +197,7 @@ function redeAgendaHtml(rede) {
     <div class="rotulo-campo">Dias da semana</div>
     <div class="dias">${diasBotoesHtml(rede, dias.lista)}</div>
     ${dias.gerais ? h`<p class="nota">Usando os dias gerais.</p>` : ""}
+    ${agImgRedes().includes(rede) ? agImgLinhaHtml(rede) : ""}
   </div>`;
 }
 
@@ -205,9 +245,19 @@ function normalizarHora(texto) {
 
 App.acoes["hora-adicionar"] = (el) => {
   const rede = el.dataset.rede;
-  const entrada = $(`#hora-${rede}`);
+  const imagem = el.dataset.midia === "imagem";
+  const entrada = $(`#hora-${rede}${imagem ? "-imagem" : ""}`);
   const hora = normalizarHora(entrada && entrada.value);
   if (!hora) { toast("Escolha um horário válido", "erro"); return; }
+  if (imagem) { // sem horários gerais: a lista é só da rede
+    const lista = [...(valor(`${rede}.horarios_imagens`) || [])];
+    if (lista.includes(hora)) { toast(`${hora} já está na lista`, "info"); return; }
+    lista.push(hora);
+    lista.sort((a, b) => paraMinutos(a) - paraMinutos(b));
+    definirValor(`${rede}.horarios_imagens`, lista);
+    redesenharAgendaEditavel();
+    return;
+  }
   const atual = horariosEfetivos(rede);
   const lista = [...atual.lista];
   if (!atual.gerais && lista.includes(hora)) { toast(`${hora} já está na lista`, "info"); return; }
@@ -219,6 +269,15 @@ App.acoes["hora-adicionar"] = (el) => {
 
 App.acoes["hora-remover"] = (el) => {
   const rede = el.dataset.rede;
+  if (el.dataset.midia === "imagem") {
+    const lista = [...(valor(`${rede}.horarios_imagens`) || [])];
+    // com as imagens ligadas, a validação recusa a rede sem horário de imagem
+    if (valor(`${rede}.imagens`) && lista.length <= 1) { toast("Deixe pelo menos um horário de imagem (ou desligue as imagens em Redes sociais)", "erro"); return; }
+    lista.splice(Number(el.dataset.indice), 1);
+    definirValor(`${rede}.horarios_imagens`, lista);
+    redesenharAgendaEditavel();
+    return;
+  }
   const chave = rede === "agenda" ? "agenda.horarios" : `${rede}.horarios`;
   const lista = [...(valor(chave) || [])];
   if (rede === "agenda" && lista.length <= 1) { toast("Deixe pelo menos um horário geral", "erro"); return; }
@@ -231,11 +290,13 @@ App.acoes["hora-remover"] = (el) => {
 App.acoes["dia-alternar"] = (el) => {
   const rede = el.dataset.rede;
   const dia = el.dataset.dia;
-  const atual = new Set(diasEfetivos(rede).lista);
+  const imagem = el.dataset.midia === "imagem";
+  const atual = new Set(imagem ? agImgDias(rede).lista : diasEfetivos(rede).lista);
   if (atual.has(dia)) atual.delete(dia); else atual.add(dia);
   if (!atual.size) { toast("Deixe pelo menos um dia da semana", "erro"); return; }
   const lista = DIAS.map(([k]) => k).filter((k) => atual.has(k));
-  definirValor(rede === "agenda" ? "agenda.dias" : `${rede}.dias`, lista);
+  if (imagem) definirValor(`${rede}.dias_imagens`, lista);
+  else definirValor(rede === "agenda" ? "agenda.dias" : `${rede}.dias`, lista);
   redesenharAgendaEditavel();
 };
 
@@ -244,6 +305,8 @@ App.acoes["aplicar-preset"] = (el) => {
   if (!p) return;
   for (const rede of ORDEM_REDES) {
     if (p[rede]) definirValor(`${rede}.horarios`, [...p[rede]]);
+    // os horários de imagem do modelo já ficam longe dos de vídeo
+    if (p.imagens && p.imagens[rede]) definirValor(`${rede}.horarios_imagens`, [...p.imagens[rede]]);
   }
   redesenharAgendaEditavel();
   toast(`Horários do modelo "${p.rotulo}" aplicados. Clique em Salvar para valer.`, "info", 6000);
@@ -285,7 +348,8 @@ App.paginas.agenda = {
   },
   aoMudar(caminho) {
     const [rede, chave] = caminho.split(".");
-    if (rede === "agenda" || (ORDEM_REDES.includes(rede) && ["horarios", "dias", "ativo"].includes(chave))) {
+    if (rede === "agenda" || (ORDEM_REDES.includes(rede)
+      && ["horarios", "dias", "ativo", "horarios_imagens", "dias_imagens", "imagens", "videos"].includes(chave))) {
       redesenharAgendaEditavel();
     }
   },

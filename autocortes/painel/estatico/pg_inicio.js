@@ -44,12 +44,26 @@ function kpisHtml(e) {
 }
 
 function proximoHtml(i) {
+  if (i.midia === "imagem") return iniImgProximoHtml(i);
   const titulo = i.filme ? `${i.filme} · Parte ${i.parte}` : "Sem corte pronto ainda";
   let detalhe = "";
   if (i.previsto) detalhe = "será editado antes do horário";
   else if (i.sem_corte) detalhe = "adicione filmes para não perder o horário";
   const estado = i.estado === "agendado" ? null : ESTADO_HORARIO[i.estado];
   return h`<div class="item-post${i.corte_id ? " clicavel" : ""}" ${atributosAbrirCorte(i.corte_id)}>${miniaturaHtml(i.miniatura, i.sem_corte ? "alerta" : "tesoura")}<div class="item-texto"><b>${titulo}</b><small>${logoRede(i.rede)}<span>${REDES[i.rede].rotulo}${detalhe ? ` · ${detalhe}` : ""}</span></small></div><div class="item-lado">${estado ? badge(estado, true) : h`<small>${fmtRelativo(i.quando)}</small>`}<small>${fmtQuando(i.quando)}</small></div></div>`;
+}
+
+/** Horário de imagem: o JPEG só sai na hora do post, então a miniatura é a do vídeo do corte, com a marca. */
+function iniImgProximoHtml(i) {
+  const titulo = i.filme ? `${i.filme}${i.parte ? ` · Parte ${i.parte}` : ""}` : "Sem imagem";
+  const detalhe = i.sem_imagem ? semImagemTexto(i) : "";
+  const estado = i.estado === "agendado" ? null : ESTADO_HORARIO[i.estado];
+  return h`<div class="item-post${i.corte_id ? " clicavel" : ""}" ${atributosAbrirCorte(i.corte_id)}>${iniImgMiniaturaHtml(i.miniatura, i)}<div class="item-texto"><b>${titulo}</b><small>${logoRede(i.rede)}<span>${REDES[i.rede].rotulo}${detalhe ? ` · ${detalhe}` : ""}</span></small></div><div class="item-lado">${estado ? badge(estado, true) : h`<small>${fmtRelativo(i.quando)}</small>`}<small>${fmtQuando(i.quando)}</small></div></div>`;
+}
+
+/** A miniatura do post de imagem (ou do vídeo do corte) com a marca de imagem e o tipo por cima. */
+function iniImgMiniaturaHtml(url, item) {
+  return h`<span class="miniatura-com-marca">${miniaturaHtml(url, "imagem")}${marcaImagem(item)}</span>`;
 }
 
 function proximosHtml(e) {
@@ -81,7 +95,8 @@ function agoraHtml(e) {
 function ultimaHtml(p) {
   const falhou = ["falhou", "pulado", "interrompido"].includes(p.estado);
   const rede = REDES[p.rede] || { rotulo: p.rede };
-  return h`<div class="item-post clicavel" ${atributosAbrirCorte(p.corte_id)}>${miniaturaHtml(p.miniatura)}<div class="item-texto"><b>${p.filme} · Parte ${p.parte}</b><small>${logoRede(p.rede)}<span class="${falhou && p.erro ? "erro-texto" : ""}">${rede.rotulo}${p.manual ? " · fora da agenda" : ""}${p.erro ? ` · ${p.erro}` : ""}</span></small></div><div class="item-lado">${badge(estadoPost(p.estado), true)}<small>${fmtRelativo(p.quando)}</small></div></div>`;
+  const capa = p.midia === "imagem" ? iniImgMiniaturaHtml(p.miniatura, p) : miniaturaHtml(p.miniatura);
+  return h`<div class="item-post clicavel" ${atributosAbrirCorte(p.corte_id)}>${capa}<div class="item-texto"><b>${p.filme} · Parte ${p.parte}</b><small>${logoRede(p.rede)}<span class="${falhou && p.erro ? "erro-texto" : ""}">${rede.rotulo}${p.manual ? " · fora da agenda" : ""}${p.erro ? ` · ${p.erro}` : ""}</span></small></div><div class="item-lado">${badge(estadoPost(p.estado), true)}<small>${fmtRelativo(p.quando)}</small></div></div>`;
 }
 
 /* ------------------------------------------------------------ postagem à mão */
@@ -213,7 +228,8 @@ App.acoes["tarefa-pular"] = async (el) => {
 
 function conferirItemHtml(p) {
   const rede = REDES[p.rede] || { rotulo: p.rede };
-  return h`<div class="item-post">${miniaturaHtml(p.miniatura)}<div class="item-texto"><b>${p.filme} · Parte ${p.parte}</b><small>${logoRede(p.rede)}<span title="${p.erro || ""}">${rede.rotulo} · enviado ${fmtRelativo(p.quando)}${p.erro ? ` · ${p.erro}` : ""}</span></small></div><div class="item-lado"><button type="button" class="btn pequeno" data-acao="conferir-post" data-postagem="${p.id}">${ic("olho")}Conferir</button></div></div>`;
+  const capa = p.midia === "imagem" ? iniImgMiniaturaHtml(p.miniatura, p) : miniaturaHtml(p.miniatura);
+  return h`<div class="item-post">${capa}<div class="item-texto"><b>${p.filme} · Parte ${p.parte}</b><small>${logoRede(p.rede)}<span title="${p.erro || ""}">${rede.rotulo} · enviado ${fmtRelativo(p.quando)}${p.erro ? ` · ${p.erro}` : ""}</span></small></div><div class="item-lado"><button type="button" class="btn pequeno" data-acao="conferir-post" data-postagem="${p.id}">${ic("olho")}Conferir</button></div></div>`;
 }
 
 function conferirHtml(e) {
@@ -221,7 +237,7 @@ function conferirHtml(e) {
   if (!lista.length) return "";
   const total = e.numeros.conferir || lista.length;
   return h`<div class="card tarefas-card"><div class="card-topo"><h3>${ic("olho")}A conferir</h3>${badge([plural(total, "post", "posts"), "aviso"], true)}</div>
-    <p class="nota">A rede recebeu estes vídeos, mas eu não vi a confirmação de que saíram. Olhe o perfil na rede e me diga. Até você responder, nada é repetido sozinho; se não saiu, o corte volta para a fila daquela rede.</p>
+    <p class="nota">A rede recebeu estes posts, mas eu não vi a confirmação de que saíram. Olhe o perfil na rede e me diga. Até você responder, nada é repetido sozinho; se não saiu, o corte volta para a fila daquela rede.</p>
     <div class="lista">${lista.map(conferirItemHtml)}</div></div>`;
 }
 
@@ -273,9 +289,12 @@ App.acoes["conferir-nao"] = async (el) => {
   const p = Conferir.dados;
   if (!p) return;
   const rede = (REDES[p.rede] || { rotulo: p.rede }).rotulo;
+  const imagem = p.midia === "imagem";
   const ok = await confirmar({
     titulo: "Não saiu mesmo?",
-    texto: `O corte volta para a fila do ${rede} e pode ser postado de novo num próximo horário. Confira bem antes: se ele saiu e você marcar que não, o vídeo aparece duas vezes.`,
+    texto: imagem
+      ? `Esta imagem volta a poder sair no ${rede} num próximo horário de imagem. Confira bem antes: se ela saiu e você marcar que não, o post aparece duas vezes.`
+      : `O corte volta para a fila do ${rede} e pode ser postado de novo num próximo horário. Confira bem antes: se ele saiu e você marcar que não, o vídeo aparece duas vezes.`,
     botao: "Não saiu, pode repetir",
     perigo: true,
   });
@@ -319,7 +338,20 @@ function redeResumoHtml(rede, r, e) {
   else estado = [e.simulacao ? "Falta conectar" : "Não conectada", e.simulacao ? "aviso" : "erro"];
   const via = ROTULO_ENVIO[r.via] || r.via;
   const extra = r.facebook && r.facebook.ativo ? " · + Página do Facebook" : "";
-  return h`<a class="card rede-mini" href="#/redes" style="--cor:${info.cor}"><div class="rede-titulo">${logoRede(rede)}<div><b>${info.nome}</b><small title="${via}${r.conta ? ` · ${r.conta}` : ""}${extra}">${via}${r.conta ? ` · ${r.conta}` : ""}${extra}</small></div></div><div class="rede-mini-linha">${badge(estado, true)}<small>${r.ativo && r.proximo ? `próximo: ${fmtQuando(r.proximo)}` : ""}</small></div><small class="texto-suave">${r.ativo ? `${r.por_semana} posts por semana` : "Ative em Redes sociais"}</small></a>`;
+  return h`<a class="card rede-mini" href="#/redes" style="--cor:${info.cor}"><div class="rede-titulo">${logoRede(rede)}<div><b>${info.nome}</b><small title="${via}${r.conta ? ` · ${r.conta}` : ""}${extra}">${via}${r.conta ? ` · ${r.conta}` : ""}${extra}</small></div></div><div class="rede-mini-linha">${badge(estado, true)}<small>${iniImgProximoDaRede(r)}</small></div><small class="texto-suave">${r.ativo ? iniImgPorSemana(r) : "Ative em Redes sociais"}</small></a>`;
+}
+
+// rede só de imagens: o próximo é a próxima imagem
+function iniImgProximoDaRede(r) {
+  if (!r.ativo) return "";
+  if (r.proximo) return `próximo: ${fmtQuando(r.proximo)}`;
+  return r.proximo_imagem ? `próxima imagem: ${fmtQuando(r.proximo_imagem)}` : "";
+}
+
+function iniImgPorSemana(r) {
+  if (!r.imagens_por_semana) return `${r.por_semana} posts por semana`;
+  return r.videos === false ? `${plural(r.imagens_por_semana, "imagem", "imagens")} por semana`
+    : `${plural(r.por_semana, "vídeo", "vídeos")} e ${plural(r.imagens_por_semana, "imagem", "imagens")} por semana`;
 }
 
 App.paginas.inicio = {

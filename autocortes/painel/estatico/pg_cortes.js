@@ -61,6 +61,7 @@ function cardCorteHtml(c, ativas, facebook) {
     ? ["criado do zero", ...(c.detalhes && c.detalhes.clipes ? [`${c.detalhes.clipes} clipes`] : [])]
     : [`${fmtTempo(c.inicio)}–${fmtTempo(c.fim)}`, `nota ${fmtNum(c.pontuacao, 2)}`];
   if (c.visualizacoes) meta.push(`${fmtNum(c.visualizacoes)} views`);
+  if (c.imagens_publicadas) meta.push(plural(c.imagens_publicadas, "imagem publicada", "imagens publicadas"));
   const marcado = sel && corSel.ids.has(c.id);
   // a caixa fica fora de qualquer data-acao (o preventDefault do clique global desfaria a marcação);
   // na seleção, o clique na capa ou no texto marca em vez de abrir o detalhe, e só a caixa recebe o Tab
@@ -644,7 +645,12 @@ function botaoRedeHtml(d, rede, p) {
 }
 
 function redesDetalheHtml(d) {
-  if (!d.ativas.length) return h`<p class="nota">Nenhuma rede ativa. Ative em Redes sociais.</p>`;
+  if (!d.ativas.length) {
+    // as redes ligadas podem estar só com imagens: elas aparecem em Imagens, logo abaixo
+    return Object.keys(d.imagens_por_rede || {}).length
+      ? h`<p class="nota">Nenhuma rede recebe o vídeo: as redes ligadas estão só com imagens.</p>`
+      : h`<p class="nota">Nenhuma rede ativa. Ative em Redes sociais.</p>`;
+  }
   const redes = [];
   for (const rede of d.ativas) {
     redes.push(rede);
@@ -667,7 +673,7 @@ function redesDetalheHtml(d) {
 
 function historicoHtml(d) {
   if (!d.historico.length) return "";
-  return h`<details class="guia"><summary>${ic("lista")}Histórico (${d.historico.length})</summary><div class="historico">${d.historico.map((p) => h`<div>${logoRede(p.rede)}<span>${fmtQuando(p.quando)}</span>${badge(estadoPost(p.estado), true)}${p.manual ? h`<span class="texto-suave">fora da agenda</span>` : ""}${p.erro ? h`<span class="texto-suave" title="${p.erro}">${p.erro}</span>` : ""}</div>`)}</div></details>`;
+  return h`<details class="guia"><summary>${ic("lista")}Histórico (${d.historico.length})</summary><div class="historico">${d.historico.map((p) => h`<div>${logoRede(p.rede)}<span>${fmtQuando(p.quando)}</span>${p.midia === "imagem" ? marcaImagem(p) : ""}${badge(estadoPost(p.estado), true)}${p.manual ? h`<span class="texto-suave">fora da agenda</span>` : ""}${p.erro ? h`<span class="texto-suave" title="${p.erro}">${p.erro}</span>` : ""}</div>`)}</div></details>`;
 }
 
 function videoDetalheHtml(d) {
@@ -697,6 +703,7 @@ function detalheHtml(d) {
       <div id="det-textos">${textosDetalheHtml(d)}</div>
       <div class="rotulo-campo">Redes</div>
       <div id="det-redes">${redesDetalheHtml(d)}</div>
+      <div id="det-imagens">${corImgSecaoHtml(d)}</div>
       <div id="det-historico">${historicoHtml(d)}</div>
     </div>
   </div>`;
@@ -745,6 +752,7 @@ function desenharDetalhe(d, completo) {
   montarSeMudou($("#det-cabeca"), cabecaDetalheHtml(d));
   montarSeMudou($("#det-acoes"), acoesDetalheHtml(d));
   montarSeMudou($("#det-redes"), redesDetalheHtml(d));
+  montarSeMudou($("#det-imagens"), corImgSecaoHtml(d));
   montarSeMudou($("#det-historico"), historicoHtml(d));
   const textosMudaram = !anterior || JSON.stringify(anterior.textos) !== JSON.stringify(d.textos);
   const focoNosTextos = document.activeElement && document.activeElement.closest && document.activeElement.closest("#det-textos");
@@ -939,4 +947,150 @@ App.acoes["corte-postar"] = async (el) => {
   montarSeMudou($("#det-redes"), redesDetalheHtml(d));
   clearTimeout(Detalhe.timer);
   Detalhe.timer = setTimeout(() => carregarDetalhe(false), 1500);
+};
+
+/* ------------------------------------------------------------ imagens do corte */
+
+// a janela de uma imagem (ou do "Postar imagem agora") troca a do corte, que volta quando ela fecha
+const CorImg = { dados: null, img: null, n: 0, vendo: false };
+
+function corImgEstadoHtml(d) {
+  const redes = Object.keys(d.imagens_por_rede || {});
+  if (!redes.length) return "";
+  return h`<div class="redes-corte">${redes.map((rede) => {
+    const posts = d.imagens_por_rede[rede] || {};
+    const tipos = Object.keys(TIPOS_IMAGEM).filter((t) => posts[t] || (d.pode_imagem.tipos || []).includes(t));
+    if (posts.gravacao) tipos.push("gravacao");
+    return h`<div class="rede-linha">${logoRede(rede)}<span class="rede-nome"><b>${REDES[rede].rotulo}</b><small>${tipos.length ? "" : "nenhum tipo serve para este trecho"}</small></span><span class="cor-img-tipos">${tipos.map((t) => {
+      const p = posts[t];
+      const estado = p ? estadoPost(p.estado) : ["Ainda não saiu", "neutro"];
+      const url = p && urlSegura(p.url);
+      const nome = t === "gravacao" ? "Da gravação" : TIPOS_IMAGEM[t];
+      return h`<span class="cor-img-tipo" title="${p && p.erro ? p.erro : ""}">${nome} ${badge(estado, true)}${url ? h`<a class="link" href="${url}" target="_blank" rel="noopener noreferrer" aria-label="Abrir o post de ${nome} no ${REDES[rede].rotulo}">${ic("externo")}</a>` : ""}</span>`;
+    })}</span></div>`;
+  })}</div>`;
+}
+
+function corImgSecaoHtml(d) {
+  if (d.criado) return ""; // vídeo criado de uma pauta não tem imagem
+  const pode = d.pode_imagem || { redes: [], tipos: [], por_rede: {} };
+  const miniaturas = (d.imagens || []).flatMap((g) => g.urls.map((url, n) => h`<button type="button" class="cor-img-mini" data-acao="corte-img-ver" data-img="${g.id}" data-n="${n}" aria-label="Ver a imagem ${TIPOS_IMAGEM[g.tipo] || g.tipo} ${g.formato}, ${n + 1} de ${g.urls.length}"><img src="${midia(url)}" alt="" loading="lazy"><small>${TIPOS_IMAGEM[g.tipo] || g.tipo}${g.urls.length > 1 ? ` ${n + 1}` : ""}</small></button>`));
+  const temRedes = Object.keys(d.imagens_por_rede || {}).length > 0;
+  if (!miniaturas.length && !temRedes) return "";
+  const botao = pode.redes.length
+    ? h`<button class="btn pequeno" data-acao="corte-img-postar-abrir">${ic("imagem")}Postar imagem agora</button>`
+    : pode.motivo && temRedes ? h`<small class="texto-suave">${pode.motivo}</small>` : "";
+  return h`<div class="rotulo-campo">Imagens</div>
+    ${miniaturas.length ? h`<div class="cor-img-galeria">${miniaturas}</div>` : h`<p class="nota">Nenhuma imagem gerada deste corte ainda: elas saem na hora do post.</p>`}
+    ${corImgEstadoHtml(d)}
+    ${botao ? h`<div class="linha-botoes">${botao}</div>` : ""}`;
+}
+
+/** Fecha a janela do corte para abrir outra (a da imagem); avisa antes se há texto por salvar. */
+async function corImgTrocarJanela() {
+  if (textosSujos()) {
+    const ok = await confirmar({ titulo: "Sair sem salvar os textos?", texto: "O título e a descrição que você mudou ainda não foram salvos.", botao: "Sair sem salvar", perigo: true });
+    if (!ok) return null;
+  }
+  return Detalhe.dados;
+}
+
+function corImgVerHtml() {
+  const d = CorImg.dados;
+  const g = (d.imagens || []).find((x) => x.id === CorImg.img);
+  if (!g || !g.urls.length) return vazioBloco("imagem", "Esta imagem não está mais no disco");
+  const n = Math.max(0, Math.min(CorImg.n, g.urls.length - 1));
+  const url = g.urls[n];
+  const nome = `${TIPOS_IMAGEM[g.tipo] || g.tipo}, ${g.formato.replace("x", ":")}${g.urls.length > 1 ? `, ${n + 1} de ${g.urls.length}` : ""}`;
+  const arquivo = `${corImgSlug(d.filme)}-${g.tipo}-${n + 1}.jpg`;
+  // o download é um link comum, sem data-acao (o clique global faria preventDefault)
+  return h`<div class="cor-img-ver"><img src="${midia(url)}" alt="${nome}">
+    <div class="linha-botoes">
+      ${g.urls.length > 1 ? h`<button type="button" class="btn pequeno" data-acao="corte-img-ver" data-img="${g.id}" data-n="${(n - 1 + g.urls.length) % g.urls.length}">Anterior</button><button type="button" class="btn pequeno" data-acao="corte-img-ver" data-img="${g.id}" data-n="${(n + 1) % g.urls.length}">Próxima</button>` : ""}
+      <a class="btn pequeno" href="${midia(url)}" download="${arquivo}">${ic("baixar")}Baixar</a>
+      <button type="button" class="btn pequeno fantasma" data-acao="fechar-modal">Voltar ao corte</button>
+    </div>
+    <p class="nota">${nome}${g.texto ? ` · “${g.texto}”` : ""}${g.com_chamada ? " · com a chamada para o vídeo" : ""}</p></div>`;
+}
+
+const corImgSlug = (texto) => String(texto || "imagem").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+  .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "imagem";
+
+App.acoes["corte-img-ver"] = async (el) => {
+  const img = Number(el.dataset.img);
+  const n = Number(el.dataset.n) || 0;
+  if (CorImg.vendo && modal.aberto) { // anterior/próxima: a mesma janela
+    CorImg.img = img;
+    CorImg.n = n;
+    montar(corpoModal(), corImgVerHtml());
+    return;
+  }
+  const d = await corImgTrocarJanela();
+  if (!d) return;
+  CorImg.dados = d;
+  CorImg.img = img;
+  CorImg.n = n;
+  CorImg.vendo = true;
+  const corteId = d.id;
+  abrirModal({
+    titulo: `${d.filme}${d.parte ? ` · Parte ${d.parte}` : ""} · imagem`,
+    largura: 760,
+    corpo: corImgVerHtml(),
+    aoFechar: () => { CorImg.vendo = false; CorImg.dados = null; abrirCorte(corteId); },
+  });
+};
+
+function corImgNotaHtml() {
+  const d = CorImg.dados;
+  const rede = ($("#modal-raiz input[name=cor-img-rede]:checked") || {}).value;
+  const tipo = ($("#modal-raiz input[name=cor-img-tipo]:checked") || {}).value;
+  const info = (d && d.pode_imagem.por_rede[rede]) || {};
+  const notas = [];
+  if (tipo && (info.ja_saiu || []).includes(tipo)) notas.push("Este tipo já saiu nesta rede: vai sair de novo.");
+  if (rede && !info.com_chamada) notas.push("O vídeo desta parte ainda não saiu aqui: a imagem vai sem a chamada para o vídeo.");
+  return notas.length ? h`<p class="nota">${notas.map((x) => h`${x}<br>`)}</p>` : "";
+}
+
+/** Rede ou tipo trocados na janela do "Postar imagem agora": a nota só lê o que veio do servidor. */
+function corImgAoMudar(ev) {
+  const alvo = ev.target;
+  if (!alvo || !["cor-img-rede", "cor-img-tipo"].includes(alvo.name)) return;
+  montarSeMudou($("#cor-img-nota"), corImgNotaHtml());
+}
+$("#modal-raiz").addEventListener("change", corImgAoMudar);
+
+App.acoes["corte-img-postar-abrir"] = async () => {
+  const d = await corImgTrocarJanela();
+  if (!d) return;
+  const pode = d.pode_imagem;
+  CorImg.dados = d;
+  const corteId = d.id;
+  const simulacao = App.estado && App.estado.simulacao;
+  // os rádios não têm data-acao: o change delegado no #modal-raiz troca a nota
+  abrirModal({
+    titulo: "Postar imagem agora",
+    largura: 560,
+    corpo: h`<p class="texto-modal">${d.filme}${d.parte ? ` · Parte ${d.parte}` : ""}: a imagem é gerada e ${simulacao ? "o post é só registrado (modo simulação)" : "sai agora, fora da agenda, e conta no limite do dia da rede"}.</p>
+      <div class="rotulo-campo">Rede</div>
+      <div class="contas-ig">${pode.redes.map((rede, i) => h`<label><input type="radio" name="cor-img-rede" value="${rede}" ${i === 0 ? raw("checked") : ""}><span>${logoRede(rede)} ${REDES[rede].rotulo}</span></label>`)}</div>
+      <div class="rotulo-campo">Tipo</div>
+      <div class="contas-ig">${pode.tipos.map((tipo, i) => h`<label><input type="radio" name="cor-img-tipo" value="${tipo}" ${i === 0 ? raw("checked") : ""}><span>${TIPOS_IMAGEM[tipo]}</span></label>`)}</div>
+      <div id="cor-img-nota"></div>
+      <p class="nota">O quadro do filme tem os mesmos direitos do vídeo: poste só o que você tem direito de usar.</p>
+      <div class="acoes-modal"><button type="button" class="btn fantasma" data-acao="fechar-modal">Cancelar</button><button type="button" class="btn primario" data-acao="corte-img-postar">${ic("aviao")}${simulacao ? "Simular agora" : "Postar agora"}</button></div>`,
+    aoFechar: () => { CorImg.dados = null; abrirCorte(corteId); },
+  });
+  montarSeMudou($("#cor-img-nota"), corImgNotaHtml());
+};
+
+App.acoes["corte-img-postar"] = async (el) => {
+  const d = CorImg.dados;
+  if (!d) return;
+  const rede = ($("#modal-raiz input[name=cor-img-rede]:checked") || {}).value;
+  const tipo = ($("#modal-raiz input[name=cor-img-tipo]:checked") || {}).value;
+  if (!rede || !tipo) { toast("Escolha a rede e o tipo", "erro"); return; }
+  const r = await ocupado(el, () => post(`/cortes/${d.id}/postar-imagem`, { rede, tipo }));
+  toast(`${r.simulacao ? "Simulando" : "Publicando"} a imagem (${TIPOS_IMAGEM[tipo].toLowerCase()}) no ${REDES[rede].rotulo}...`, "info", 6000);
+  fecharModal(); // a janela do corte volta e mostra o andamento
+  atualizarEstado();
 };
