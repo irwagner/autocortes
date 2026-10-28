@@ -18,7 +18,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from autocortes import agenda, analise, cli, config, db, loop, planejador, produtor, publicador, selecao, util
+from autocortes import (agenda, analise, cli, config, db, gravador, loop, planejador, produtor, publicador, roteiro,
+                        selecao, util)
 from autocortes.painel import api
 from autocortes.painel.erros import ErroHttp
 from autocortes.config import PADRAO, RAIZ, Config, ErroConfig
@@ -655,6 +656,182 @@ class TestConfig(Base):
     def test_exemplo_igual_ao_padrao(self):
         exemplo = tomllib.loads((RAIZ / "config.example.toml").read_text(encoding="utf-8"))
         self.assertEqual(_diferencas(exemplo, PADRAO), [])
+
+
+ROTEIRO_IMAGEM = """\
+abrir https://www.instagram.com/
+clicar "Criar"
+imagens em input[type=file]
+clicar "Original"
+escrever legenda em div[aria-label="Escreva uma legenda..."]
+publicar "Compartilhar"
+conferir "Sua publicação foi compartilhada"
+"""
+
+
+class TestRoteiro(Base):
+    def erros(self, texto: str, nome: str) -> list[str]:
+        return roteiro.analisar(texto, nome)[1]
+
+    def test_nomes(self):
+        self.assertEqual(roteiro.nome_roteiro("instagram", "imagem"), "instagram-imagem")
+        self.assertEqual(roteiro.nome_roteiro("instagram"), "instagram")
+        self.assertEqual(roteiro.midia_do_roteiro("tiktok-imagem"), "imagem")
+        self.assertEqual(roteiro.midia_do_roteiro("tiktok"), "video")
+        self.assertEqual(roteiro.midia_do_roteiro(None), "video")
+        self.assertEqual(roteiro.rede_do_roteiro("tiktok-imagem"), "tiktok")
+        self.assertEqual(roteiro.rede_do_roteiro("tiktok"), "tiktok")
+
+    def test_imagens_so_no_roteiro_de_imagem(self):  # CA-04
+        self.assertEqual(self.erros(ROTEIRO_IMAGEM, "instagram-imagem"), [])
+        sem = ROTEIRO_IMAGEM.replace("imagens em input[type=file]\n", "")
+        self.assertIn("falta a linha \"imagens\", que entrega as imagens para a rede",
+                      self.erros(sem, "instagram-imagem"))
+        com_video = ROTEIRO_IMAGEM.replace("imagens em", "video em")
+        self.assertEqual(self.erros(com_video, "instagram-imagem"),
+                         ["linha 3: o roteiro de imagem não tem \"video\"; as imagens entram com \"imagens\""])
+        self.assertEqual(self.erros(ROTEIRO_IMAGEM, "instagram"),
+                         ["linha 3: \"imagens\" é do roteiro de imagem; aqui o vídeo entra com \"video\""])
+        # os apelidos
+        for apelido in ("imagem", "fotos", "arquivo"):
+            texto = ROTEIRO_IMAGEM.replace("imagens em", f"{apelido} em")
+            instrucoes, erros = roteiro.analisar(texto, "instagram-imagem")
+            self.assertEqual(erros, [], apelido)
+            self.assertEqual([i.comando for i in instrucoes if i.alvos and i.alvos[0].valor == "input[type=file]"],
+                             ["imagens"])
+        # no roteiro de vídeo, "arquivo" continua sendo o vídeo
+        video = "abrir https://x.com/\narquivo em input[type=file]\npublicar #post\n"
+        instrucoes, erros = roteiro.analisar(video, "instagram")
+        self.assertEqual(erros, [])
+        self.assertEqual(instrucoes[1].comando, "video")
+
+    def test_erros_proprios_do_roteiro_de_imagem(self):
+        def so(linha_nova: str) -> list[str]:
+            return self.erros(ROTEIRO_IMAGEM.replace("imagens em input[type=file]", linha_nova), "instagram-imagem")
+        self.assertEqual(so("opcional imagens"), ["linha 3: o envio das imagens não pode ser opcional"])
+        self.assertTrue(so('imagens em "Escolher"')[0].startswith("linha 3: as imagens entram num campo de arquivo"))
+        self.assertEqual(so("imagens\nimagens em #outro"),
+                         ["linha 4: o roteiro de imagem tem uma linha \"imagens\" só "
+                          "(ela entrega todas as imagens de uma vez)"])
+        sem_publicar = ROTEIRO_IMAGEM.replace('publicar "Compartilhar"\n', "")
+        self.assertEqual(self.erros(sem_publicar, "instagram-imagem"),
+                         ["falta a linha \"publicar\", que diz qual clique publica o post"])
+        cedo = 'abrir https://x.com/\npublicar "Compartilhar"\nimagens\n'
+        self.assertEqual(self.erros(cedo, "instagram-imagem"),
+                         ["linha 2: o clique que publica precisa vir depois da linha \"imagens\""])
+        # o título é opcional no TikTok de fotos, e o Instagram não tem
+        tiktok = "abrir https://x.com/\nimagens\nescrever titulo em #t\nescrever legenda em #l\npublicar #post\n"
+        self.assertEqual(self.erros(tiktok, "tiktok-imagem"), [])
+        self.assertTrue(self.erros(tiktok, "instagram-imagem")[0].startswith("linha 3: esta rede não tem título"))
+        sem_titulo = tiktok.replace("escrever titulo em #t\n", "")
+        self.assertFalse([a for a in roteiro.resumo(sem_titulo, "tiktok-imagem")["avisos"]
+                          if "Sem preenchimento" in a])
+        sem_legenda = tiktok.replace("escrever legenda em #l\n", "")
+        self.assertTrue([a for a in roteiro.resumo(sem_legenda, "tiktok-imagem")["avisos"]
+                         if "Sem preenchimento automático de legenda" in a])
+
+    def test_avisos_e_resumo(self):
+        r = roteiro.resumo(ROTEIRO_IMAGEM, "instagram-imagem")
+        self.assertEqual((r["midia"], r["tem_imagens"], r["tem_video"]), ("imagem", True, False))
+        self.assertFalse([a for a in r["avisos"] if "recorte" in a])
+        sem_recorte = ROTEIRO_IMAGEM.replace('clicar "Original"\n', "")
+        avisos = roteiro.resumo(sem_recorte, "instagram-imagem")["avisos"]
+        self.assertIn("não vi a escolha do recorte (4:5 ou Original): o Instagram corta a imagem em quadrado "
+                      "e o texto pode ficar perto da borda", avisos)
+        com_45 = ROTEIRO_IMAGEM.replace('clicar "Original"', 'clicar "Recorte 4:5"')
+        self.assertFalse([a for a in roteiro.resumo(com_45, "instagram-imagem")["avisos"] if "recorte" in a])
+        self.assertFalse([a for a in roteiro.resumo(sem_recorte, "tiktok-imagem")["avisos"] if "recorte" in a])
+        sem_conferir = ROTEIRO_IMAGEM.replace('conferir "Sua publicação foi compartilhada"\n', "")
+        avisos = roteiro.resumo(sem_conferir, "instagram-imagem")["avisos"]
+        self.assertTrue([a for a in avisos if "se a imagem saiu" in a], avisos)
+        # um clique com cara de publicar logo depois do arquivo
+        cedo = ROTEIRO_IMAGEM.replace('clicar "Original"', 'clicar "Compartilhar agora"')
+        self.assertTrue([a for a in roteiro.resumo(cedo, "instagram-imagem")["avisos"] if "cara de publicar" in a])
+        video = roteiro.resumo("abrir https://x.com/\nvideo\npublicar #post\n", "instagram")
+        self.assertEqual((video["midia"], video["tem_imagens"], video["tem_video"]), ("video", False, True))
+
+    def test_ajuda(self):
+        por_comando = {a["comando"]: a for a in roteiro.AJUDA}
+        self.assertTrue(por_comando["imagens"]["o_que"].startswith("só no roteiro de imagem"))
+        self.assertEqual(por_comando["imagens"]["exemplo"], "imagens em input[type=file]")
+        self.assertTrue(por_comando["video"]["o_que"].startswith("só no roteiro de vídeo"))
+
+    def test_gerar_roteiro_de_imagem(self):
+        passos = [
+            {"tipo": "clicar", "seletores": ["#criar"], "texto": "Criar"},
+            {"tipo": "arquivo", "seletores": ["input[type=file]"], "quantos": 3, "multiplo": True},
+            {"tipo": "arquivo", "seletores": ["#outro"], "quantos": 1},
+            {"tipo": "digitar", "seletores": ["#legenda"], "papel": "legenda"},
+            {"tipo": "clicar", "seletores": ["#publicar"], "texto": "Compartilhar"},
+        ]
+        tela = "Arquivo exemplo enviado com sucesso. Sua publicação foi compartilhada"
+        texto = roteiro.gerar("instagram-imagem", passos, "https://www.instagram.com/", publicar_em=4,
+                              confirmacao=tela)
+        self.assertTrue(texto.startswith("# Roteiro de imagem do instagram, gravado em"))
+        linhas = texto.splitlines()
+        self.assertIn("imagens em input[type=file]", linhas)
+        self.assertEqual(sum(1 for l in linhas if l.startswith("imagens")), 1)
+        self.assertIn("# segunda escolha de arquivo ignorada: a linha \"imagens\" entrega todas de uma vez", linhas)
+        self.assertNotIn("video", " ".join(l for l in linhas if not l.startswith("#")))
+        self.assertIn('conferir "Arquivo exemplo enviado com sucesso"', linhas)
+        self.assertEqual(roteiro.analisar(texto, "instagram-imagem")[1], [])
+        # o evitar tira do conferir a frase com o nome do arquivo de exemplo
+        texto = roteiro.gerar("instagram-imagem", passos, "https://www.instagram.com/", publicar_em=4,
+                              confirmacao=tela, evitar=lambda f: "exemplo" in f.lower())
+        self.assertIn('conferir "Sua publicação foi compartilhada"', texto)
+        self.assertNotIn("Arquivo exemplo enviado", texto)
+        # campo de uma imagem por vez
+        um = [dict(passos[1], multiplo=False), passos[4]]
+        texto = roteiro.gerar("instagram-imagem", um, "https://www.instagram.com/", publicar_em=1)
+        self.assertIn("# O campo de arquivo que você usou aceita uma imagem por vez: "
+                      "o carrossel não sai por este roteiro.", texto)
+        # o vídeo continua igual
+        video = roteiro.gerar("instagram", [passos[1], passos[4]], "https://www.instagram.com/", publicar_em=1)
+        self.assertTrue(video.startswith("# Roteiro do instagram, gravado em"))
+        self.assertIn("video em input[type=file]", video)
+
+    def test_campo_preenchido_pela_pagina(self):
+        passos = [
+            {"tipo": "arquivo", "seletores": ["input[type=file]"], "quantos": 3},
+            {"tipo": "digitar", "seletores": ["#titulo"], "preenchido_pela_pagina": True},
+            {"tipo": "digitar", "seletores": ["#legenda"], "papel": "legenda"},
+            {"tipo": "clicar", "seletores": ["#post"], "texto": "Publicar"},
+        ]
+        texto = roteiro.gerar("tiktok-imagem", passos, "https://www.tiktok.com/", publicar_em=3)
+        self.assertIn("escrever titulo em #titulo", texto.splitlines())
+        self.assertEqual(roteiro.analisar(texto, "tiktok-imagem")[1], [])
+        # com o título já escrito por outro campo, o preenchido vira o comentário
+        com_titulo = passos + [{"tipo": "digitar", "seletores": ["#t2"], "papel": "titulo"}]
+        texto = roteiro.gerar("tiktok-imagem", com_titulo, "https://www.tiktok.com/", publicar_em=3)
+        self.assertNotIn("escrever titulo em #titulo", texto)
+        # no Instagram não há título: o comentário e o aviso no resumo
+        texto = roteiro.gerar("instagram-imagem", passos, "https://www.instagram.com/", publicar_em=3)
+        marca = [l for l in texto.splitlines() if l.startswith(roteiro.MARCA_PREENCHIDO)]
+        self.assertEqual(marca, [f'{roteiro.MARCA_PREENCHIDO}: troque por escrever "seu texto" em #titulo, '
+                                 "ou ele sai com o nome do arquivo"])
+        n = texto.splitlines().index(marca[0]) + 1
+        avisos = roteiro.resumo(texto, "instagram-imagem")["avisos"]
+        self.assertIn(f"linha {n}: um campo ficou com o nome do arquivo, que a página preencheu sozinha; "
+                      "troque pelo seu texto", avisos)
+
+    def test_roteiro_de_imagem_sem_padrao(self):
+        self.assertEqual(gravador.carregar_com_origem(self.cfg, "instagram"),
+                         (gravador.arquivo_padrao("instagram").read_text(encoding="utf-8-sig"), "padrao"))
+        self.assertEqual(gravador.carregar_com_origem(self.cfg, "instagram-imagem"), (None, None))
+        arquivo = gravador.arquivo_roteiro(self.cfg, "instagram-imagem")
+        self.assertEqual(arquivo.name, "instagram-imagem.txt")
+        arquivo.parent.mkdir(parents=True, exist_ok=True)
+        arquivo.write_text(ROTEIRO_IMAGEM, encoding="utf-8")
+        self.assertEqual(gravador.carregar_com_origem(self.cfg, "instagram-imagem"), (ROTEIRO_IMAGEM, "perfil"))
+
+    def test_roteiros_padrao_de_video_continuam_valendo(self):
+        arquivos = sorted((RAIZ / "roteiros").glob("*.txt"))
+        self.assertTrue(arquivos)
+        for arquivo in arquivos:
+            texto = arquivo.read_text(encoding="utf-8-sig")
+            r = roteiro.resumo(texto, arquivo.stem)
+            self.assertEqual(r["erros"], [], arquivo.name)
+            self.assertEqual((r["midia"], r["tem_video"], r["tem_imagens"]), ("video", True, False))
 
 
 if __name__ == "__main__":

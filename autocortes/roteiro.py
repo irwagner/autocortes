@@ -34,13 +34,20 @@ MARCAS = {
     "tags": "@@TAGS@@",
     "fonte": "@@FONTE@@",
 }
-# o que cada rede precisa que você marque na gravação
+# o que cada rede precisa que você marque na gravação (o roteiro de imagem é "<rede>-imagem")
 PAPEIS_DA_REDE = {
     "youtube": ("titulo", "descricao", "tags"),
     "tiktok": ("legenda",),
     "instagram": ("legenda",),
     "bilibili": ("titulo", "descricao", "tags", "fonte"),
+    "tiktok-imagem": ("legenda",),
+    "instagram-imagem": ("legenda",),
 }
+# papéis que o roteiro aceita sem exigir: valem em "escrever", mas não faltam nem são deduzidos
+PAPEIS_OPCIONAIS = {"tiktok-imagem": ("titulo",)}
+SUFIXO_IMAGEM = "-imagem"
+# começo da linha que o gerar escreve quando a página preencheu um campo com o nome do arquivo
+MARCA_PREENCHIDO = "# a página preencheu este campo com o nome do arquivo"
 NOMES = {"titulo": "título", "descricao": "descrição", "legenda": "legenda", "tags": "tags", "fonte": "fonte"}
 TECLAS = ("Enter", "Tab", "Escape")
 MAX_ROLAR = 20000  # pixels
@@ -54,6 +61,28 @@ _PALAVRAS_PUBLICAR = re.compile(
     r"\b(publicar|publique|postar|post|publish|compartilhar|share|agendar|programar|schedule)\b")
 _PUBLICAR_CJK = ("投稿", "发布")
 _TOKENS_PUBLICAR = {"post", "publish", "publicar", "done", "share"}
+
+
+def nome_roteiro(rede: str, midia: str = "video") -> str:
+    """O nome do roteiro: a rede no vídeo, "<rede>-imagem" nas imagens."""
+    return f"{rede}{SUFIXO_IMAGEM}" if midia == "imagem" else rede
+
+
+def midia_do_roteiro(nome: str | None) -> str:
+    """"imagem" para o roteiro de imagem ("<rede>-imagem"), senão "video"."""
+    return "imagem" if str(nome or "").endswith(SUFIXO_IMAGEM) else "video"
+
+
+def rede_do_roteiro(nome: str | None) -> str:
+    """A rede de um nome de roteiro ("instagram-imagem" -> "instagram")."""
+    nome = str(nome or "")
+    return nome[:-len(SUFIXO_IMAGEM)] if nome.endswith(SUFIXO_IMAGEM) else nome
+
+
+def papeis_validos(rede: str | None) -> set[str]:
+    """Os papéis que valem em "escrever" neste roteiro (os da rede e os opcionais)."""
+    base = PAPEIS_DA_REDE.get(rede or "", MARCAS.keys())
+    return set(base) | set(PAPEIS_OPCIONAIS.get(rede or "", ()))
 
 
 class ErroRoteiro(Exception):
@@ -199,7 +228,8 @@ def analisar(texto: str, rede: str | None = None) -> tuple[list[Instrucao], list
     """Lê o roteiro e devolve as instruções e os erros (um por linha problemática)."""
     instrucoes: list[Instrucao] = []
     erros: list[str] = []
-    papeis_validos = set(PAPEIS_DA_REDE.get(rede or "", MARCAS.keys()))
+    validos = papeis_validos(rede)
+    de_imagem = midia_do_roteiro(rede) == "imagem"
 
     for n, bruta in enumerate(texto.splitlines(), 1):
         linha = bruta.strip()
@@ -218,8 +248,31 @@ def analisar(texto: str, rede: str | None = None) -> tuple[list[Instrucao], list
                 erros.append(f"linha {n}: depois de \"abrir\" precisa vir um endereço http")
                 continue
             ins.url = resto
+        elif comando in ("imagens", "imagem", "fotos") or (comando == "arquivo" and de_imagem):
+            ins.comando = "imagens"
+            if not de_imagem:
+                erros.append(f"linha {n}: \"imagens\" é do roteiro de imagem; aqui o vídeo entra com \"video\"")
+                continue
+            if opcional:
+                erros.append(f"linha {n}: o envio das imagens não pode ser opcional")
+                continue
+            if any(i.comando == "imagens" for i in instrucoes):
+                erros.append(f"linha {n}: o roteiro de imagem tem uma linha \"imagens\" só "
+                             "(ela entrega todas as imagens de uma vez)")
+                continue
+            alvo = resto
+            if alvo.lower().startswith("em "):
+                alvo = alvo[3:]
+            ins.alvos = _partir_alvos(alvo) if alvo.strip() else [Alvo("input[type=file]")]
+            if any(a.por_texto for a in ins.alvos):
+                erros.append(f"linha {n}: as imagens entram num campo de arquivo; use um seletor CSS, sem aspas "
+                             "(ex.: imagens em input[type=file])")
+                continue
         elif comando in ("video", "arquivo"):
             ins.comando = "video"
+            if de_imagem:
+                erros.append(f"linha {n}: o roteiro de imagem não tem \"video\"; as imagens entram com \"imagens\"")
+                continue
             if opcional:
                 erros.append(f"linha {n}: o envio do vídeo não pode ser opcional")
                 continue
@@ -258,9 +311,9 @@ def analisar(texto: str, rede: str | None = None) -> tuple[list[Instrucao], list
                     erros.append(f"linha {n}: não conheço o texto \"{valor}\". Use {', '.join(MARCAS)} "
                                  "ou um texto fixo entre aspas")
                     continue
-                if papel not in papeis_validos:
+                if papel not in validos:
                     erros.append(f"linha {n}: esta rede não tem {NOMES.get(papel, papel)}; "
-                                 f"aqui vale {', '.join(sorted(papeis_validos))}")
+                                 f"aqui vale {', '.join(sorted(validos))}")
                     continue
                 ins.papel = papel
         elif comando == "tags":
@@ -273,7 +326,7 @@ def analisar(texto: str, rede: str | None = None) -> tuple[list[Instrucao], list
             if any(a.por_texto for a in ins.alvos):
                 erros.append(f"linha {n}: o campo das tags precisa ser um seletor CSS, sem aspas")
                 continue
-            if "tags" not in papeis_validos:
+            if "tags" not in validos:
                 erros.append(f"linha {n}: esta rede não usa tags")
                 continue
         elif comando == "tecla":
@@ -313,7 +366,16 @@ def analisar(texto: str, rede: str | None = None) -> tuple[list[Instrucao], list
             continue
         instrucoes.append(ins)
 
-    if not erros:
+    if not erros and de_imagem:
+        imagens = [i.linha for i in instrucoes if i.comando == "imagens"]
+        publicar = [i.linha for i in instrucoes if i.comando == "publicar"]
+        if not imagens:
+            erros.append("falta a linha \"imagens\", que entrega as imagens para a rede")
+        if not publicar:
+            erros.append("falta a linha \"publicar\", que diz qual clique publica o post")
+        if imagens and publicar and publicar[0] < imagens[0]:
+            erros.append(f"linha {publicar[0]}: o clique que publica precisa vir depois da linha \"imagens\"")
+    elif not erros:
         videos = [i.linha for i in instrucoes if i.comando == "video"]
         publicar = [i.linha for i in instrucoes if i.comando == "publicar"]
         if not videos:
@@ -352,30 +414,58 @@ def _alvos_de(passo: dict) -> str:
 
 
 def gerar(rede: str, passos: list[dict], url: str, confirmacao: str = "", publicar_em: int | None = None,
-          publicar_incerto: bool = False, texto_inicial: str = "") -> str:
-    """Monta o texto do roteiro a partir do que a gravação anotou."""
+          publicar_incerto: bool = False, texto_inicial: str = "", evitar=None) -> str:
+    """Monta o texto do roteiro a partir do que a gravação anotou.
+
+    rede pode ser o nome de um roteiro de imagem ("instagram-imagem"): o passo do arquivo vira
+    "imagens" (uma linha só, que entrega todas). evitar(texto) diz que frase não pode virar a
+    linha "conferir" (a gravação de imagem passa o filtro do nome dos arquivos de exemplo).
+    """
     import time
 
     from .util import fmt_data
 
+    de_imagem = midia_do_roteiro(rede) == "imagem"
+    cabecalho = f"Roteiro de imagem do {rede_do_roteiro(rede)}" if de_imagem else f"Roteiro do {rede}"
     linhas = [
-        f"# Roteiro do {rede}, gravado em {fmt_data(time.time())}",
+        f"# {cabecalho}, gravado em {fmt_data(time.time())}",
         "# Uma ação por linha. Linha começando com # é comentário, e não faz nada.",
         "# Alternativas vão separadas por \" ou \"; entre aspas eu procuro pelo texto na tela.",
         "# Dá para editar: veja a lista de comandos no painel.",
         "",
         f"abrir {url}",
     ]
+    viu_arquivo = False
+    # o título do post de fotos do TikTok: o campo que a página preencheu com o nome do arquivo
+    # passa a receber o título do AutoCortes, se nenhum outro campo já for o do título
+    titulo_livre = (de_imagem and "titulo" in papeis_validos(rede)
+                    and not any(p.get("papel") == "titulo" for p in passos))
     for i, passo in enumerate(passos):
         tipo = passo["tipo"]
         alvos = _alvos_de(passo)
-        if tipo == "arquivo":
+        if tipo == "arquivo" and de_imagem:
+            if viu_arquivo:
+                linhas.append("# segunda escolha de arquivo ignorada: a linha \"imagens\" entrega todas de uma vez")
+                continue
+            viu_arquivo = True
+            linhas.append(f"imagens em {alvos}" if alvos else "imagens")
+            if passo.get("multiplo") is False:
+                linhas.append("# O campo de arquivo que você usou aceita uma imagem por vez: "
+                              "o carrossel não sai por este roteiro.")
+        elif tipo == "arquivo":
             linhas.append(f"video em {alvos}" if alvos else "video")
         elif tipo == "clicar":
             if i == publicar_em and publicar_incerto:
                 linhas.append("# Confira: nenhum clique tinha cara de publicar, então marquei o último. "
                               "Se não for este, troque o \"publicar\" de linha.")
             linhas.append(f"{'publicar' if i == publicar_em else 'clicar'} {alvos}")
+        elif tipo == "digitar" and passo.get("preenchido_pela_pagina") and not passo.get("papel"):
+            if titulo_livre:
+                titulo_livre = False
+                linhas.append(f"escrever titulo em {alvos}")
+            else:
+                linhas.append(f"{MARCA_PREENCHIDO}: troque por escrever \"seu texto\" em {alvos}, "
+                              "ou ele sai com o nome do arquivo")
         elif tipo == "digitar":
             if passo.get("papel") == "tags":
                 linhas.append(f"tags em {alvos}")
@@ -386,9 +476,15 @@ def gerar(rede: str, passos: list[dict], url: str, confirmacao: str = "", public
                 linhas.append(f'escrever "{valor}" em {alvos}')
         elif tipo == "tecla":
             linhas.append(f"tecla {passo.get('tecla') or 'Enter'}")
-    pista = _pista(confirmacao, texto_inicial, [str(p.get("valor") or "") for p in passos])
+    pista = _pista(confirmacao, texto_inicial, [str(p.get("valor") or "") for p in passos], evitar)
     if pista:
         linhas.append(f'conferir "{pista}"')
+    elif de_imagem:
+        linhas += [
+            "# Falta conferir: sem uma linha assim, eu não tenho como saber se a imagem saiu mesmo.",
+            "# Troque pelo texto que a rede mostra quando publica e tire o # da frente:",
+            "#   conferir \"Sua publicação foi compartilhada\"",
+        ]
     else:
         linhas += [
             "# Falta conferir: sem uma linha assim, eu não tenho como saber se o vídeo saiu mesmo.",
@@ -407,17 +503,20 @@ def gerar(rede: str, passos: list[dict], url: str, confirmacao: str = "", public
     return "\n".join(linhas) + "\n"
 
 
-def _pista(confirmacao: str, inicial: str = "", digitados=()) -> str:
+def _pista(confirmacao: str, inicial: str = "", digitados=(), evitar=None) -> str:
     """Uma frase que apareceu na tela depois que você publicou.
 
     Não serve o que já estava na página no começo (menu, cabeçalho: sempre estaria lá), nem o que
-    você escreveu (a legenda muda a cada post), nem frase com número (data, contagem).
+    você escreveu (a legenda muda a cada post), nem frase com número (data, contagem), nem a que
+    evitar(frase) recusa (o nome de um arquivo de exemplo).
     """
     antes = " ".join(str(inicial).split()).lower()
     meus = [" ".join(str(d).split()).lower() for d in digitados if str(d).strip()]
     for frase in re.split(r"[.!|·•\n]", " ".join(str(confirmacao).split())):
         f = frase.strip()
         if not 12 <= len(f) <= 60 or '"' in f or "@@" in f or re.search(r"\d", f):
+            continue
+        if evitar is not None and evitar(f):
             continue
         baixa = f.lower()
         if antes and baixa in antes:
@@ -433,13 +532,16 @@ AJUDA = [
     {"comando": "abrir", "exemplo": "abrir https://www.tiktok.com/tiktokstudio/upload",
      "o_que": "vai para o endereço. Costuma ser a primeira linha."},
     {"comando": "video", "exemplo": "video em input[type=file]",
-     "o_que": "entrega o corte no campo de arquivo. Sem o \"em\", procura sozinho."},
+     "o_que": "só no roteiro de vídeo: entrega o corte no campo de arquivo. Sem o \"em\", procura sozinho."},
+    {"comando": "imagens", "exemplo": "imagens em input[type=file]",
+     "o_que": "só no roteiro de imagem: entrega as imagens do post no campo de arquivo, todas de uma vez e "
+              "na ordem do carrossel. Sem o \"em\", procura sozinho."},
     {"comando": "clicar", "exemplo": 'clicar #post ou "Publicar agora"',
      "o_que": "clica no primeiro alvo que existir na tela; se ele estiver desabilitado, espera liberar. "
               "Seletor genérico (button[role=\"button\"], div > div) só vale se for o único na tela."},
     {"comando": "publicar", "exemplo": 'publicar #post ou "Publicar agora"',
      "o_que": "o clique que publica. No ensaio eu paro aqui (e em qualquer clique com cara de publicar "
-              "depois do vídeo), sem clicar."},
+              "depois do arquivo), sem clicar."},
     {"comando": "escrever", "exemplo": "escrever legenda em #legenda",
      "o_que": "escreve o texto do corte. Vale título, descrição, legenda, fonte, "
               "ou um texto fixo entre aspas. O campo é um seletor CSS, sem aspas."},
@@ -457,7 +559,8 @@ AJUDA = [
      "o_que": "no fim, espera a confirmação da rede. Se não vier, o post fica \"a conferir\" no painel, "
               "para você dizer se saiu."},
     {"comando": "opcional", "exemplo": 'opcional clicar "Agora não"',
-     "o_que": "na frente de qualquer linha (menos video e publicar): se não achar o alvo, segue em frente."},
+     "o_que": "na frente de qualquer linha (menos video, imagens e publicar): se não achar o alvo, "
+              "segue em frente."},
     {"comando": "#", "exemplo": "# isto é um comentário",
      "o_que": "linha que começa com # não faz nada. Serve para desligar um passo sem apagar."},
 ]
@@ -466,11 +569,16 @@ AJUDA = [
 def avisos(instrucoes: list[Instrucao], rede: str | None = None) -> list[str]:
     """O que funciona, mas é arriscado: seletor genérico, clique de publicar cedo, falta de conferir."""
     saida: list[str] = []
-    viu_video = viu_publicar = False
+    viu_arquivo = viu_publicar = False
+    de_imagem = midia_do_roteiro(rede) == "imagem"
+    recorte = False  # instagram-imagem: algum clique entre "imagens" e "publicar" escolheu 4:5 ou Original
     for ins in instrucoes:
-        if ins.comando == "video":
-            viu_video = True
+        if ins.comando in ("video", "imagens"):
+            viu_arquivo = True
             continue
+        if (ins.comando == "clicar" and viu_arquivo and not viu_publicar
+                and any(re.search(r"4\s*:\s*5|original", sem_acentos(a.valor).lower()) for a in ins.alvos)):
+            recorte = True
         if ins.comando == "publicar":
             viu_publicar = True
         css = [a for a in ins.alvos if not a.por_texto]
@@ -483,15 +591,22 @@ def avisos(instrucoes: list[Instrucao], rede: str | None = None) -> list[str]:
             else:
                 saida.append(f"linha {ins.linha}: {', '.join(genericos[:2])} é genérico e só vale se for o "
                              "único na tela; dá para apagar essa alternativa")
-        if ins.comando == "clicar" and viu_video and not viu_publicar and parece_publicar(ins.alvos):
+        if ins.comando == "clicar" and viu_arquivo and not viu_publicar and parece_publicar(ins.alvos):
             saida.append(f"linha {ins.linha}: este clique tem cara de publicar, mas vem antes da linha "
                          "\"publicar\". No ensaio eu paro aqui; se for ele que publica, troque o comando")
         elif ins.comando == "clicar" and viu_publicar and not ins.opcional and parece_publicar(ins.alvos):
             saida.append(f"linha {ins.linha}: confirmação depois de publicar. Se a caixa nem sempre aparece, "
                          "ponha \"opcional\" na frente, senão o envio para aqui")
     if instrucoes and not any(i.comando == "conferir" for i in instrucoes):
-        saida.append("falta uma linha \"conferir\": sem ela eu não tenho como saber se o vídeo saiu. "
-                     "Ex.: conferir \"Seu vídeo foi publicado\"")
+        if de_imagem:
+            saida.append("falta uma linha \"conferir\": sem ela eu não tenho como saber se a imagem saiu. "
+                         "Ex.: conferir \"Sua publicação foi compartilhada\"")
+        else:
+            saida.append("falta uma linha \"conferir\": sem ela eu não tenho como saber se o vídeo saiu. "
+                         "Ex.: conferir \"Seu vídeo foi publicado\"")
+    if rede == "instagram-imagem" and any(i.comando == "imagens" for i in instrucoes) and not recorte:
+        saida.append("não vi a escolha do recorte (4:5 ou Original): o Instagram corta a imagem em quadrado "
+                     "e o texto pode ficar perto da borda")
     if rede:
         escritos = {i.papel for i in instrucoes if i.papel}
         faltando = [NOMES.get(p, p) for p in PAPEIS_DA_REDE.get(rede, ()) if p not in escritos]
@@ -511,13 +626,21 @@ def resumo(texto: str, rede: str | None = None) -> dict:
     contagem: dict[str, int] = {}
     for ins in instrucoes:
         contagem[ins.comando] = contagem.get(ins.comando, 0) + 1
+    lista = avisos(instrucoes, rede) if not erros else []
+    if not erros:
+        # o comentário que o gerar deixou no campo que a página preencheu com o nome do arquivo
+        lista += [f"linha {n}: um campo ficou com o nome do arquivo, que a página preencheu sozinha; "
+                  "troque pelo seu texto"
+                  for n, bruta in enumerate(texto.splitlines(), 1) if bruta.strip().startswith(MARCA_PREENCHIDO)]
     return {
         "linhas": len(instrucoes),
         "contagem": contagem,
         "erros": erros,
-        "avisos": avisos(instrucoes, rede) if not erros else [],
+        "avisos": lista,
         "papeis": sorted({i.papel for i in instrucoes if i.papel}),
+        "midia": midia_do_roteiro(rede),
         "tem_video": any(i.comando == "video" for i in instrucoes),
+        "tem_imagens": any(i.comando == "imagens" for i in instrucoes),
         "tem_publicar": any(i.comando == "publicar" for i in instrucoes),
         "tem_conferir": any(i.comando == "conferir" for i in instrucoes),
     }

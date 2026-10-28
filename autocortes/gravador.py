@@ -529,10 +529,13 @@ def _ler_roteiro(arquivo: Path, rede: str) -> str | None:
 
 def carregar_com_origem(cfg: Config, rede: str) -> tuple[str | None, str | None]:
     """O roteiro que vale e de onde ele vem: "perfil" (o seu, em dados/roteiros) ou "padrao"
-    (o que vem com a instalação). (None, None) quando não há nenhum: o envio usa os passos fixos."""
+    (o que vem com a instalação). (None, None) quando não há nenhum: o envio usa os passos fixos.
+    O roteiro de imagem ("<rede>-imagem") não tem padrão: só vale o gravado no perfil."""
     texto = _ler_roteiro(arquivo_roteiro(cfg, rede), rede)
     if texto is not None:
         return texto, "perfil"
+    if roteiro.midia_do_roteiro(rede) == "imagem":
+        return None, None
     texto = _ler_roteiro(arquivo_padrao(rede), rede)
     if texto is not None:
         return texto, "padrao"
