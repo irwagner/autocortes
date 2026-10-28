@@ -18,11 +18,20 @@ from pathlib import Path
 
 from . import roteiro
 from .config import RAIZ, Config
-from .roteiro import MARCAS, NOMES, PAPEIS_DA_REDE, Alvo, fraco, gerar, parece_publicar
+from .roteiro import (MARCAS, NOMES, PAPEIS_DA_REDE, PAPEIS_OPCIONAIS, Alvo, fraco, gerar, midia_do_roteiro,
+                      parece_publicar)
 from .util import escrever_atomico, log, sem_acentos
 
-__all__ = ["PASTA_PADRAO", "SCRIPT", "analisar", "arquivo_padrao", "arquivo_roteiro", "carregar",
-           "carregar_com_origem", "gravar_roteiro", "lista_passos", "papeis", "salvar"]
+__all__ = ["NOMES_EXEMPLO", "PASTA_PADRAO", "SCRIPT", "analisar", "arquivo_padrao", "arquivo_roteiro", "carregar",
+           "carregar_com_origem", "gravar_roteiro", "lista_passos", "mascarar_exemplos", "papeis", "salvar"]
+
+# os arquivos que você escolhe na gravação de imagem: nome fixo e curto, para eu reconhecer (e tirar
+# do roteiro) onde a página mostrar o nome deles
+NOMES_EXEMPLO = tuple(f"exemplo-{n}.jpg" for n in range(1, 6))
+SEM_FOTOS = ("O campo de arquivo desta página não aceita imagem. No TikTok, isso quer dizer que esta conta ainda "
+             "não posta fotos pelo computador: as imagens do TikTok ficam desligadas.")
+ARRASTOU = ("Você arrastou o arquivo para a página, e isso eu não consigo repetir. Grave de novo escolhendo o "
+            "arquivo pelo botão da própria página.")
 
 # Roteiros que vêm com a instalação (ficam no repositório). Valem enquanto o perfil não tem o
 # seu em dados/roteiros: assim quem instala posta sem gravar primeiro, e quando a página de uma
@@ -33,11 +42,24 @@ PASTA_PADRAO = RAIZ / "roteiros"
 _MARCA = re.compile(r"@@\s*([^@\s]{2,20})\s*@@")
 # o nome dos arquivos de exemplo da gravação de imagem ("exemplo-1.jpg", "Exemplo 1", cortado no meio)
 _NOME_EXEMPLO = re.compile(r"exemplo[\s_\-]*\d")
+# o nome inteiro na tela, com a extensão ("exemplo-1.jpg", "Exemplo 2")
+_EXEMPLO_NA_TELA = re.compile(r"\S*exemplo[\s_\-]*\d\S*", re.I)
 
 
 def _tem_nome_de_exemplo(valor) -> bool:
     """O texto cita um arquivo de exemplo da gravação de imagem (não pode ir para o roteiro)."""
     return bool(_NOME_EXEMPLO.search(sem_acentos(str(valor or "")).lower()))
+
+
+def mascarar_exemplos(obj):
+    """O mesmo objeto (dicionários e listas, recursivo) com o nome dos arquivos de exemplo escondido."""
+    if isinstance(obj, str):
+        return "(nome do arquivo)" if _tem_nome_de_exemplo(obj) else obj
+    if isinstance(obj, dict):
+        return {k: mascarar_exemplos(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [mascarar_exemplos(v) for v in obj]
+    return obj
 
 # Gravador injetado na página. Escuta na fase de captura e usa composedPath, então enxerga
 # também o que está dentro do shadow DOM (YouTube Studio). Além dos eventos, varre os campos de
@@ -229,10 +251,19 @@ window.__acGrav = (() => {
              texto: editavel ? "" : limpar(el.innerText || el.textContent).slice(0, 60),
              rotulo: attr("aria-label"), dica: attr("title"), tag: (el.tagName || "").toLowerCase() });
   }, true);
+  // Do campo de arquivo só vão quantos arquivos, se ele aceita vários e se aceita foto: nunca o
+  // nome dos arquivos (nem o value ou o accept).
   document.addEventListener("change", (ev) => {
     const el = alvo(ev);
     if (!el || el.tagName !== "INPUT") return;
-    if (el.type === "file") anotar({ tipo: "arquivo", seletores: seletores(el) });
+    if (el.type === "file") anotar({ tipo: "arquivo", seletores: seletores(el),
+      quantos: el.files ? el.files.length : 0, multiplo: !!el.multiple,
+      aceita_imagem: !el.accept || /(^|,)\s*(image\/\*|image\/jpeg|\.jpe?g)\s*(,|$)/i.test(el.accept) });
+  }, true);
+  // arquivo arrastado para a página: a escolha não passa pelo campo, e o roteiro não teria como repetir
+  document.addEventListener("drop", (ev) => {
+    const quantos = ev.dataTransfer && ev.dataTransfer.files ? ev.dataTransfer.files.length : 0;
+    if (quantos) anotar({ tipo: "soltou", quantos });
   }, true);
   const digitou = (ev) => {
     registrarTexto(alvo(ev));
@@ -305,8 +336,9 @@ def arquivo_roteiro(cfg: Config, rede: str) -> Path:
 
 
 def papeis(rede: str) -> dict:
-    """Os textos-marca que você precisa colar nesta rede."""
-    return {papel: MARCAS[papel] for papel in PAPEIS_DA_REDE.get(rede, ())}
+    """Os textos-marca que você pode colar neste roteiro (os da rede e os opcionais, como o título
+    do post de fotos do TikTok)."""
+    return {papel: MARCAS[papel] for papel in (*PAPEIS_DA_REDE.get(rede, ()), *PAPEIS_OPCIONAIS.get(rede, ()))}
 
 
 def _papel_do_valor(valor: str) -> tuple[str | None, list[str]]:
@@ -322,18 +354,33 @@ def _papel_do_valor(valor: str) -> tuple[str | None, list[str]]:
     return None, estranhas
 
 
-def limpar_passos(rede: str, passos: list[dict]) -> list[dict]:
-    """Tira o que não serve e marca o papel dos campos pelos textos-marca."""
+def _inteiro(valor, minimo: int, maximo: int) -> int | None:
+    if isinstance(valor, bool) or not isinstance(valor, int) or not minimo <= valor <= maximo:
+        return None
+    return valor
+
+
+def limpar_passos(rede: str, passos: list[dict], exemplos: bool = False) -> list[dict]:
+    """Tira o que não serve e marca o papel dos campos pelos textos-marca.
+
+    exemplos=True (a gravação de imagem): o nome dos arquivos de exemplo não entra no roteiro. O
+    clique que o cita sai inteiro, o seletor que o cita sai da lista, e o campo que a página
+    preencheu com ele fica marcado como preenchido_pela_pagina, sem o texto.
+    """
     saida: list[dict] = []
     # a varredura pode anotar um campo depois de um clique: a hora manda na ordem
     passos = sorted(passos, key=lambda p: p.get("em") or 0)
     for passo in passos:
         tipo = passo.get("tipo")
         seletores = [s for s in (passo.get("seletores") or []) if s]
+        if exemplos:
+            seletores = [s for s in seletores if not _tem_nome_de_exemplo(s)]
         if tipo in ("clicar", "arquivo", "digitar") and not seletores:
             continue
         limpo: dict = {"tipo": tipo, "seletores": seletores}
         if tipo == "clicar":
+            if exemplos and any(_tem_nome_de_exemplo(passo.get(c)) for c in ("texto", "rotulo", "dica")):
+                continue  # o clique no nome ou na miniatura do arquivo: na repetição ele nem existiria
             texto = str(passo.get("texto") or "")
             # clique com texto curto vira também busca por texto, que aguenta troca de classe
             if 0 < len(texto) <= 40:
@@ -345,9 +392,13 @@ def limpar_passos(rede: str, passos: list[dict]) -> list[dict]:
             valor = str(passo.get("valor") or "")
             if "fakepath" in valor or any("type=\"file\"" in s for s in seletores):
                 continue  # resquício do campo de arquivo, não é texto que você digitou
+            # o papel vem antes do filtro: "exemplo-1 @@LEGENDA@@" (a marca colada no que a página
+            # preencheu) é o campo da legenda
             papel, estranhas = _papel_do_valor(valor)
             if papel:
                 limpo["papel"] = papel
+            elif exemplos and _tem_nome_de_exemplo(valor):
+                limpo["preenchido_pela_pagina"] = True
             elif estranhas:
                 # Sem papel reconhecido, o texto fica fixo no roteiro, com aviso no painel.
                 limpo["marca_estranha"] = estranhas[0]
@@ -356,7 +407,20 @@ def limpar_passos(rede: str, passos: list[dict]) -> list[dict]:
                 limpo["valor"] = valor  # texto seu, repetido igual
         elif tipo == "tecla":
             limpo["tecla"] = passo.get("tecla") or "Enter"
-        elif tipo != "arquivo":
+        elif tipo == "arquivo":
+            # cada chave conferida sozinha: um valor estranho tira a chave, nunca o passo
+            limpo["midia"] = midia_do_roteiro(rede)
+            quantos = _inteiro(passo.get("quantos"), 0, 99)
+            if quantos is not None:
+                limpo["quantos"] = quantos
+            for chave in ("multiplo", "aceita_imagem"):
+                if isinstance(passo.get(chave), bool):
+                    limpo[chave] = passo[chave]
+        elif tipo == "soltou":
+            quantos = _inteiro(passo.get("quantos"), 0, 99)
+            if quantos is not None:
+                limpo["quantos"] = quantos
+        else:
             continue
         if passo.get("url"):
             limpo["url"] = passo["url"]
@@ -373,6 +437,13 @@ def _juntar(passos: list[dict]) -> list[dict]:
             chave = tuple(passo["seletores"])
             ja = por_campo.get(chave)
             if ja is not None:
+                if passo.get("preenchido_pela_pagina"):
+                    # a página voltou a pôr o nome do arquivo: o seu texto (ou a marca) fica
+                    if "valor" not in ja and not ja.get("papel"):
+                        ja["preenchido_pela_pagina"] = True
+                    continue
+                if passo.get("papel") or "valor" in passo:
+                    ja.pop("preenchido_pela_pagina", None)  # você trocou o que a página preencheu
                 # o mesmo campo digitado de novo (ou revisto pela varredura): fica o texto final,
                 # no lugar onde ele apareceu primeiro
                 ja["valor"] = passo.get("valor", ja.get("valor"))
@@ -392,14 +463,16 @@ def _juntar(passos: list[dict]) -> list[dict]:
     return saida
 
 
-def analisar(rede: str, passos: list[dict]) -> dict:
+def analisar(rede: str, passos: list[dict], exemplos: bool = False) -> dict:
     """Limpa os passos e diz se o roteiro serve: campos identificados, o que falta e o que sobrou."""
-    limpos = limpar_passos(rede, passos)
+    limpos = limpar_passos(rede, passos, exemplos)
     necessarios = list(PAPEIS_DA_REDE.get(rede, ()))
     achados = {p["papel"] for p in limpos if p.get("papel")}
     faltando = [p for p in necessarios if p not in achados]
     inferido = None
-    sem_dono = [p for p in limpos if p["tipo"] == "digitar" and not p.get("papel")]
+    # o campo que a página preencheu sozinha não é candidato: no TikTok, o título ficaria com a legenda
+    sem_dono = [p for p in limpos if p["tipo"] == "digitar" and not p.get("papel")
+                and not p.get("preenchido_pela_pagina")]
     if len(faltando) == 1 and len(sem_dono) == 1:
         # um papel faltando e um único campo de texto sem dono: não tem como errar
         sem_dono[0]["papel"] = faltando[0]
@@ -408,14 +481,18 @@ def analisar(rede: str, passos: list[dict]) -> dict:
         inferido, faltando = faltando[0], []
     estranhas = [p["marca_estranha"] for p in limpos if p.get("marca_estranha")]
     publicar_em, incerto = _clique_de_publicar(limpos)
+    arquivo = next((p for p in limpos if p["tipo"] == "arquivo"), None)
     return {
         "passos_limpos": limpos,
         "faltando": faltando,
         "estranhas": estranhas,
         "inferido": inferido,
-        "tem_arquivo": any(p["tipo"] == "arquivo" for p in limpos),
+        "tem_arquivo": arquivo is not None,
         "publicar_em": publicar_em,
         "publicar_incerto": incerto,
+        # o campo de arquivo do roteiro de imagem aceita uma imagem por vez: o carrossel não sai por ele
+        "so_uma": bool(midia_do_roteiro(rede) == "imagem" and arquivo is not None
+                       and arquivo.get("multiplo") is False),
     }
 
 
@@ -445,6 +522,8 @@ def _clique_de_publicar(passos: list[dict]) -> tuple[int | None, bool]:
 
 def fragil(passo: dict) -> bool:
     """Passo sem âncora estável: só sobraram seletores genéricos, que casam com qualquer coisa."""
+    if passo["tipo"] == "soltou":
+        return False  # não vira linha do roteiro (o salvar avisa)
     seletores = passo.get("seletores") or []
     if not seletores:
         return True
@@ -459,13 +538,21 @@ def descrever(passo: dict) -> str:
     """O passo em uma linha, para o log da gravação."""
     tipo = passo["tipo"]
     if tipo == "arquivo":
-        return "escolheu o vídeo"
+        if passo.get("midia") != "imagem":
+            return "escolheu o vídeo"
+        quantos = passo.get("quantos") or 0
+        return "escolheu 1 imagem" if quantos == 1 else (f"escolheu {quantos} imagens" if quantos
+                                                          else "escolheu as imagens")
+    if tipo == "soltou":
+        return "arrastou o arquivo para a página (isso eu não repito: use o botão de escolher arquivo)"
     if tipo == "tecla":
         return f"teclou {passo.get('tecla') or 'Enter'}"
     if tipo == "clicar":
         alvo = passo.get("texto") or passo.get("rotulo") or passo.get("dica")
         return f"clicou em \u201c{alvo}\u201d" if alvo else f"clicou em {(passo.get('seletores') or ['?'])[0]}"
     onde = (passo.get("seletores") or ["?"])[0]
+    if passo.get("preenchido_pela_pagina") and not passo.get("papel"):
+        return f"a página preencheu um campo com o nome do arquivo ({onde})"
     if passo.get("papel"):
         return f"escreveu a {NOMES.get(passo['papel'], passo['papel'])} em {onde}"
     if passo.get("marca_estranha"):
@@ -474,10 +561,10 @@ def descrever(passo: dict) -> str:
     return f"escreveu \u201c{valor[:40]}{'…' if len(valor) > 40 else ''}\u201d em {onde}"
 
 
-def lista_passos(rede: str, passos: list[dict]) -> list[dict]:
+def lista_passos(rede: str, passos: list[dict], exemplos: bool = False) -> list[dict]:
     """Os passos já limpos, descritos para o log ao vivo da gravação."""
     saida = []
-    a = analisar(rede, passos)
+    a = analisar(rede, passos, exemplos)
     for i, passo in enumerate(a["passos_limpos"], 1):
         saida.append({
             "n": i, "tipo": passo["tipo"], "texto": descrever(passo),
@@ -497,14 +584,35 @@ def gravar_roteiro(cfg: Config, rede: str, texto: str) -> Path:
 
 
 def salvar(cfg: Config, rede: str, passos: list[dict], url_inicial: str, confirmacao: str = "",
-           texto_inicial: str = "") -> dict:
-    """Salva os passos mesmo sem marcas; recusa apenas um roteiro que não pode ser executado."""
-    a = analisar(rede, passos)
+           texto_inicial: str = "", exemplos: bool = False) -> dict:
+    """Salva os passos mesmo sem marcas; recusa apenas um roteiro que não pode ser executado.
+
+    rede pode ser o nome de um roteiro de imagem ("instagram-imagem"). O retorno leva sempre
+    quantos (arquivos escolhidos, 0 sem a escolha) e publicou (o clique de publicar foi anotado),
+    que dizem se o post da gravação pode ter saído.
+    """
+    a = analisar(rede, passos, exemplos)
     limpos = a.pop("passos_limpos")
-    if not a["tem_arquivo"]:
-        log.warning("%s: gravação não salva, a escolha do vídeo não foi anotada", rede)
+    arquivo = next((p for p in limpos if p["tipo"] == "arquivo"), None)
+    a["quantos"] = int(arquivo.get("quantos") or 0) if arquivo else 0
+    a["publicou"] = a["publicar_em"] is not None
+    de_imagem = midia_do_roteiro(rede) == "imagem"
+    if arquivo is None:
+        if any(p["tipo"] == "soltou" for p in limpos):
+            log.warning("%s: gravação não salva, o arquivo foi arrastado para a página", rede)
+            return {"ok": False, "motivo": "arrastou", "mensagem": ARRASTOU, "passos": len(limpos), **a}
+        log.warning("%s: gravação não salva, a escolha %s não foi anotada", rede,
+                    "das imagens" if de_imagem else "do vídeo")
         return {"ok": False, "passos": len(limpos), **a}
-    texto = gerar(rede, limpos, url_inicial, confirmacao, a["publicar_em"], a["publicar_incerto"], texto_inicial)
+    if de_imagem and arquivo.get("aceita_imagem") is False:
+        log.warning("%s: gravação não salva, o campo de arquivo da página não aceita imagem", rede)
+        return {"ok": False, "motivo": "sem_fotos", "mensagem": SEM_FOTOS, "passos": len(limpos), **a}
+    if exemplos:
+        # o nome do arquivo na tela vira separador: "exemplo-1.jpg foi compartilhada" quebraria no
+        # ponto, e o "jpg foi compartilhada" que sobra viraria a linha conferir
+        confirmacao = _EXEMPLO_NA_TELA.sub(" | ", confirmacao)
+    texto = gerar(rede, limpos, url_inicial, confirmacao, a["publicar_em"], a["publicar_incerto"], texto_inicial,
+                  evitar=_tem_nome_de_exemplo if exemplos else None)
     # o mesmo filtro do roteiro editado à mão: o que eu não consigo executar não vai para o disco
     _, erros = roteiro.analisar(texto, rede)
     if erros:

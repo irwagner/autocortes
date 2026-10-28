@@ -93,6 +93,11 @@ _LINK_POST = r"youtu\.be/|/shorts/|/video/|/reel/|/p/|/photo/|bilibili\.com/vide
 ESPERA_PUBLICAR = 900
 
 
+def proxima_sessao() -> int:
+    """O número da próxima gravação, antes de ela existir (a de imagem gera os exemplos na pasta dele)."""
+    return next(_SESSOES)
+
+
 def gravando() -> list[str]:
     """As redes com gravação de roteiro aberta agora."""
     with _TRAVA_GRAVANDO:
@@ -718,20 +723,29 @@ class ViaNavegador(Plataforma):
 # ---------------------------------------------------------------- aprender a postar
 
 class Gravacao:
-    """Uma gravação em andamento: a janela fica aberta enquanto você posta um vídeo à mão."""
+    """Uma gravação em andamento: a janela fica aberta enquanto você posta um vídeo (ou uma imagem) à mão.
+
+    Na de imagem, `exemplos` são os arquivos que você escolhe (exemplo-1.jpg...) e `exemplo` diz de
+    onde eles saíram ({"corte_id", "imagem_id", "quadros"}): o nome deles nunca vai para o roteiro.
+    """
 
     LIMITE_SEG = 45 * 60  # esquecida aberta, ela se encerra sozinha (e fecha a aba)
 
-    def __init__(self, cfg: Config, rede: str):
+    def __init__(self, cfg: Config, rede: str, midia: str = "video", exemplos=(), exemplo: dict | None = None,
+                 sessao: int | None = None):
         self.cfg = cfg
         self.rede = rede
+        self.midia = midia
+        self.nome = roteiro.nome_roteiro(rede, midia)
+        self.exemplos = list(exemplos)
+        self.exemplo = exemplo
         self.passos: list[dict] = []
         self.erro: str | None = None
         self.url = ""
         self.texto = ""
         self.texto_inicial = ""  # a página antes de você postar: o que já estava lá não serve de confirmação
         self.inicio = time.time()
-        self.sessao = next(_SESSOES)
+        self.sessao = sessao if sessao is not None else next(_SESSOES)
         self._parar = threading.Event()
         self._navegador = Navegador(cfg)
         self._navegador.conf = dict(cfg["navegador"], visivel=True)  # você precisa ver a janela
@@ -767,7 +781,15 @@ class Gravacao:
         self.url = aba.url()
         self.thread = threading.Thread(target=self._acompanhar, name=f"gravar-{self.rede}", daemon=True)
         self.thread.start()
-        log.info("%s: gravando o roteiro. Poste um vídeo à mão na janela que abriu.", ROTULOS[self.rede])
+        if self.midia == "imagem":
+            log.info("%s: gravando o roteiro de imagem. Poste as imagens de exemplo à mão na janela que abriu.",
+                     ROTULOS[self.rede])
+        else:
+            log.info("%s: gravando o roteiro. Poste um vídeo à mão na janela que abriu.", ROTULOS[self.rede])
+
+    @property
+    def _filtrar(self) -> bool:
+        return self.midia == "imagem"  # o nome dos arquivos de exemplo sai do roteiro e do log
 
     def _colher(self) -> None:
         """Traz o que o gravador anotou na página (precisa da trava)."""
@@ -806,9 +828,10 @@ class Gravacao:
             _marcar_gravacao(self.rede, self.sessao, False)
 
     def situacao(self) -> dict:
-        lista = gravador.lista_passos(self.rede, self.passos)
+        lista = gravador.lista_passos(self.nome, self.passos, exemplos=self._filtrar)
         return {
             "rede": self.rede,
+            "midia": self.midia,
             "passos": len(lista),
             "lista": lista,
             "brutos": len(self.passos),
@@ -816,7 +839,7 @@ class Gravacao:
             "erro": self.erro,
             "parada": self._parar.is_set() or self._aba is None,
             "segundos": int(time.time() - self.inicio),
-            "marcas": gravador.papeis(self.rede),
+            "marcas": gravador.papeis(self.nome),
         }
 
     def desfazer(self) -> dict:
@@ -826,8 +849,10 @@ class Gravacao:
                 self._colher()
             except ErroNavegador:
                 pass
-            alvo = len(gravador.limpar_passos(self.rede, self.passos))
-            while self.passos and alvo and len(gravador.limpar_passos(self.rede, self.passos)) >= alvo:
+            # com o mesmo filtro do log: um passo que ele não mostra não conta
+            alvo = len(gravador.limpar_passos(self.nome, self.passos, exemplos=self._filtrar))
+            while self.passos and alvo and len(gravador.limpar_passos(self.nome, self.passos,
+                                                                       exemplos=self._filtrar)) >= alvo:
                 self.passos.pop()
         return self.situacao()
 
@@ -861,11 +886,14 @@ class Gravacao:
             self._navegador.fechar_aba(aba)
         _marcar_gravacao(self.rede, self.sessao, False)
         if not self.passos:
+            o_que = "uma imagem" if self.midia == "imagem" else "um vídeo"
             raise ErroNavegador(
-                "não gravei nenhum passo. Poste um vídeo à mão na janela que abriu antes de concluir", "corte")
-        resultado = gravador.salvar(self.cfg, self.rede, self.passos, PAGINAS[self.rede][1], self.texto,
-                                    self.texto_inicial)
+                f"não gravei nenhum passo. Poste {o_que} à mão na janela que abriu antes de concluir", "corte")
+        resultado = gravador.salvar(self.cfg, self.nome, self.passos, PAGINAS[self.rede][1], self.texto,
+                                    self.texto_inicial, exemplos=self._filtrar)
         if not resultado.get("ok") and diagnostico:
+            if self._filtrar:
+                diagnostico = gravador.mascarar_exemplos(diagnostico)
             # sem digitação anotada, o diagnóstico mostra se o campo estava num quadro (iframe)
             log.warning("%s: diagnóstico da página ao terminar: %s", ROTULOS[self.rede], diagnostico)
             resultado["diagnostico"] = diagnostico

@@ -497,6 +497,9 @@ def gerar(rede: str, passos: list[dict], url: str, confirmacao: str = "", public
         "#   esperar 5",
         "# Ou espere algo aparecer na tela, em vez de contar o tempo:",
         "#   esperar \"Enviado\"",
+        # no roteiro de imagem, sem a palavra "exemplo": é ela que mostra se o nome de um arquivo
+        # de exemplo da gravação escapou para o roteiro
+        "# Passo que às vezes não aparece (como uma caixa de aviso):" if de_imagem else
         "# Passo que às vezes não aparece (uma caixa de aviso, por exemplo):",
         "#   opcional clicar \"Agora não\"",
     ]

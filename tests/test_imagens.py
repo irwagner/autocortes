@@ -2185,6 +2185,180 @@ class TestViaNavegadorImagem(Base):
         self.assertIn(("escrever", "A legenda do post #filme"), self.aba.feito)
 
 
+def _passos_da_gravacao(rede: str) -> list[dict]:
+    """O que o JS do gravador anota numa página que mostra o nome dos arquivos de exemplo (CA-05).
+
+    Os quatro caminhos: o nome num span clicável, a miniatura com aria-label e title, o campo que a
+    página preenche com o nome (aqui o título) e a frase da tela depois de publicar (no `confirmacao`).
+    """
+    titulo = "input[name=\"titulo\"]" if rede == "tiktok" else "input[aria-label=\"Texto alternativo\"]"
+    return [
+        {"tipo": "clicar", "seletores": ["button[aria-label=\"Criar\"]"], "texto": "Criar", "em": 1},
+        {"tipo": "arquivo", "seletores": ["input[type=\"file\"]", "input[name=\"exemplo-1.jpg\"]"], "quantos": 3,
+         "multiplo": True, "aceita_imagem": True, "em": 2},
+        {"tipo": "clicar", "seletores": ["span.nome"], "texto": "exemplo-1.jpg", "em": 3},
+        {"tipo": "clicar", "seletores": ["img[title=\"exemplo-2.jpg\"]", "div.miniatura > img"], "texto": "",
+         "rotulo": "exemplo-2.jpg", "dica": "exemplo-2.jpg", "em": 4},
+        {"tipo": "digitar", "seletores": [titulo], "valor": "exemplo-1", "chave": "1", "em": 5},
+        {"tipo": "digitar", "seletores": ["div[contenteditable=\"true\"]"], "valor": "exemplo-1 @@LEGENDA@@",
+         "chave": "2", "em": 6},
+        {"tipo": "clicar", "seletores": ["div[role=\"button\"]"], "texto": "Compartilhar", "em": 7},
+    ]
+
+
+CONFIRMACAO_COM_EXEMPLO = "Início Sua publicação exemplo-1.jpg foi compartilhada Ver publicação"
+
+
+class TestGravador(Base):
+    """O gravador com o roteiro de imagem (C17): os nomes dos exemplos fora, sem_fotos e arrastou."""
+
+    def salvar(self, nome: str, passos: list[dict], confirmacao: str = "", exemplos: bool = True) -> dict:
+        return gravador.salvar(self.cfg, nome, passos, "https://www.instagram.com/", confirmacao, "", exemplos)
+
+    def test_nome_dos_exemplos_fora_do_roteiro_e_do_log(self):  # CA-05 (unidade)
+        for rede in ("instagram", "tiktok"):
+            with self.subTest(rede=rede):
+                nome = roteiro.nome_roteiro(rede, "imagem")
+                passos = _passos_da_gravacao(rede)
+                lista = gravador.lista_passos(nome, passos, exemplos=True)
+                self.assertNotIn("exemplo", json.dumps(lista, ensure_ascii=False).lower())
+                self.assertIn("escolheu 3 imagens", [p["texto"] for p in lista])
+                r = self.salvar(nome, passos, CONFIRMACAO_COM_EXEMPLO)
+                self.assertTrue(r["ok"], r)
+                texto = gravador.carregar(self.cfg, nome)
+                self.assertNotIn("exemplo", texto.lower())
+                self.assertEqual(roteiro.analisar(texto, nome)[1], [])
+                # a frase antes do nome do arquivo, nunca o pedaço depois do ponto do ".jpg"
+                self.assertIn('conferir "Início Sua publicação"', texto)
+                self.assertIn('imagens em input[type="file"]', texto)
+                self.assertIn('escrever legenda em div[contenteditable="true"]', texto)  # "exemplo-1 @@LEGENDA@@"
+                if rede == "tiktok":
+                    self.assertIn('escrever titulo em input[name="titulo"]', texto)
+                else:
+                    self.assertIn(roteiro.MARCA_PREENCHIDO, texto)
+                    self.assertTrue(any("nome do arquivo" in a for a in r["resumo"]["avisos"]), r["resumo"])
+                self.assertEqual((r["quantos"], r["publicou"], r["publicar_incerto"], r["so_uma"]),
+                                 (3, True, False, False))
+                self.assertEqual(Path(r["arquivo"]).name, f"{nome}.txt")
+        # o roteiro de vídeo não filtra nada
+        limpos = gravador.limpar_passos("instagram", _passos_da_gravacao("instagram"))
+        self.assertTrue(any(p.get("texto") == "exemplo-1.jpg" for p in limpos))
+
+    def test_marca_trocada_pela_legenda_de_verdade(self):  # DF-2
+        passos = _passos_da_gravacao("instagram")
+        passos.append({"tipo": "digitar", "seletores": ["div[contenteditable=\"true\"]"],
+                       "valor": "Trecho de O Filme - Parte 2 #filme", "chave": "3", "em": 6.5})
+        limpos = gravador.limpar_passos("instagram-imagem", passos, exemplos=True)
+        legenda = [p for p in limpos if p.get("seletores") == ["div[contenteditable=\"true\"]"]]
+        self.assertEqual(len(legenda), 1)
+        self.assertEqual(legenda[0]["papel"], "legenda")
+        self.assertIn('escrever legenda em div[contenteditable="true"]', self.salvar("instagram-imagem", passos)["texto"])
+
+    def test_valor_proprio_ganha_do_que_a_pagina_preencheu(self):
+        campo = ["input[name=\"titulo\"]"]
+        passos = [{"tipo": "digitar", "seletores": campo, "valor": "exemplo-1", "em": 1},
+                  {"tipo": "digitar", "seletores": campo, "valor": "Meu título", "em": 2},
+                  {"tipo": "digitar", "seletores": campo, "valor": "exemplo-1", "em": 3}]
+        limpos = gravador.limpar_passos("tiktok-imagem", passos, exemplos=True)
+        self.assertEqual(limpos, [{"tipo": "digitar", "seletores": campo, "valor": "Meu título"}])
+        so_pagina = gravador.limpar_passos("tiktok-imagem", passos[:1], exemplos=True)
+        self.assertEqual(so_pagina, [{"tipo": "digitar", "seletores": campo, "preenchido_pela_pagina": True}])
+        self.assertEqual(gravador.descrever(so_pagina[0]),
+                         'a página preencheu um campo com o nome do arquivo (input[name="titulo"])')
+
+    def test_campo_da_pagina_nao_rouba_a_legenda(self):
+        # sem marca nenhuma: a legenda é deduzida pelo campo que você escreveu, nunca pelo título da página
+        passos = [{"tipo": "arquivo", "seletores": ["input[type=\"file\"]"], "quantos": 1, "em": 1},
+                  {"tipo": "digitar", "seletores": ["input[name=\"titulo\"]"], "valor": "exemplo-1", "em": 2},
+                  {"tipo": "digitar", "seletores": ["div.legenda"], "valor": "minha legenda", "em": 3}]
+        a = gravador.analisar("tiktok-imagem", passos, exemplos=True)
+        self.assertEqual(a["inferido"], "legenda")
+        self.assertEqual([p.get("papel") for p in a["passos_limpos"] if p["tipo"] == "digitar"], [None, "legenda"])
+
+    def test_mascarar_exemplos(self):
+        diag = {"campos": 2, "com_texto": [{"seletor": "input[name=\"exemplo-1.jpg\"]", "tamanho": 9}],
+                "url": "https://x/", "quadros": ["Exemplo 2", "ok"]}
+        self.assertEqual(gravador.mascarar_exemplos(diag),
+                         {"campos": 2, "com_texto": [{"seletor": "(nome do arquivo)", "tamanho": 9}],
+                          "url": "https://x/", "quadros": ["(nome do arquivo)", "ok"]})
+        self.assertEqual(gravador.NOMES_EXEMPLO[0], "exemplo-1.jpg")
+        self.assertTrue(all(gravador._tem_nome_de_exemplo(n) for n in gravador.NOMES_EXEMPLO))
+        self.assertFalse(gravador._tem_nome_de_exemplo("Por exemplo, o filme"))
+
+    def test_desfazer_na_gravacao_de_imagem(self):
+        g = plat_nav.Gravacao(self.cfg, "instagram", "imagem", exemplos=list(gravador.NOMES_EXEMPLO[:3]),
+                              exemplo={"corte_id": 1, "imagem_id": 1, "quadros": 3}, sessao=77)
+        self.assertEqual((g.nome, g.sessao, g.midia), ("instagram-imagem", 77, "imagem"))
+        g.passos = _passos_da_gravacao("instagram")[:4]  # o último é o clique na miniatura (escondido)
+        antes = g.situacao()
+        self.assertEqual(antes["passos"], 2)  # Criar e a escolha das imagens
+        self.assertEqual(antes["midia"], "imagem")
+        depois = g.desfazer()
+        self.assertEqual(depois["passos"], 1)  # saiu a escolha das imagens, o passo visível
+        self.assertEqual([p["texto"] for p in depois["lista"]], ["clicou em \u201cCriar\u201d"])
+        self.assertEqual(plat_nav.Gravacao(self.cfg, "instagram").midia, "video")
+        self.assertLess(plat_nav.proxima_sessao(), plat_nav.proxima_sessao())  # cada uma com o seu número
+
+    def test_campo_que_nao_aceita_foto(self):  # CA-22 (unidade)
+        passos = _passos_da_gravacao("instagram")
+        passos[1] = dict(passos[1], aceita_imagem=False)
+        r = self.salvar("instagram-imagem", passos)
+        self.assertEqual((r["ok"], r["motivo"]), (False, "sem_fotos"))
+        self.assertIn("não aceita imagem", r["mensagem"])
+        self.assertFalse(gravador.arquivo_roteiro(self.cfg, "instagram-imagem").exists())
+        # sem a chave (JS antigo), não dá sem_fotos
+        passos[1].pop("aceita_imagem")
+        self.assertTrue(self.salvar("instagram-imagem", passos)["ok"])
+
+    def test_arrastou_e_chaves_estranhas(self):  # DF-3
+        passos = [p for p in _passos_da_gravacao("instagram") if p["tipo"] != "arquivo"]
+        passos.insert(1, {"tipo": "soltou", "quantos": 3, "em": 2})
+        r = self.salvar("instagram-imagem", passos)
+        self.assertEqual((r["ok"], r["motivo"], r["quantos"]), (False, "arrastou", 0))
+        self.assertIn("arrastou", r["mensagem"])
+        self.assertIn("arrastou o arquivo", " ".join(p["texto"] for p in
+                                                    gravador.lista_passos("instagram-imagem", passos, True)))
+        # quantos estranho perde só a chave; o passo do arquivo fica
+        passos = _passos_da_gravacao("instagram")
+        passos[1] = dict(passos[1], quantos="três", multiplo="sim")
+        limpos = gravador.limpar_passos("instagram-imagem", passos, exemplos=True)
+        arquivo = next(p for p in limpos if p["tipo"] == "arquivo")
+        self.assertNotIn("quantos", arquivo)
+        self.assertNotIn("multiplo", arquivo)
+        self.assertTrue(arquivo["aceita_imagem"])
+        r = self.salvar("instagram-imagem", passos)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["quantos"], 0)
+
+    def test_uma_imagem_por_vez(self):
+        passos = _passos_da_gravacao("instagram")
+        passos[1] = dict(passos[1], multiplo=False, quantos=1)
+        r = self.salvar("instagram-imagem", passos)
+        self.assertTrue(r["ok"])
+        self.assertTrue(r["so_uma"])
+        self.assertIn("aceita uma imagem por vez", r["texto"])
+        self.assertIn("escolheu 1 imagem", [p["texto"] for p in gravador.lista_passos("instagram-imagem", passos,
+                                                                                       True)])
+
+    def test_papeis_com_os_opcionais(self):
+        self.assertEqual(set(gravador.papeis("tiktok-imagem")), {"legenda", "titulo"})
+        self.assertEqual(set(gravador.papeis("instagram-imagem")), {"legenda"})
+        self.assertEqual(gravador.papeis("tiktok"), {p: roteiro.MARCAS[p] for p in roteiro.PAPEIS_DA_REDE["tiktok"]})
+
+    def test_roteiro_de_video_sai_igual(self):
+        # os passos de vídeo com as chaves novas do JS geram o mesmo texto de sem elas
+        passos = [{"tipo": "arquivo", "seletores": ["input[type=\"file\"]"], "em": 1},
+                  {"tipo": "digitar", "seletores": ["div.legenda"], "valor": "@@LEGENDA@@", "em": 2},
+                  {"tipo": "clicar", "seletores": ["button.post"], "texto": "Publicar", "em": 3}]
+        com_chaves = [dict(passos[0], quantos=1, multiplo=False, aceita_imagem=False)] + passos[1:]
+        a, b = gravador.analisar("tiktok", passos), gravador.analisar("tiktok", com_chaves)
+        gerar = lambda x: re.sub(r"gravado em .*", "", roteiro.gerar("tiktok", x["passos_limpos"], "u", "",  # noqa: E731
+                                                                     x["publicar_em"], x["publicar_incerto"]))
+        self.assertEqual(gerar(a), gerar(b))
+        self.assertFalse(b["so_uma"])
+        self.assertEqual(gravador.descrever(b["passos_limpos"][0]), "escolheu o vídeo")
+
+
 def _linha_de_imagem(conn, corte, tipo: str, arquivos: list[Path]):
     """A linha de imagens que o preparar devolveria, apontando para os arquivos dados."""
     conn.execute(
