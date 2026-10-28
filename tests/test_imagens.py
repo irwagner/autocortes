@@ -7,6 +7,7 @@ dela). Nada toca em dados\\, perfis\\ nem no config.toml da instalação.
 import contextlib
 import copy
 import io
+import json
 import re
 import sqlite3
 import tempfile
@@ -1584,6 +1585,241 @@ class TestGeracao(BaseGeracao):
         with self.assertRaises(imagens.ErroImagem) as erro:
             self.escolher(corte, "momento")
         self.assertTrue(erro.exception.do_corte)
+
+
+class TestPreparar(BaseGeracao):
+    def setUp(self):
+        super().setUp()
+        self.so_redes("instagram", "tiktok")
+        self.geometrias: list[dict] = []
+        original = imagens.geometria
+
+        def capturar(*args, **kw):
+            g = original(*args, **kw)
+            self.geometrias.append(g)
+            return g
+
+        espiao = patch.object(imagens, "geometria", side_effect=capturar)
+        espiao.start()
+        self.addCleanup(espiao.stop)
+
+    def preparar(self, corte_id: int, tipo: str = "momento", rede: str = "instagram", **kw):
+        return imagens.preparar(self.cfg, self.conn, self.corte_row(corte_id), tipo, rede, None, **kw)
+
+    def arquivos(self, linha) -> list[Path]:
+        return [Path(a) for a in json.loads(linha["arquivos"])]
+
+    def estilos(self) -> list[set]:
+        return [{b["estilo"] for b in g["blocos"]} for g in self.geometrias]
+
+    def tamanho(self, arquivo: Path) -> tuple[int, int]:
+        video = midia.sondar(self.cfg["ferramentas"]["ffprobe"], arquivo)["streams"][0]
+        return video["width"], video["height"]
+
+    def nao_renderiza(self):
+        return patch.object(imagens, "_renderizar_quadro", side_effect=AssertionError("desenhou de novo"))
+
+    def test_tres_tipos_dois_formatos(self):  # CA-16 (JPEG) e tamanhos
+        for nome in FILMES_SINTETICOS:
+            corte = self.corte_real(nome)
+            for rede in ("instagram", "tiktok"):
+                formato = config.FORMATOS_IMAGEM[rede]
+                for tipo in config.TIPOS_IMAGEM:
+                    with self.subTest(nome=nome, rede=rede, tipo=tipo):
+                        self.geometrias.clear()
+                        linha = self.preparar(corte, tipo, rede)
+                        arquivos = self.arquivos(linha)
+                        self.assertEqual(len(arquivos), 4 if tipo == "carrossel" else 1)
+                        self.assertEqual(len(json.loads(linha["quadros"])), len(arquivos))
+                        self.assertEqual((linha["formato"], linha["tipo"]), (formato["nome"], tipo))
+                        for i, arquivo in enumerate(arquivos, 1):
+                            self.assertEqual(arquivo.name, f"{tipo}-{formato['nome']}-{i}.jpg")
+                            self.assertEqual(self.tamanho(arquivo), (formato["largura"], formato["altura"]))
+                        self.assertEqual(len(self.geometrias), len(arquivos))
+                        for g in self.geometrias:
+                            _dentro(self, g, f"{nome} {rede} {tipo}")
+                        self.assertEqual(linha["texto"], FALA[2] if tipo == "frase" else None)
+            pasta = imagens.pasta_imagens(self.cfg, corte)
+            self.assertEqual([p.name for p in pasta.iterdir() if ".parcial." in p.name], [])
+
+    def test_reaproveita_e_refaz_com_outro_visual(self):
+        corte = self.corte_real()
+        primeira = self.preparar(corte)
+        with self.nao_renderiza():
+            self.assertEqual(tuple(self.preparar(corte)), tuple(primeira))
+        self.cfg["edicao"]["cor_topo"] = "FF0000"
+        nova = self.preparar(corte)
+        self.assertEqual(nova["id"], primeira["id"])  # o upsert troca a mesma linha
+        self.assertNotEqual(nova["assinatura"], primeira["assinatura"])
+        self.assertEqual(nova["assinatura"], imagens.assinatura(self.cfg, "momento", "4x5", False))
+        # arquivo apagado: refaz mesmo com a assinatura igual
+        self.arquivos(nova)[0].unlink()
+        self.assertTrue(self.arquivos(self.preparar(corte))[0].is_file())
+
+    def test_postada_nao_e_redesenhada_e_a_da_gravacao_nao_congela(self):  # DF-9
+        corte = self.corte_real()
+        linha = self.preparar(corte)
+        gravacao = self.postagem(corte, "instagram", "publicado", "imagem", None)
+        self.conn.execute("UPDATE postagens SET imagem_id=? WHERE id=?", (linha["id"], gravacao))
+        self.cfg["edicao"]["cor_topo"] = "00FF00"
+        refeita = self.preparar(corte)
+        self.assertNotEqual(refeita["assinatura"], linha["assinatura"])
+        post = self.postagem(corte, "instagram", "publicado", "imagem", "momento")
+        self.conn.execute("UPDATE postagens SET imagem_id=? WHERE id=?", (linha["id"], post))
+        self.cfg["edicao"]["cor_topo"] = "0000FF"
+        with self.nao_renderiza():
+            self.assertEqual(self.preparar(corte)["assinatura"], refeita["assinatura"])
+        # postagem de outro tipo com o mesmo imagem_id também não congela
+        self.conn.execute("UPDATE postagens SET imagem_tipo='frase' WHERE id=?", (post,))
+        self.assertEqual(self.preparar(corte)["assinatura"], imagens.assinatura(self.cfg, "momento", "4x5", False))
+
+    def test_pauta_nunca_vira_imagem(self):  # CA-15
+        pauta = self.novo_filme("Pauta", tipo="pauta")
+        corte = self.novo_corte(pauta)
+        with self.assertRaises(imagens.ErroImagem) as erro:
+            self.preparar(corte)
+        self.assertTrue(erro.exception.do_corte)
+
+    def test_filme_fora_da_pasta_nao_grava_linha(self):  # CA-27 (geração)
+        corte = self.corte_real()
+        self.conn.execute("UPDATE filmes SET caminho=? WHERE id=?", (str(self.raiz / "sumiu.mkv"),
+                                                                     self.ids_filme["largo"]))
+        with self.assertRaises(imagens.ErroImagem) as erro:
+            self.preparar(corte)
+        self.assertTrue(erro.exception.sem_linha)
+        self.assertFalse(erro.exception.do_corte)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM imagens").fetchone()[0], 0)
+
+    def chamada(self, linha) -> tuple[bool, bool]:
+        """(a chamada foi desenhada, a legenda tem a chamada) da última geração."""
+        corte = self.corte_row(linha["corte_id"])
+        filme = self.filme_row(corte["filme_id"])
+        c = textos.montar_conteudo_imagem(self.cfg, filme, corte, linha["tipo"], len(self.arquivos(linha)),
+                                          "instagram", linha["texto"] or "", bool(linha["com_chamada"]))
+        desenhada = any("Chamada" in e for e in self.estilos())
+        return desenhada, "está no perfil" in c.descricao
+
+    def test_chamada_so_com_o_video_publicado(self):  # CA-24
+        corte = self.corte_real()
+        # sem vídeo publicado (o "Postar imagem agora" de um corte cujo vídeo não saiu nesta rede)
+        linha = self.preparar(corte)
+        self.assertEqual(linha["com_chamada"], 0)
+        self.assertEqual(self.chamada(linha), (False, False))
+        # na gravação, o vídeo só simulado não vale
+        self.postagem(corte, "instagram", "simulado")
+        self.geometrias.clear()
+        linha = self.preparar(corte, "carrossel", post_simulado=False)
+        self.assertEqual((linha["com_chamada"], self.chamada(linha)), (0, (False, False)))
+        # no motor em simulação, o vídeo simulado vale para o post simulado
+        self.cfg["geral"]["simulacao"] = True
+        self.geometrias.clear()
+        linha = self.preparar(corte, "carrossel")
+        self.assertEqual((linha["com_chamada"], self.chamada(linha)), (1, (True, True)))
+        self.assertEqual(self.estilos()[-1], {"Chamada"})  # o último quadro do carrossel
+        self.assertEqual(self.estilos()[0], {"Topo"})
+        self.cfg["geral"]["simulacao"] = False
+        # com o vídeo publicado, a chamada aparece (e a imagem é refeita com ela)
+        self.postagem(corte, "instagram", "publicado")
+        self.geometrias.clear()
+        linha = self.preparar(corte)
+        self.assertEqual((linha["com_chamada"], self.chamada(linha)), (1, (True, True)))
+        # rede só de imagens: nunca
+        self.so_imagens("instagram")
+        self.geometrias.clear()
+        linha = self.preparar(corte)
+        self.assertEqual((linha["com_chamada"], self.chamada(linha)), (0, (False, False)))
+
+    def test_previa_sem_filme(self):  # CA-25
+        destino = self.cfg.pasta_previa
+        for rede in ("instagram", "tiktok"):
+            formato = config.FORMATOS_IMAGEM[rede]
+            for tipo in config.TIPOS_IMAGEM:
+                with self.subTest(rede=rede, tipo=tipo):
+                    self.geometrias.clear()
+                    arquivos, real = imagens.previa(self.cfg, self.conn, tipo, rede, destino)
+                    self.assertFalse(real)
+                    self.assertEqual(len(arquivos), 4 if tipo == "carrossel" else 1)
+                    for i, arquivo in enumerate(arquivos, 1):
+                        self.assertEqual(arquivo, destino / f"imagem-{tipo}-{formato['nome']}-{i}.jpg")
+                        self.assertEqual(self.tamanho(arquivo), (formato["largura"], formato["altura"]))
+                    for g in self.geometrias:
+                        _dentro(self, g)
+                    # sem corte, a chamada aparece onde ficaria (a rede tem vídeos)
+                    if tipo != "frase":
+                        self.assertIn("Chamada", self.estilos()[-1])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM imagens").fetchone()[0], 0)
+
+    def test_previa_com_corte_real(self):
+        corte = self.corte_real()
+        arquivos, real = imagens.previa(self.cfg, self.conn, "carrossel", "tiktok", self.cfg.pasta_previa)
+        self.assertTrue(real)
+        self.assertEqual(len(arquivos), 4)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM imagens").fetchone()[0], 0)
+        # trecho que não serve para o tipo (sem fala): cai no exemplo
+        self.conn.execute("UPDATE cortes SET inicio=10, fim=18 WHERE id=?", (corte,))
+        self.assertFalse(imagens.previa(self.cfg, self.conn, "frase", "tiktok", self.cfg.pasta_previa)[1])
+
+    def test_retrato_do_config(self):  # CA-29
+        corte = self.corte_real()
+        antes = self.cfg.copia()
+        entrou, liberar = threading.Event(), threading.Event()
+        cores = []
+
+        def render_falso(cfg, entrada, t, info, g, destino, relogio, parar=None):
+            cores.append(cfg["edicao"]["cor_topo"])
+            entrou.set()
+            liberar.wait(10)
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            destino.write_bytes(b"jpg")
+            return destino
+
+        resultado = {}
+        with patch.object(imagens, "_renderizar_quadro", side_effect=render_falso):
+            fio = threading.Thread(target=lambda: resultado.update(linha=self.preparar(corte, "carrossel")))
+            fio.start()
+            self.assertTrue(entrou.wait(30))
+            self.cfg["edicao"]["cor_topo"] = "00FF00"
+            liberar.set()
+            fio.join(30)
+        self.assertEqual(set(cores), {"FFFFFF"})
+        self.assertEqual(resultado["linha"]["assinatura"], imagens.assinatura(antes, "carrossel", "4x5", False))
+
+    def test_carrossel_de_3_e_sobras(self):
+        corte = self.corte_real()
+        quatro = self.preparar(corte, "carrossel")
+        tres = self.preparar(corte, "carrossel", quadros=3)
+        self.assertNotEqual(tres["assinatura"], quatro["assinatura"])
+        self.assertEqual(len(self.arquivos(tres)), 3)
+        self.assertFalse((imagens.pasta_imagens(self.cfg, corte) / "carrossel-4x5-4.jpg").exists())
+        # de volta ao número do config: refaz com 4
+        self.assertEqual(len(self.arquivos(self.preparar(corte, "carrossel"))), 4)
+
+    def ffmpeg_que_dorme(self) -> None:
+        bat = self.raiz / "ffmpeg_dorme.bat"
+        bat.write_bytes(b"@echo off\r\nping -n 120 127.0.0.1 >nul\r\n")
+        self.cfg["ferramentas"]["ffmpeg"] = str(bat)
+
+    def test_prazo(self):
+        # a medição de um trecho de 3 min com prazo de 5 s
+        longo = self.corte_real(inicio=0.0, fim=180.0)
+        self.ffmpeg_que_dorme()
+        comeco = time.monotonic()
+        with self.assertRaises(imagens.ErroImagem) as erro:
+            self.preparar(longo, prazo=5)
+        self.assertLess(time.monotonic() - comeco, 12)
+        self.assertFalse(erro.exception.do_corte)
+        self.assertEqual(str(erro.exception), "a geração das imagens passou de 5 s")
+        # o render que passa do prazo (a medição já está no cache): nada de .parcial.jpg
+        self.cfg["ferramentas"]["ffmpeg"] = "ffmpeg"
+        corte = self.corte_real()
+        self.medir(corte)
+        self.ffmpeg_que_dorme()
+        with self.assertRaises(imagens.ErroImagem) as erro:
+            self.preparar(corte, prazo=3)
+        self.assertFalse(erro.exception.do_corte)
+        pasta = imagens.pasta_imagens(self.cfg, corte)
+        self.assertEqual([p.name for p in pasta.iterdir() if ".parcial." in p.name], [])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM imagens").fetchone()[0], 0)
 
 
 if __name__ == "__main__":

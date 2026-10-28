@@ -8,20 +8,26 @@ ao teste: o painel nunca refaz a conta.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+import os
 import re
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 
 from . import analise, selecao
 from .config import FORMATOS_IMAGEM, Config
-from .edicao import LARGURA_TITULO, SEGURO_BASE, SEGURO_TOPO, fonte_do_topo
-from .legendas import Frase, largura_texto
+from .edicao import (EXEMPLO_LEGENDA, LARGURA_TITULO, SEGURO_BASE, SEGURO_TOPO, estilo_legenda, filtro_ass,
+                     fonte_do_topo, info_do_quadro, preparar_fonte, quadro_exemplo)
+from .legendas import Frase, gerar_ass_cartaz, largura_texto
 from .midia import ErroMidia, base_ffmpeg, caminho_filtro, executar
-from .textos import limitar, normalizar
-from .util import ler_json, log, salvar_json
+from .textos import _variaveis_e_tags, aplicar_modelo_sem_vazias, limitar, normalizar
+from .util import ler_json, log, salvar_json, trocar_arquivo
 
 # chaves do metadata=mode=print medidas no FFmpeg 9.0.2 (out/2026) com signalstats e blurdetect num
 # testsrc2: cada quadro começa com "frame:N pts:N pts_time:T", e as linhas seguintes são "chave=valor"
@@ -571,3 +577,250 @@ def escolher(tipo: str, corte, amostras: list[tuple[float, float, float | None]]
     if tipo == "carrossel":
         return {"tempos": [q.t for q in _escolher_carrossel(validos, cenas, inicio, fim, int(quadros))], "texto": ""}
     raise ValueError(f"tipo de imagem desconhecido: {tipo}")
+
+
+# ---------------------------------------------------------------- render
+
+# prazo de cada FFmpeg que desenha uma imagem
+PRAZO_RENDER = 120
+# muda quando o desenho muda: as imagens ainda não postadas são refeitas
+VERSAO_DESENHO = 1
+# opções do modelo visual que mudam o desenho das imagens (as do vídeo, como zoom e moldura, ficam de fora)
+CHAVES_VISUAIS = (
+    "fonte_arquivo", "fonte_nome", "fonte_topo_arquivo", "fonte_topo_nome", "tamanho_legenda", "tamanho_topo",
+    "cor_legenda", "cor_destaque", "cor_topo", "contorno_legenda", "maiusculas", "desfoque_fundo", "escurecer_fundo",
+)
+
+
+def _aspecto(info: dict) -> float:
+    cw, ch = info["crop"][0], info["crop"][1]
+    sar = info["video"].get("sar") or [1, 1]
+    fator = Fraction(int(sar[0]), int(sar[1])) if int(sar[1] or 0) else Fraction(1)
+    return float(cw * fator) / max(1, ch)
+
+
+def _renderizar_quadro(cfg: Config, entrada: Path, t: float | None, info: dict, g: dict, destino: Path,
+                       relogio: Relogio, parar: threading.Event | None = None) -> Path:
+    """Uma imagem: fundo desfocado do próprio quadro, o quadro do filme e os textos (ASS) por cima.
+
+    t = None: a entrada já é uma imagem parada (a prévia sem filme). O JPEG sai num nome temporário
+    e só troca de lugar inteiro; o .ass temporário sai em qualquer caso.
+    """
+    e = cfg["edicao"]
+    largura, altura = g["largura"], g["altura"]
+    h4 = altura_fundo(altura)
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    marca = f"{os.getpid()}-{threading.get_ident()}"
+    parcial = destino.with_name(f"{destino.stem}.{marca}.parcial.jpg")
+    ass = destino.with_name(f"{destino.stem}.{marca}.parcial.ass")
+    cw, ch, cx, cy = info["crop"]
+    indice = info["video"].get("indice", 0) if t is not None else 0
+    filtro = ";".join([
+        f"[0:{indice}]crop={cw}:{ch}:{cx}:{cy},scale={g['w_quadro']}:{g['h_quadro']}:flags=lanczos,setsar=1,"
+        "split=2[f][b]",
+        f"[b]scale=270:{h4}:force_original_aspect_ratio=increase,crop=270:{h4},boxblur={int(e['desfoque_fundo'])}:2,"
+        f"eq=brightness={-float(e['escurecer_fundo']):.3f}:saturation=1.15,scale={largura}:{altura}:flags=bilinear,"
+        "setsar=1[fundo]",
+        f"[fundo][f]overlay=x={g['x_quadro']}:y={g['y_quadro']},{filtro_ass(ass, preparar_fonte(cfg))},"
+        "format=yuvj420p[saida]",
+    ])
+    busca = ["-ss", f"{t:.3f}"] if t is not None else []
+    try:
+        ass.write_text(gerar_ass_cartaz(estilo_legenda(cfg), g["blocos"], largura, altura), encoding="utf-8")
+        prazo = min(PRAZO_RENDER, relogio.conferir())
+        try:
+            r = executar(
+                base_ffmpeg(cfg["ferramentas"]["ffmpeg"]) + [
+                    "-loglevel", "error", *busca, "-i", str(entrada), "-filter_complex", filtro,
+                    "-map", "[saida]", "-frames:v", "1", "-q:v", "2", "-update", "1", str(parcial)],
+                parar=parar, baixa_prioridade=cfg["geral"]["prioridade_baixa"], timeout=prazo)
+        except ErroMidia as erro:
+            if relogio.restante() <= 1:
+                raise relogio.erro() from erro
+            raise ErroImagem(f"o FFmpeg demorou demais para desenhar a imagem: {erro}", False) from erro
+        if r.codigo != 0 or not parcial.is_file() or parcial.stat().st_size == 0:
+            raise ErroImagem(f"o FFmpeg falhou ao desenhar a imagem: {r.resumo_erro(3)}", False)
+        try:
+            trocar_arquivo(parcial, destino)  # a imagem antiga pode estar aberta no painel
+        except OSError as erro:
+            raise ErroImagem(f"não consegui pôr a imagem pronta no lugar de {destino.name}: {erro}", False) from erro
+        return destino
+    finally:
+        parcial.unlink(missing_ok=True)
+        ass.unlink(missing_ok=True)
+
+
+def _textos_do_desenho(cfg: Config, variaveis: dict, com_chamada: bool) -> tuple[str, str]:
+    """(topo, chamada) já montados; a linha com a parte vazia some."""
+    im = cfg["imagens"]
+    topo = aplicar_modelo_sem_vazias(str(im["topo"]), variaveis)
+    chamada = aplicar_modelo_sem_vazias(str(im["chamada"]), variaveis) if com_chamada else ""
+    return topo, chamada
+
+
+def _desenhar(cfg: Config, entrada: Path, info: dict, tempos: list[float | None], tipo: str, formato: str,
+              topo: str, chamada: str, frase: str, pasta: Path, prefixo: str, relogio: Relogio,
+              parar: threading.Event | None) -> list[Path]:
+    """As imagens do post, na ordem: {prefixo}-1.jpg, -2.jpg... As que sobraram de um post maior saem."""
+    aspecto = _aspecto(info)
+    arquivos = []
+    for i, t in enumerate(tempos):
+        primeiro, ultimo = i == 0, i == len(tempos) - 1
+        if tipo == "carrossel":  # o primeiro leva o topo, o último a chamada, os do meio só o quadro
+            textos = dict(topo=topo if primeiro else "", chamada=chamada if ultimo else "")
+        elif tipo == "frase":
+            textos = dict(topo=topo, frase=frase)
+        else:
+            textos = dict(topo=topo, chamada=chamada)
+        g = geometria(cfg, formato, aspecto, **textos)
+        arquivos.append(_renderizar_quadro(cfg, entrada, t, info, g, pasta / f"{prefixo}-{i + 1}.jpg", relogio, parar))
+    validos = {a.name for a in arquivos}
+    for sobra in pasta.glob(f"{prefixo}-*.jpg"):
+        if sobra.name not in validos and re.fullmatch(rf"{re.escape(prefixo)}-\d+\.jpg", sobra.name):
+            sobra.unlink(missing_ok=True)
+    return arquivos
+
+
+def assinatura(cfg: Config, tipo: str, formato: str, com_chamada: bool, quadros: int | None = None) -> str:
+    """sha256 curto do visual e dos modelos usados (o número de quadros conta só no carrossel)."""
+    dados = {
+        "visual": {k: cfg["edicao"].get(k) for k in CHAVES_VISUAIS},
+        "topo": cfg["imagens"]["topo"], "chamada": cfg["imagens"]["chamada"], "com_chamada": bool(com_chamada),
+        "tipo": tipo, "formato": formato, "versao": VERSAO_DESENHO,
+    }
+    if tipo == "carrossel":
+        dados["quadros"] = int(quadros if quadros is not None else cfg["imagens"]["quadros_carrossel"])
+    return hashlib.sha256(json.dumps(dados, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:12]
+
+
+def _filme_no_disco(cfg: Config, filme) -> tuple[dict, list[Frase]]:
+    """info e falas do filme; o arquivo ou a análise fora da pasta não é do trecho (sem_linha)."""
+    sumiu = ErroImagem("o arquivo do filme não está na pasta agora", False, sem_linha=True)
+    if not Path(filme["caminho"]).is_file() or not (analise.pasta_do_filme(cfg, filme["id"]) / "info.json").is_file():
+        raise sumiu
+    try:
+        return analise.carregar_para_render(cfg, filme["id"])
+    except ErroMidia as erro:
+        raise sumiu from erro
+
+
+def _postada(cfg: Config, conn: sqlite3.Connection, linha) -> bool:
+    """A imagem já saiu num post do mesmo tipo (a linha da gravação sem tipo não congela nada: DF-9)."""
+    from . import planejador  # o planejador importa o gravador, que usa este módulo
+
+    concl = planejador.status_concluidos(cfg)
+    marcas = ",".join("?" * len(concl))
+    return conn.execute(
+        f"SELECT 1 FROM postagens WHERE imagem_id = ? AND midia = 'imagem' AND imagem_tipo = ? "
+        f"AND status IN ({marcas}) LIMIT 1", (linha["id"], linha["tipo"], *concl)).fetchone() is not None
+
+
+def preparar(cfg: Config, conn: sqlite3.Connection, corte, tipo: str, rede: str,
+             parar: threading.Event | None = None, quadros: int | None = None, prazo: float = 300,
+             post_simulado: bool | None = None) -> sqlite3.Row:
+    """Gera (ou reaproveita) as imagens de um post e devolve a linha da tabela imagens.
+
+    Tudo sai de um retrato do config: o painel pode salvar no meio sem misturar dois visuais.
+    quadros vale só no carrossel (sem ele, [imagens].quadros_carrossel). post_simulado diz se o post
+    que vai sair é simulado (None = cfg.simulacao; a gravação passa False): é o que decide se o vídeo
+    simulado vale para desenhar a chamada. Reaproveita a linha com a mesma assinatura e os arquivos no
+    lugar, e nunca redesenha a que já saiu num post do mesmo tipo. Quem chama segura a TRAVA.
+    """
+    cfg = cfg.copia()
+    from . import planejador  # o planejador importa o gravador, que usa este módulo
+
+    relogio = Relogio(prazo)
+    filme = conn.execute("SELECT * FROM filmes WHERE id = ?", (corte["filme_id"],)).fetchone()
+    if filme is None:
+        raise ErroImagem("o filme deste corte não está mais no banco", False, sem_linha=True)
+    if (filme["tipo"] or "filme") != "filme":
+        raise ErroImagem("este corte é de um vídeo criado, não de um filme", True)
+    if tipo not in ("momento", "frase", "carrossel"):
+        raise ValueError(f"tipo de imagem desconhecido: {tipo}")
+    info, frases = _filme_no_disco(cfg, filme)
+    formato = FORMATOS_IMAGEM[rede]["nome"]
+    simulado = cfg.simulacao if post_simulado is None else bool(post_simulado)
+    com_chamada = bool(cfg[rede].get("videos", True) and corte["parte"]
+                       and planejador.video_publicado(conn, corte["id"], rede, aceitar_simulado=simulado))
+    n = int(quadros if quadros is not None else cfg["imagens"]["quadros_carrossel"])
+    marca = assinatura(cfg, tipo, formato, com_chamada, n)
+
+    linha = conn.execute("SELECT * FROM imagens WHERE corte_id = ? AND tipo = ? AND formato = ?",
+                         (corte["id"], tipo, formato)).fetchone()
+    if linha is not None:
+        arquivos = [Path(a) for a in json.loads(linha["arquivos"] or "[]")]
+        if (linha["assinatura"] == marca and arquivos and all(a.is_file() for a in arquivos)) \
+                or _postada(cfg, conn, linha):
+            return linha
+
+    amostras = medir_quadros(cfg, filme, corte, info, parar, relogio)
+    escolha = escolher(tipo, corte, amostras, cenas_do_filme(cfg, filme["id"]), frases, n)
+    variaveis = _variaveis_e_tags(cfg, filme, corte, False)[0]
+    topo, chamada = _textos_do_desenho(cfg, variaveis, com_chamada)
+    arquivos = _desenhar(cfg, Path(filme["caminho"]), info, escolha["tempos"], tipo, formato, topo, chamada,
+                         escolha["texto"], pasta_imagens(cfg, corte["id"]), f"{tipo}-{formato}", relogio, parar)
+    conn.execute(
+        "INSERT INTO imagens (corte_id, tipo, formato, arquivos, quadros, texto, com_chamada, assinatura, modelo, "
+        "criado_em) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(corte_id, tipo, formato) DO UPDATE SET arquivos = excluded.arquivos, quadros = excluded.quadros, "
+        "texto = excluded.texto, com_chamada = excluded.com_chamada, assinatura = excluded.assinatura, "
+        "modelo = excluded.modelo, criado_em = excluded.criado_em",
+        (corte["id"], tipo, formato, json.dumps([str(a) for a in arquivos], ensure_ascii=False),
+         json.dumps(escolha["tempos"]), escolha["texto"] or None, int(com_chamada), marca,
+         str(cfg["edicao"].get("modelo") or ""), time.time()))
+    return conn.execute("SELECT * FROM imagens WHERE corte_id = ? AND tipo = ? AND formato = ?",
+                        (corte["id"], tipo, formato)).fetchone()
+
+
+def _corte_de_exemplo(cfg: Config, conn: sqlite3.Connection, tipo: str):
+    """O corte editado de filme mais recente com o filme e a análise no disco (no tipo frase, com fala)."""
+    frase = "AND TRIM(COALESCE(c.frase, '')) <> ''" if tipo == "frase" else ""
+    linhas = conn.execute(
+        "SELECT c.* FROM cortes c JOIN filmes f ON f.id = c.filme_id "
+        "WHERE c.status IN ('pronto', 'concluido') AND f.tipo = 'filme' AND f.status = 'analisado' "
+        f"{frase} ORDER BY COALESCE(c.renderizado_em, c.fila_em, c.criado_em) DESC, c.id DESC LIMIT 20").fetchall()
+    for corte in linhas:
+        filme = conn.execute("SELECT * FROM filmes WHERE id = ?", (corte["filme_id"],)).fetchone()
+        if Path(filme["caminho"]).is_file() and (analise.pasta_do_filme(cfg, filme["id"]) / "info.json").is_file():
+            return corte, filme
+    return None, None
+
+
+def previa(cfg: Config, conn: sqlite3.Connection, tipo: str, rede: str, destino_pasta: Path,
+           parar: threading.Event | None = None) -> tuple[list[Path], bool]:
+    """Imagens de exemplo com o visual em uso: (arquivos, real).
+
+    Com um corte editado de verdade, o mesmo caminho do preparar (sem gravar linha); sem nenhum, ou
+    se o trecho dele não serve para o tipo, o quadro de teste com "Nome do Filme" (real = False).
+    Grava em <destino_pasta>/imagem-<tipo>-<formato>-<n>.jpg. Quem chama segura a TRAVA.
+    """
+    cfg = cfg.copia()
+    from . import planejador  # o planejador importa o gravador, que usa este módulo
+
+    relogio = Relogio(300)
+    formato = FORMATOS_IMAGEM[rede]["nome"]
+    prefixo = f"imagem-{tipo}-{formato}"
+    n = int(cfg["imagens"]["quadros_carrossel"])
+    corte, filme = _corte_de_exemplo(cfg, conn, tipo)
+    if corte is not None:
+        try:
+            info, frases = _filme_no_disco(cfg, filme)
+            com_chamada = bool(cfg[rede].get("videos", True) and corte["parte"]
+                               and planejador.video_publicado(conn, corte["id"], rede, aceitar_simulado=cfg.simulacao))
+            amostras = medir_quadros(cfg, filme, corte, info, parar, relogio)
+            escolha = escolher(tipo, corte, amostras, cenas_do_filme(cfg, filme["id"]), frases, n)
+            topo, chamada = _textos_do_desenho(cfg, _variaveis_e_tags(cfg, filme, corte, False)[0], com_chamada)
+            return _desenhar(cfg, Path(filme["caminho"]), info, escolha["tempos"], tipo, formato, topo, chamada,
+                             escolha["texto"], destino_pasta, prefixo, relogio, parar), True
+        except ErroImagem as erro:
+            if not erro.do_corte and not erro.sem_linha:
+                raise
+            log.debug("Prévia de imagem sem o corte %s: %s", corte["id"], erro)
+    quadro = quadro_exemplo(cfg, destino_pasta / f"{prefixo}.jpg")
+    info = info_do_quadro(cfg, quadro)
+    info["video"]["indice"] = 0
+    variaveis = {"filme": "Nome do Filme", "ano": "", "ano_parenteses": "", "parte": 1}
+    topo, chamada = _textos_do_desenho(cfg, variaveis, bool(cfg[rede].get("videos", True)))
+    tempos: list[float | None] = [None] * (n if tipo == "carrossel" else 1)
+    return _desenhar(cfg, quadro, info, tempos, tipo, formato, topo, chamada, EXEMPLO_LEGENDA, destino_pasta,
+                     prefixo, relogio, parar), False
