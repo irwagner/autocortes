@@ -2721,8 +2721,8 @@ class _PublicadorFalso:
         return "publicado"
 
 
-class TestPainel(BaseImagens):
-    """As rotas do painel para as imagens (C18), com o painel montado à mão."""
+class BasePainel(BaseImagens):
+    """O painel montado à mão, para chamar as rotas direto."""
 
     def setUp(self):
         super().setUp()
@@ -2756,6 +2756,10 @@ class TestPainel(BaseImagens):
         pilha.enter_context(patch.object(api, "_em_segundo_plano", side_effect=lambda nome, trabalho: trabalho()))
         pilha.enter_context(patch.object(api, "Publicador", _PublicadorFalso))
         return pilha
+
+
+class TestPainel(BasePainel):
+    """As rotas do painel para as imagens (C18): postar agora, prévia, mídia e estado."""
 
     def test_envio_errado_no_estado_e_alerta(self):  # CA-02
         self.cfg["instagram"]["envio"] = "oficial"
@@ -2934,6 +2938,273 @@ class TestPainel(BaseImagens):
         self.assertFalse(api.ocupado(painel))
         with imagens.TRAVA:
             self.assertTrue(api.ocupado(painel))
+
+
+class _GravacaoFalsa:
+    """Gravacao de mentira: não abre navegador; os passos são postos pelo teste e salvos de verdade."""
+
+    criadas: list["_GravacaoFalsa"] = []
+
+    def __init__(self, cfg, rede, midia="video", exemplos=(), exemplo=None, sessao=None):
+        self.cfg, self.rede, self.midia = cfg, rede, midia
+        self.nome = roteiro.nome_roteiro(rede, midia)
+        self.exemplos, self.exemplo, self.sessao = list(exemplos), exemplo, sessao
+        self.passos: list[dict] = []
+        self.confirmacao = ""
+        self.cancelada = False
+        _GravacaoFalsa.criadas.append(self)
+
+    def iniciar(self):
+        pass
+
+    def situacao(self):
+        return {"rede": self.rede, "midia": self.midia, "passos": len(self.passos)}
+
+    def concluir(self):
+        if not self.passos:
+            raise navegador.ErroNavegador("não gravei nenhum passo", "corte")
+        return gravador.salvar(self.cfg, self.nome, self.passos, "https://www.instagram.com/", self.confirmacao, "",
+                               exemplos=self.midia == "imagem")
+
+    def cancelar(self):
+        self.cancelada = True
+
+
+class TestGravacaoNoPainel(BasePainel):
+    """A gravação e os roteiros de imagem pelas rotas do painel (C19: CA-23, DF-1, DF-2, DF-3, DF-7, DF-10)."""
+
+    def setUp(self):
+        super().setUp()
+        _GravacaoFalsa.criadas = []
+        self.preparos: list[dict] = []
+        self.erros_preparar: list[Exception] = []
+        troca = patch.object(api, "Gravacao", _GravacaoFalsa)
+        troca.start()
+        self.addCleanup(troca.stop)
+        troca = patch.object(imagens, "preparar", side_effect=self.preparar_falso)
+        troca.start()
+        self.addCleanup(troca.stop)
+        self.antigo = self.corte
+        self.na_fila(self.antigo, 1000.0)
+        self.novo = self.novo_corte(inicio=300.0, fim=340.0, parte=2)
+        self.na_fila(self.novo, 2000.0)
+
+    def preparar_falso(self, cfg, conn, corte, tipo, rede, parar=None, quadros=None, prazo=300, post_simulado=None):
+        self.preparos.append({"corte": corte["id"], "tipo": tipo, "quadros": quadros, "prazo": prazo,
+                              "post_simulado": post_simulado})
+        if self.erros_preparar:
+            raise self.erros_preparar.pop(0)
+        pasta = imagens.pasta_imagens(cfg, corte["id"])
+        pasta.mkdir(parents=True, exist_ok=True)
+        fontes = []
+        n = (quadros or 4) if tipo == "carrossel" else 1
+        for i in range(1, n + 1):
+            arquivo = pasta / f"{tipo}-4x5-{i}.jpg"
+            arquivo.write_bytes(f"{corte['id']}-{tipo}-{i}".encode())
+            fontes.append(arquivo)
+        linha = _linha_de_imagem(conn, corte, tipo, fontes)
+        # a mesma regra do preparar de verdade: o vídeo simulado só vale para o post simulado
+        simulado = cfg.simulacao if post_simulado is None else post_simulado
+        chamada = bool(cfg[rede]["videos"] and corte["parte"]
+                       and planejador.video_publicado(conn, corte["id"], rede, aceitar_simulado=simulado))
+        conn.execute("UPDATE imagens SET com_chamada=? WHERE id=?", (int(chamada), linha["id"]))
+        return conn.execute("SELECT * FROM imagens WHERE id=?", (linha["id"],)).fetchone()
+
+    def gravar(self, rede: str = "instagram", midia: str | None = "imagem") -> dict:
+        return api.iniciar_gravacao(self.ctx({"midia": midia} if midia else {}), rede)
+
+    def fim(self, passos: list[dict], rede: str = "instagram") -> dict:
+        self.painel.gravacoes[rede].passos = passos
+        return api.concluir_gravacao(self.ctx(), rede)
+
+    def conferir(self) -> list[tuple]:
+        return [tuple(r) for r in self.conn.execute(
+            "SELECT corte_id, status, midia, imagem_tipo, manual, via, slot, substr(erro, 1, 9) FROM postagens "
+            "WHERE midia='imagem' ORDER BY id")]
+
+    def passos(self, **arquivo) -> list[dict]:
+        passos = _passos_da_gravacao("instagram")
+        for chave, valor in arquivo.items():
+            if valor is None:
+                passos[1].pop(chave, None)
+            else:
+                passos[1][chave] = valor
+        return passos
+
+    def proximo_exemplo(self) -> list[tuple[int, str]]:
+        return [(x["corte"]["id"], x["tipo"]) for x in planejador.fila_imagens(
+            self.cfg, self.conn, "instagram", 1, forcar_tipo="carrossel", qualquer_editado=True)]
+
+    def test_sem_video_usa_o_editado_mais_antigo_sem_a_chamada(self):  # DF-1 e DF-2
+        r = self.gravar()
+        self.assertEqual(r["exemplo_corte"], {"id": self.antigo, "filme": "Filme Teste", "parte": 1})
+        self.assertEqual((r["exemplo_tipo"], r["exemplo_quantos"]), ("carrossel", 3))
+        self.assertEqual(self.preparos, [{"corte": self.antigo, "tipo": "carrossel", "quadros": 3, "prazo": 120,
+                                          "post_simulado": False}])
+        pasta = Path(r["exemplos"])
+        self.assertEqual(sorted(p.name for p in pasta.iterdir()), ["exemplo-1.jpg", "exemplo-2.jpg", "exemplo-3.jpg"])
+        self.assertEqual((pasta / "exemplo-2.jpg").read_bytes(), f"{self.antigo}-carrossel-2".encode())
+        self.assertNotIn("@@", r["exemplo_legenda"])
+        self.assertIn("Filme Teste", r["exemplo_legenda"])
+        self.assertNotIn("completa está no perfil", r["exemplo_legenda"])
+        g = _GravacaoFalsa.criadas[-1]
+        self.assertEqual((g.midia, g.exemplos), ("imagem", ["exemplo-1.jpg", "exemplo-2.jpg", "exemplo-3.jpg"]))
+        self.assertEqual(pasta.name, str(g.sessao))  # a subpasta leva o número da gravação
+        self.assertEqual(g.exemplo["corte_id"], self.antigo)
+        self.assertEqual(g.exemplo["tipo"], "carrossel")
+        # com o vídeo do corte novo publicado, é ele (e a chamada vai junto); a gravação anterior fecha
+        # e a pasta dela sai
+        self.postagem(self.novo, "instagram", "publicado")
+        r2 = self.gravar()
+        self.assertEqual(r2["exemplo_corte"]["id"], self.novo)
+        self.assertIn("A Parte 2 completa está no perfil", r2["exemplo_legenda"])
+        self.assertTrue(g.cancelada)
+        self.assertFalse(pasta.exists())
+        self.assertIs(self.painel.gravacoes["instagram"], _GravacaoFalsa.criadas[-1])
+
+    def test_video_so_simulado_nao_desenha_a_chamada(self):  # CA-24 (gravação)
+        self.cfg["geral"]["simulacao"] = True
+        self.postagem(self.novo, "instagram", "simulado")
+        r = self.gravar()
+        self.assertEqual(r["exemplo_corte"]["id"], self.novo)
+        self.assertNotIn("completa está no perfil", r["exemplo_legenda"])
+        self.assertFalse(r["exemplo_com_chamada"])
+
+    def test_erros_deixam_a_gravacao_aberta_intacta(self):  # CA-23 e DF-7
+        r = self.gravar()
+        aberta = self.painel.gravacoes["instagram"]
+        arquivos = sorted(Path(r["exemplos"]).iterdir())
+        presa = SimpleNamespace(acquire=lambda timeout=None: False, release=lambda: None, locked=lambda: True)
+        with patch.object(imagens, "TRAVA", presa):
+            e = self.erro(api.iniciar_gravacao, "instagram", corpo={"midia": "imagem"})
+        self.assertEqual((e.status, str(e)), (409, "o AutoCortes está gerando imagens agora"))
+        with publicador.TRAVAS_REDE["instagram"]:
+            e = self.erro(api.iniciar_gravacao, "instagram", corpo={"midia": "imagem"})
+        self.assertEqual((e.status, str(e)), (409, "o AutoCortes está postando nesta rede agora"))
+        self.erros_preparar = [imagens.ErroImagem("menos de 3 quadros bons", True)] * 2
+        e = self.erro(api.iniciar_gravacao, "instagram", corpo={"midia": "imagem"})
+        self.assertEqual((e.status, str(e)), (400, api.SEM_CORTE_PARA_GRAVAR))
+        self.erros_preparar = [imagens.ErroImagem("o FFmpeg falhou", False)]
+        e = self.erro(api.iniciar_gravacao, "instagram", corpo={"midia": "imagem"})
+        self.assertEqual((e.status, str(e)), (400, "o FFmpeg falhou"))
+        self.assertIs(self.painel.gravacoes["instagram"], aberta)
+        self.assertFalse(aberta.cancelada)
+        self.assertEqual(sorted(Path(r["exemplos"]).iterdir()), arquivos)
+        self.assertEqual([p.name for p in api._pasta_exemplos(self.cfg).iterdir()], [Path(r["exemplos"]).name])
+        self.assertEqual(len(_GravacaoFalsa.criadas), 1)
+
+    def test_sem_corte_editado(self):  # CA-23 (o 400)
+        self.conn.execute("UPDATE cortes SET status='candidato'")
+        e = self.erro(api.iniciar_gravacao, "instagram", corpo={"midia": "imagem"})
+        self.assertEqual(e.status, 400)
+        self.assertTrue(str(e).startswith("Ainda não há um corte"))
+        self.assertEqual(_GravacaoFalsa.criadas, [])
+        self.assertEqual(self.preparos, [])
+
+    def test_post_da_gravacao_fica_a_conferir(self):  # CA-23 e DF-3
+        self.gravar()
+        r = self.fim(self.passos())
+        self.assertTrue(r["ok"])
+        self.assertIsNotNone(r["conferir"])
+        self.assertEqual(self.conferir(), [(self.antigo, "conferir", "imagem", "carrossel", 1, "navegador", None,
+                                            "gravação:")])
+        self.assertEqual(planejador.ler_estado_imagens(self.conn, "instagram"), {})
+        self.assertEqual(self.proximo_exemplo(), [(self.novo, "carrossel")])  # o mesmo carrossel não volta
+        # "não saiu": falhou, com "gravação:", fora das falhas do corte; o carrossel volta a ser possível
+        api.conferir_postagem(self.ctx({"saiu": False}), str(r["conferir"]))
+        linha = self.conn.execute("SELECT status, erro FROM postagens WHERE id=?", (r["conferir"],)).fetchone()
+        self.assertEqual(tuple(linha), ("falhou", "gravação: você conferiu na rede: não saiu"))
+        self.assertEqual(self.proximo_exemplo(), [(self.antigo, "carrossel")])
+
+    def test_menos_imagens_que_os_exemplos_fica_sem_tipo(self):  # CA-23 (quantos 1)
+        self.gravar()
+        self.fim(self.passos(quantos=1))
+        self.assertEqual([r[3] for r in self.conferir()], [None])
+        self.assertEqual(self.proximo_exemplo(), [(self.antigo, "carrossel")])
+
+    def test_sem_quantos_e_publicar_certo(self):  # DF-3 (quantos 0)
+        self.gravar()
+        r = self.fim(self.passos(quantos=None))
+        self.assertEqual(r["quantos"], 0)
+        self.assertEqual([r[3] for r in self.conferir()], ["carrossel"])
+        r = self.gravar()  # a gravação seguinte não oferece o mesmo carrossel
+        self.assertEqual(r["exemplo_corte"]["id"], self.novo)
+
+    def test_arrastou_e_sem_fotos_nao_criam_post(self):  # DF-3 e CA-22
+        self.gravar()
+        passos = self.passos()
+        passos[1] = {"tipo": "soltou", "quantos": 3, "em": 2}
+        r = self.fim(passos)
+        self.assertEqual((r["ok"], r["motivo"], r["conferir"]), (False, "arrastou", None))
+        self.gravar()
+        r = self.fim(self.passos(aceita_imagem=False))
+        self.assertEqual((r["ok"], r["motivo"], r["conferir"]), (False, "sem_fotos", None))
+        self.assertEqual(planejador.ler_estado_imagens(self.conn, "instagram"), {"sem_fotos": gravador.SEM_FOTOS})
+        self.assertEqual(self.conferir(), [])
+        # um campo sem multiple grava o roteiro e deixa o carrossel de fora
+        self.gravar()
+        r = self.fim(self.passos(multiplo=False, quantos=1))
+        self.assertTrue(r["ok"])
+        self.assertEqual(list(planejador.ler_estado_imagens(self.conn, "instagram")), ["sem_carrossel"])
+        self.assertEqual([r[3] for r in self.conferir()], [None])
+
+    def test_cancelar_depois_de_publicar(self):  # DF-3
+        self.gravar()
+        self.painel.gravacoes["instagram"].passos = self.passos()
+        r = api.cancelar_gravacao(self.ctx(), "instagram")
+        self.assertEqual(r, {"ok": True})
+        self.assertEqual(self.conferir(), [])
+        self.gravar()
+        g = self.painel.gravacoes["instagram"]
+        g.passos = self.passos()
+        r = api.cancelar_gravacao(self.ctx({"publicou": True}), "instagram")
+        self.assertTrue(g.cancelada)
+        self.assertIsNotNone(r["conferir"])
+        self.assertEqual([x[3] for x in self.conferir()], ["carrossel"])
+        self.assertNotIn("instagram", self.painel.gravacoes)
+
+    def test_sem_carrossel_ligado_vai_uma_imagem_do_tipo_da_vez(self):  # DF-10
+        self.cfg["imagens"]["tipos"] = ["momento"]
+        r = self.gravar()
+        self.assertEqual((r["exemplo_tipo"], r["exemplo_quantos"]), ("momento", 1))
+        self.assertEqual(self.preparos[-1]["quadros"], None)
+        self.assertEqual([p.name for p in Path(r["exemplos"]).iterdir()], ["exemplo-1.jpg"])
+        self.fim(self.passos(quantos=1))
+        self.assertEqual([x[3] for x in self.conferir()], ["momento"])
+
+    def test_gravacao_de_video_continua_igual(self):
+        r = self.gravar(midia=None)
+        self.assertNotIn("exemplos", r)
+        g = _GravacaoFalsa.criadas[-1]
+        self.assertEqual((g.midia, g.exemplos, g.exemplo, g.sessao), ("video", [], None, None))
+        self.assertEqual(self.preparos, [])
+        for corpo, texto in (({"midia": "outra"}, "Mídia inválida"), ({"midia": "imagem"}, "Rede sem imagens")):
+            e = self.erro(api.iniciar_gravacao, "youtube", corpo=corpo)
+            self.assertEqual((e.status, str(e)), (400, texto))
+
+    def test_roteiro_de_imagem_pelo_painel(self):
+        r = api.ler_roteiro(self.ctx(consulta={"midia": "imagem"}), "instagram")
+        self.assertEqual((r["midia"], r["texto"], r["origem"], r["tem_padrao"]),
+                         ("imagem", ROTEIRO_IMAGEM, "perfil", False))
+        self.assertEqual(r["resumo"]["midia"], "imagem")
+        self.assertIn("legenda", r["papeis"])
+        self.assertTrue(r["arquivo"].endswith("instagram-imagem.txt"))
+        self.assertIn("titulo", api.ler_roteiro(self.ctx(consulta={"midia": "imagem"}), "tiktok")["papeis"])
+        # salvar à mão limpa o estado (o primeiro envio volta a conferir)
+        planejador.gravar_estado_imagens(self.conn, "instagram", {"sem_carrossel": "uma por vez"})
+        api.salvar_roteiro(self.ctx({"midia": "imagem", "texto": ROTEIRO_IMAGEM}), "instagram")
+        self.assertEqual(planejador.ler_estado_imagens(self.conn, "instagram"), {})
+        e = self.erro(api.salvar_roteiro, "instagram", corpo={"midia": "imagem", "texto": "video\npublicar \"Ok\"\n"})
+        self.assertEqual(e.status, 400)
+        # o roteiro de vídeo não é tocado
+        self.assertFalse(gravador.arquivo_roteiro(self.cfg, "instagram").exists())
+        planejador.gravar_estado_imagens(self.conn, "instagram", {"parado": "o roteiro sumiu"})
+        r = api.apagar_roteiro(self.ctx({"midia": "imagem"}), "instagram")
+        self.assertEqual(r, {"ok": True, "volta": "nenhum"})
+        self.assertFalse(gravador.arquivo_roteiro(self.cfg, "instagram-imagem").exists())
+        self.assertEqual(planejador.ler_estado_imagens(self.conn, "instagram"), {})
+        r = api.ler_roteiro(self.ctx(consulta={"midia": "imagem"}), "instagram")
+        self.assertEqual((r["texto"], r["origem"], r["resumo"]), ("", None, None))
 
 
 if __name__ == "__main__":

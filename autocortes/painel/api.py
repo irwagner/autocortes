@@ -23,10 +23,11 @@ from ..midia import ErroMidia, Interrompido, base_ffmpeg, executar
 from ..navegador import ErroNavegador
 from ..plataformas import ErroPublicacao, criar
 from ..plataformas import manual as tarefas_manual
-from ..plataformas.navegador import Gravacao
+from ..plataformas.navegador import Gravacao, proxima_sessao
 from ..produtor import EXTENSOES, TRAVA_ANALISE, TRAVA_EDICAO, Produtor, escrever_textos_ia, varrer_biblioteca
 from ..publicador import MAX_TENTATIVAS_FACEBOOK, TRAVAS_REDE, Publicador, ler_bloqueios
-from ..textos import fonte_dos_textos, ler_metadados, montar_conteudo, texto_topo, textos_ia, titulo_do_arquivo
+from ..textos import (fonte_dos_textos, ler_metadados, montar_conteudo, montar_conteudo_imagem, texto_topo, textos_ia,
+                      titulo_do_arquivo)
 from ..util import ATIVIDADES, LOG_MEMORIA, escrever_atomico, ler_json, log, salvar_json
 from . import sistema
 from .erros import ErroHttp
@@ -1889,9 +1890,12 @@ def conferir_postagem(ctx: Contexto, postagem_id):
             (url or None, "você conferiu na rede: saiu", time.time(), p["id"]),
         ).rowcount
     else:
+        # o post da gravação do roteiro de imagem continua com "gravação:": não é falha do corte
+        erro = ("gravação: você conferiu na rede: não saiu" if str(p["erro"] or "").startswith("gravação:")
+                else f"Você conferiu na rede: não saiu. {p['erro'] or ''}".strip()[:600])
         feito = ctx.conn.execute(
             "UPDATE postagens SET status='falhou', erro=?, atualizado_em=? WHERE id=? AND status='conferir'",
-            (f"Você conferiu na rede: não saiu. {p['erro'] or ''}".strip()[:600], time.time(), p["id"]),
+            (erro, time.time(), p["id"]),
         ).rowcount
     _exigir(feito == 1, "Este post já foi conferido", 409)
     Publicador(ctx.cfg, ctx.painel.encerrar).atualizar_concluidos(ctx.conn)
@@ -2522,22 +2526,167 @@ def _exigir_navegador(ctx: Contexto, rede: str) -> None:
             f"O {ROTULOS[rede]} não está com o envio pelo navegador. Troque a forma de envio e salve.")
 
 
+def _midia_do_pedido(rede: str, valor) -> str:
+    """"video" (o padrão) ou "imagem", e a imagem só nas redes que a postam."""
+    midia = valor or "video"
+    _exigir(midia in ("video", "imagem"), "Mídia inválida")
+    _exigir(midia == "video" or rede in REDES_IMAGEM, "Rede sem imagens")
+    return midia
+
+
+def _pasta_exemplos(cfg) -> Path:
+    """dados/previa/exemplo-imagem/<n>: uma subpasta por gravação de imagem (n = o número da janela)."""
+    return cfg.pasta_previa / "exemplo-imagem"
+
+
+SEM_CORTE_PARA_GRAVAR = ("Ainda não há um corte de filme editado que sirva para imagem nesta rede: grave o roteiro "
+                         "de imagem depois que o AutoCortes editar um corte (com o filme na pasta).")
+
+
+def _gerar_exemplos(ctx: Contexto, rede: str, n: int) -> dict:
+    """O próximo post de imagem de verdade da rede, copiado como exemplo-1.jpg... para você postar na gravação.
+
+    O corte mais recente cujo vídeo saiu na rede ou, sem nenhum, o editado mais antigo da fila (o post
+    sai sem a chamada para o vídeo). 409 com outra geração no meio e 400 sem corte que sirva; nos dois,
+    nada da gravação aberta é tocado.
+    """
+    cfg, conn = ctx.cfg, ctx.conn
+    da_vez = planejador.tipos_da_vez(cfg, conn, rede)
+    # o próximo carrossel; sem o carrossel em [imagens].tipos, uma imagem do tipo da vez
+    tipo = "carrossel" if "carrossel" in cfg["imagens"]["tipos"] or not da_vez else da_vez[0]
+    escolhas = planejador.fila_imagens(cfg, conn, rede, 5, forcar_tipo=tipo, qualquer_editado=True)
+    _exigir(imagens.TRAVA.acquire(timeout=5), "o AutoCortes está gerando imagens agora", 409)
+    pasta = _pasta_exemplos(cfg) / str(n)
+    try:
+        linha = corte = None
+        for escolha in escolhas:  # até 5 cortes: o trecho sem 3 quadros bons passa a vez ao seguinte
+            try:
+                linha = imagens.preparar(cfg, conn, escolha["corte"], tipo, rede, ctx.painel.encerrar,
+                                         quadros=3 if tipo == "carrossel" else None, prazo=120, post_simulado=False)
+            except imagens.ErroImagem as e:
+                if not (e.do_corte or e.sem_linha):
+                    raise ErroHttp(400, str(e)) from e
+                log.info("%s: o corte %s não serve de exemplo (%s)", ROTULOS[rede], escolha["corte"]["id"], e)
+                continue
+            corte = escolha["corte"]
+            break
+        _exigir(linha is not None, SEM_CORTE_PARA_GRAVAR)
+        arquivos = [Path(a) for a in json.loads(linha["arquivos"] or "[]")]
+        pasta.mkdir(parents=True, exist_ok=True)
+        try:
+            for i, arquivo in enumerate(arquivos):
+                shutil.copyfile(arquivo, pasta / gravador.NOMES_EXEMPLO[i])
+        except OSError as e:
+            raise ErroHttp(500, f"não consegui copiar as imagens de exemplo: {e}") from e
+    except BaseException:
+        shutil.rmtree(pasta, ignore_errors=True)  # só a desta gravação: a aberta continua com as dela
+        raise
+    finally:
+        imagens.TRAVA.release()
+    filme = conn.execute("SELECT * FROM filmes WHERE id=?", (corte["filme_id"],)).fetchone()
+    conteudo = montar_conteudo_imagem(cfg, filme, corte, tipo, len(arquivos), rede, linha["texto"] or "",
+                                      com_chamada=bool(linha["com_chamada"]))
+    return {
+        "tipo": tipo,
+        "pasta": pasta,
+        "nomes": list(gravador.NOMES_EXEMPLO[:len(arquivos)]),
+        "corte": {"id": corte["id"], "filme": filme["titulo"], "parte": corte["parte"]},
+        "imagem_id": linha["id"],
+        # a legenda de verdade (sem marca): você cola @@LEGENDA@@ e troca por ela antes de publicar
+        "legenda": tarefas_manual.textos(cfg, rede, conteudo)["legenda"],
+        "com_chamada": bool(linha["com_chamada"]),
+    }
+
+
 @rota("POST", r"/redes/(\w+)/gravar")
 def iniciar_gravacao(ctx: Contexto, rede):
-    """Abre a janela na página de envio e começa a anotar o que você faz."""
+    """Abre a janela na página de envio e começa a anotar o que você faz.
+
+    Com {"midia": "imagem"}, antes de abrir: as imagens de exemplo (o próximo post de verdade). Um 400
+    ou 409 aqui deixa a gravação que estava aberta como estava, arquivos inclusive.
+    """
     rede = _rede(rede)
+    midia = _midia_do_pedido(rede, ctx.corpo.get("midia"))
     _exigir_navegador(ctx, rede)
     painel = ctx.painel
+    gerado = None
+    if midia == "imagem":
+        n = proxima_sessao()
+        # o envio desta rede pode estar com uma imagem que a gravação redesenharia
+        _exigir(not TRAVAS_REDE[rede].locked(), "o AutoCortes está postando nesta rede agora", 409)
+        gerado = _gerar_exemplos(ctx, rede, n)
     anterior = painel.gravacoes.pop(rede, None)
     if anterior is not None:
         anterior.cancelar()
-    sessao = Gravacao(ctx.cfg, rede)
+    if gerado is None:
+        sessao = Gravacao(ctx.cfg, rede)
+    else:
+        sessao = Gravacao(ctx.cfg, rede, "imagem", gerado["nomes"], sessao=n, exemplo={
+            "corte_id": gerado["corte"]["id"], "imagem_id": gerado["imagem_id"], "quadros": len(gerado["nomes"]),
+            "tipo": gerado["tipo"]})
     try:
         sessao.iniciar()
     except ErroNavegador as e:
+        if gerado is not None:
+            shutil.rmtree(gerado["pasta"], ignore_errors=True)
         raise ErroHttp(400, str(e)) from e
     painel.gravacoes[rede] = sessao
-    return {"ok": True, **sessao.situacao()}
+    if gerado is None:
+        return {"ok": True, **sessao.situacao()}
+    # as das gravações anteriores (a anterior já está fechada); arquivo preso fica para a próxima
+    for antiga in _pasta_exemplos(ctx.cfg).iterdir():
+        if antiga.is_dir() and antiga.name != str(n):
+            shutil.rmtree(antiga, ignore_errors=True)
+    return {"ok": True, **sessao.situacao(), "exemplos": str(gerado["pasta"]), "exemplo_corte": gerado["corte"],
+            "exemplo_tipo": gerado["tipo"], "exemplo_quantos": len(gerado["nomes"]),
+            "exemplo_legenda": gerado["legenda"], "exemplo_com_chamada": gerado["com_chamada"]}
+
+
+ERRO_DA_GRAVACAO = {
+    "carrossel": "gravação: você postou este carrossel na gravação do roteiro de imagem; diga no Início se ele saiu",
+    None: "gravação: você postou na gravação do roteiro de imagem; diga no Início se o post saiu",
+}
+
+
+def _post_da_gravacao(ctx: Contexto, rede: str, sessao, quantos: int) -> int | None:
+    """O post que você fez na gravação vira "a conferir": sem isso o motor postaria o mesmo de novo.
+
+    Com todas as imagens de exemplo (ou sem saber quantas), ele esgota o tipo delas; com menos,
+    fica sem tipo (conta no intervalo e no limite do dia, mas não deixa o carrossel feito).
+    """
+    exemplo = getattr(sessao, "exemplo", None) or {}
+    corte_id = exemplo.get("corte_id")
+    if not corte_id or ctx.conn.execute("SELECT 1 FROM cortes WHERE id=?", (corte_id,)).fetchone() is None:
+        return None
+    tipo = exemplo.get("tipo") if quantos in (0, len(sessao.exemplos)) else None
+    t = time.time()
+    postagem = ctx.conn.execute(
+        "INSERT INTO postagens (corte_id, plataforma, status, midia, imagem_tipo, imagem_id, erro, manual, via, "
+        "criado_em, atualizado_em) VALUES (?, ?, 'conferir', 'imagem', ?, ?, ?, 1, 'navegador', ?, ?)",
+        (corte_id, rede, tipo, exemplo.get("imagem_id"), ERRO_DA_GRAVACAO.get(tipo, ERRO_DA_GRAVACAO[None]), t, t),
+    ).lastrowid
+    log.info("%s: o post da gravação do roteiro de imagem ficou em \"A conferir\" no Início", ROTULOS[rede])
+    return postagem
+
+
+def _fim_da_gravacao_de_imagem(ctx: Contexto, rede: str, sessao, resumo: dict) -> dict:
+    """O que a gravação descobriu do campo de arquivo e o post que ela fez."""
+    conn = ctx.conn
+    if resumo.get("motivo") == "sem_fotos":
+        planejador.gravar_estado_imagens(conn, rede, {"sem_fotos": resumo.get("mensagem") or gravador.SEM_FOTOS})
+    elif resumo.get("ok"):
+        if resumo.get("so_uma"):
+            planejador.gravar_estado_imagens(
+                conn, rede, {"sem_carrossel": "o campo de arquivo que você usou aceita uma imagem por vez"})
+        else:
+            planejador.limpar_estado_imagens(conn, rede)
+    quantos = int(resumo.get("quantos") or 0)
+    # sem arquivo anotado, só o clique de publicar certo diz que o post saiu; arrastado ou num campo que
+    # não aceita imagem, ele não vale
+    if resumo.get("publicou") and resumo.get("motivo") not in ("sem_fotos", "arrastou") \
+            and (quantos >= 1 or not resumo.get("publicar_incerto")):
+        return {"conferir": _post_da_gravacao(ctx, rede, sessao, quantos)}
+    return {"conferir": None}
 
 
 @rota("GET", r"/redes/(\w+)/gravar")
@@ -2555,14 +2704,25 @@ def concluir_gravacao(ctx: Contexto, rede):
         resumo = sessao.concluir()
     except ErroNavegador as e:
         raise ErroHttp(400, str(e)) from e
+    if getattr(sessao, "midia", "video") == "imagem":
+        resumo.update(_fim_da_gravacao_de_imagem(ctx, rede, sessao, resumo))
     return {"ok": True, **resumo}
 
 
 @rota("POST", r"/redes/(\w+)/gravar/cancelar")
 def cancelar_gravacao(ctx: Contexto, rede):
-    sessao = ctx.painel.gravacoes.pop(_rede(rede), None)
-    if sessao is not None:
-        sessao.cancelar()
+    """Fecha a gravação sem salvar. Na de imagem, {"publicou": true} (você disse que chegou a publicar)
+    deixa o post em "A conferir", como no fim da gravação."""
+    rede = _rede(rede)
+    sessao = ctx.painel.gravacoes.pop(rede, None)
+    if sessao is None:
+        return {"ok": True}
+    sessao.cancelar()
+    if getattr(sessao, "midia", "video") == "imagem" and ctx.corpo.get("publicou") is True:
+        limpos = gravador.limpar_passos(sessao.nome, sessao.passos, exemplos=True)
+        arquivo = next((p for p in limpos if p["tipo"] == "arquivo"), None)
+        quantos = int(arquivo.get("quantos") or 0) if arquivo else 0
+        return {"ok": True, "conferir": _post_da_gravacao(ctx, rede, sessao, quantos)}
     return {"ok": True}
 
 
@@ -2585,7 +2745,13 @@ def recomecar_gravacao(ctx: Contexto, rede):
 def apagar_roteiro(ctx: Contexto, rede):
     """Apaga o roteiro do perfil. O padrão da instalação nunca é apagado: com ele, é para lá que se volta."""
     rede = _rede(rede)
-    gravador.arquivo_roteiro(ctx.cfg, rede).unlink(missing_ok=True)
+    midia = _midia_do_pedido(rede, ctx.corpo.get("midia"))
+    nome = roteiro.nome_roteiro(rede, midia)
+    gravador.arquivo_roteiro(ctx.cfg, nome).unlink(missing_ok=True)
+    if midia == "imagem":  # o roteiro de imagem não tem padrão: as imagens da rede param até gravar de novo
+        planejador.limpar_estado_imagens(ctx.conn, rede)
+        log.info("%s: roteiro de imagem apagado pelo painel", ROTULOS[rede])
+        return {"ok": True, "volta": "nenhum"}
     volta = "padrao" if gravador.arquivo_padrao(rede).is_file() else "passos"
     log.info("%s: roteiro do perfil apagado pelo painel (volta a valer: %s)", ROTULOS[rede],
              "o roteiro padrão" if volta == "padrao" else "os passos fixos")
@@ -2596,18 +2762,23 @@ def apagar_roteiro(ctx: Contexto, rede):
 def ler_roteiro(ctx: Contexto, rede):
     """O texto do roteiro que vale, para você ver e editar. Salvar sempre grava no perfil."""
     rede = _rede(rede)
-    texto, origem = gravador.carregar_com_origem(ctx.cfg, rede)
+    midia = _midia_do_pedido(rede, ctx.consulta.get("midia"))
+    nome = roteiro.nome_roteiro(rede, midia)
+    texto, origem = gravador.carregar_com_origem(ctx.cfg, nome)
     texto = texto or ""
+    imagem = midia == "imagem"
     return {
         "rede": rede,
+        "midia": midia,
         "texto": texto,
         "origem": origem,
-        "resumo": roteiro.resumo(texto, rede) if texto else None,
+        "resumo": roteiro.resumo(texto, nome) if texto else None,
         "comandos": roteiro.AJUDA,
-        "papeis": sorted(roteiro.PAPEIS_DA_REDE.get(rede, ())),
-        "arquivo": str(gravador.arquivo_roteiro(ctx.cfg, rede)),
-        "arquivo_padrao": str(gravador.arquivo_padrao(rede)),
-        "tem_padrao": gravador.arquivo_padrao(rede).is_file(),
+        # no roteiro de imagem entram também os opcionais (o título do post de fotos do TikTok)
+        "papeis": sorted(roteiro.papeis_validos(nome) if imagem else roteiro.PAPEIS_DA_REDE.get(rede, ())),
+        "arquivo": str(gravador.arquivo_roteiro(ctx.cfg, nome)),
+        "arquivo_padrao": None if imagem else str(gravador.arquivo_padrao(rede)),
+        "tem_padrao": False if imagem else gravador.arquivo_padrao(rede).is_file(),
     }
 
 
@@ -2615,14 +2786,20 @@ def ler_roteiro(ctx: Contexto, rede):
 def salvar_roteiro(ctx: Contexto, rede):
     """Grava o roteiro editado, recusando o que eu não consigo executar."""
     rede = _rede(rede)
+    midia = _midia_do_pedido(rede, ctx.corpo.get("midia"))
+    nome = roteiro.nome_roteiro(rede, midia)
     texto = str(ctx.corpo.get("texto") or "")
     _exigir(len(texto) <= 40000, "Roteiro grande demais")
-    instrucoes, erros = roteiro.analisar(texto, rede)
+    instrucoes, erros = roteiro.analisar(texto, nome)
     if erros:
         raise ErroHttp(400, "O roteiro tem linhas que eu não consigo executar", {"erros": erros})
-    gravador.gravar_roteiro(ctx.cfg, rede, texto.replace("\r\n", "\n"))
-    log.info("%s: roteiro editado pelo painel (%d linhas de ação)", ROTULOS[rede], len(instrucoes))
-    return {"ok": True, "resumo": roteiro.resumo(texto, rede)}
+    gravador.gravar_roteiro(ctx.cfg, nome, texto.replace("\r\n", "\n"))
+    if midia == "imagem":
+        # o texto não diz se o campo aceita várias imagens: o primeiro envio volta a conferir
+        planejador.limpar_estado_imagens(ctx.conn, rede)
+    log.info("%s: roteiro%s editado pelo painel (%d linhas de ação)", ROTULOS[rede],
+             " de imagem" if midia == "imagem" else "", len(instrucoes))
+    return {"ok": True, "resumo": roteiro.resumo(texto, nome)}
 
 
 @rota("POST", r"/redes/(\w+)/testar")
