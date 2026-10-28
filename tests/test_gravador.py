@@ -94,7 +94,9 @@ class TestMarcas(unittest.TestCase):
     def test_sem_campos_de_texto_continua_executavel_em_cada_rede(self):
         for rede in roteiro.PAPEIS_DA_REDE:
             with self.subTest(rede=rede):
-                texto = "abrir https://example.com\nvideo em #video\npublicar #done\n"
+                # o roteiro de imagem ("<rede>-imagem") entrega o arquivo com "imagens"
+                arquivo = "imagens" if roteiro.midia_do_roteiro(rede) == "imagem" else "video"
+                texto = f"abrir https://example.com\n{arquivo} em #video\npublicar #done\n"
                 roteiro.validar(texto, rede)
                 resumo = roteiro.resumo(texto, rede)
                 self.assertEqual(resumo["erros"], [])
