@@ -144,11 +144,12 @@ Atualizado em outubro de 2026.
 | "Aprender a postar": grava o roteiro enquanto você posta à mão | ⚠️ Pronto e testado com o Chrome real; a gravação de cada rede depende da conta logada |
 | Roteiro como linguagem simples, editável no painel | ✅ Pronto e testado |
 | Roteiros padrão do YouTube, TikTok e Instagram, que vêm com a instalação | ✅ Tirados dos roteiros que postaram de verdade em outubro de 2026 |
+| [Posts de imagem](#posts-de-imagem-instagram-e-tiktok) no Instagram e no TikTok (momento, frase e carrossel), pelo roteiro do navegador | ⚠️ Pronto e testado com páginas que imitam as redes; o roteiro de imagem de cada rede só se confere com a conta logada |
 | Instagram também na Página do Facebook (opcional) | 🧪 Pronto, pela API oficial e pelo Upload-Post; testado contra um servidor simulado |
 | Kwai, Bilibili e postagem à mão em qualquer rede | ✅ Pronto e testado: tarefas no Início com vídeo, textos por rede, "Já postei" e pasta sincronizada |
 | YouTube só com Shorts (vertical ou quadrado, até o limite de duração) | ✅ Pronto e testado |
 | Agenda por rede, fila e planejador | ✅ Pronto e testado de ponta a ponta em simulação |
-| Painel no navegador (10 telas, API local com 81 rotas) | ✅ Pronto e testado no Edge |
+| Painel no navegador (10 telas, API local com 83 rotas) | ✅ Pronto e testado no Edge |
 | Canais do YouTube: baixa sozinho os vídeos novos para a pasta de filmes | ✅ Pronto e testado (o yt-dlp de verdade num canal público; as regras e a fila, com um yt-dlp falso) |
 | Atualização pelo GitHub a cada 2 dias, com tudo parado | ✅ Pronta e testada: o ciclo inteiro com um repositório local (fecha, troca, abre de novo com os perfis e volta sozinha se a versão nova não abrir), e o clone e o ZIP contra o GitHub de verdade |
 | Perfis de nicho: vários nichos na mesma instalação, cada um com suas contas | ✅ Pronto e testado (dois perfis abertos ao mesmo tempo, de verdade) |
@@ -349,15 +350,15 @@ Abre no navegador pelo `AutoCortes.bat`. A lateral mostra se o motor está ligad
 </tr>
 </table>
 
-- **Início:** avisos do que falta configurar, os posts **a conferir** (a rede recebeu o vídeo e não confirmou: você diz se saiu, e nada é repetido até lá), as tarefas de postagem à mão (com o número no menu), cortes na fila, dias de conteúdo, posts de hoje, próximas postagens, o que está sendo feito agora (com progresso), últimas postagens, desempenho dos últimos 7 dias e a situação de cada rede.
-- **Agenda:** calendário de 7 ou 14 dias com cada horário e o corte previsto, dias de conteúdo por rede, pausa geral, horários e dias de cada rede, presets e regras (variação, tolerância, intervalo, limites e tentativas).
-- **Cortes:** abas por situação (aguardando aprovação, na fila, encontrados, publicados e descartados), filtro por filme e aprovar todos. Em **Selecionar**, cada cartão ganha uma caixa (clicar no cartão também marca) e uma barra no rodapé aplica a ação de uma vez aos escolhidos ou a todos os mostrados: aprovar, priorizar ou tirar a prioridade, editar de novo, restaurar, descartar e, nos publicados, apagar os vídeos para liberar espaço (o corte e o histórico dos posts ficam). Cada ação vale só para os cortes em que faz sentido, e o que não dá certo num corte (um envio em andamento, por exemplo) não impede os outros. O detalhe de cada corte tem o vídeo, por que o trecho foi escolhido, os textos do post (editar, gerar com IA, ver como o post sai), a situação em cada rede (e na Página do Facebook) com "Postar agora", "Postar à mão" ou "Ver a tarefa", e o histórico.
+- **Início:** avisos do que falta configurar, os posts **a conferir** (a rede recebeu o vídeo ou a imagem e não confirmou: você diz se saiu, e nada é repetido até lá; o post de imagem aparece com a miniatura da imagem e a marca do tipo), as tarefas de postagem à mão (com o número no menu), cortes na fila, dias de conteúdo, posts de hoje, próximas postagens, o que está sendo feito agora (com progresso), últimas postagens, desempenho dos últimos 7 dias e a situação de cada rede.
+- **Agenda:** calendário de 7 ou 14 dias com cada horário e o corte previsto (vídeos e imagens misturados, a imagem com a marca do tipo ou "sem imagem" e o motivo), dias de conteúdo por rede, pausa geral, horários e dias de cada rede (no TikTok e no Instagram, também a linha "Imagens", com o aviso do horário que sai do dia por ficar perto de um vídeo), presets e regras (variação, tolerância, intervalo, limites e tentativas).
+- **Cortes:** abas por situação (aguardando aprovação, na fila, encontrados, publicados e descartados), filtro por filme e aprovar todos. Em **Selecionar**, cada cartão ganha uma caixa (clicar no cartão também marca) e uma barra no rodapé aplica a ação de uma vez aos escolhidos ou a todos os mostrados: aprovar, priorizar ou tirar a prioridade, editar de novo, restaurar, descartar e, nos publicados, apagar os vídeos para liberar espaço (o corte e o histórico dos posts ficam). Cada ação vale só para os cortes em que faz sentido, e o que não dá certo num corte (um envio em andamento, por exemplo) não impede os outros. O detalhe de cada corte tem o vídeo, por que o trecho foi escolhido, os textos do post (editar, gerar com IA, ver como o post sai), a situação em cada rede (e na Página do Facebook) com "Postar agora", "Postar à mão" ou "Ver a tarefa", as imagens geradas do corte (cada uma abre em tamanho real, com anterior, próxima e baixar), a situação de cada tipo de imagem por rede com "Postar imagem agora", e o histórico. Os cartões contam as imagens publicadas.
 - **Filmes:** enviar filmes e legendas arrastando para a página, situação e progresso da análise, reanalisar, ignorar e editar título, ano, hashtags e idioma. A aba **Canais do YouTube** guarda os canais que mandam vídeos novos sozinhos ([veja abaixo](#canais-do-youtube)), com os downloads de cada um.
-- **Redes sociais:** modo simulação ou publicação real, forma de envio de cada rede (API oficial, Upload-Post, pelo navegador ou à mão), conectar (YouTube e TikTok pelo navegador, Instagram colando o token), testar e desconectar, com passo a passo e as opções dos posts (duração máxima do YouTube, Página do Facebook, tags do Bilibili), mais a pasta sincronizada da postagem à mão. Nas redes pelo navegador, "Aprender a postar" grava o roteiro com log ao vivo, desfazer e recomeçar, e "Ver o roteiro" abre o editor da [linguagem de roteiro](#aprender-a-postar-e-o-roteiro).
+- **Redes sociais:** modo simulação ou publicação real, forma de envio de cada rede (API oficial, Upload-Post, pelo navegador ou à mão), conectar (YouTube e TikTok pelo navegador, Instagram colando o token), testar e desconectar, com passo a passo e as opções dos posts (duração máxima do YouTube, Página do Facebook, tags do Bilibili), mais a pasta sincronizada da postagem à mão. Nas redes pelo navegador, "Aprender a postar" grava o roteiro com log ao vivo, desfazer e recomeçar, e "Ver o roteiro" abre o editor da [linguagem de roteiro](#aprender-a-postar-e-o-roteiro). Cada rede tem as caixas **Vídeos** e **Imagens**; no TikTok e no Instagram pelo navegador, o cartão "Roteiro de imagem" grava, mostra e apaga o [roteiro dos posts de imagem](#posts-de-imagem-instagram-e-tiktok).
 - **Estúdio:** o visual dos cortes numa tela de celular. Arraste o vídeo, o título e a legenda para cima e para baixo (ou use as setas do teclado), escolha ou envie a moldura, o tamanho do vídeo (Menor, Inteiro com o quadro todo, Padrão de 1,25x e Maior de 1,7x, ou o valor exato), o fundo, a fonte, o tamanho e as cores do título e da legenda, a barra e o fade. "O que os apps cobrem" mostra as faixas onde ficam os botões e a descrição das redes, e "Como vai sair" mostra o quadro gerado pelo mesmo editor dos cortes.
 - **Criação:** as pautas dos [vídeos feitos do zero](#vídeos-criados-do-zero) e a fila de temas. Escrever a pauta à mão ou pedir o roteiro à IA, editar o texto, criar o vídeo na hora e ver o que cada pauta já rendeu.
 - **Perfis:** vários nichos na mesma instalação ([veja abaixo](#perfis-vários-nichos-de-uma-vez)), cada um com sua pasta, suas contas e seu tema. Criar, abrir, fechar, ajustar portas e excluir, com o limite de quantos trabalham ao mesmo tempo.
-- **Configurações:** abas Geral, Cortes, Canais (as regras do download), Vídeo (qualidade e volume), Criação, Textos dos posts, IA, Transcrição e Sistema, com exemplo do post, teste da IA, download do modelo de transcrição, iniciar com o Windows e a [atualização pelo GitHub](#atualização-automática). As alterações ficam pendentes numa barra no rodapé até você salvar (Ctrl+S também salva). Os botões de Redes sociais (Conectar, Testar, Aprender a postar) salvam só o que é daquela rede.
+- **Configurações:** abas Geral, Cortes, Canais (as regras do download), Vídeo (qualidade e volume), Criação, Textos dos posts, Imagens (os tipos, os quadros do carrossel, o que vai escrito, as legendas e a prévia de cada tipo nos dois formatos), IA, Transcrição e Sistema, com exemplo do post, teste da IA, download do modelo de transcrição, iniciar com o Windows e a [atualização pelo GitHub](#atualização-automática). As alterações ficam pendentes numa barra no rodapé até você salvar (Ctrl+S também salva). Os botões de Redes sociais (Conectar, Testar, Aprender a postar) salvam só o que é daquela rede.
 - **Janelas:** o editor do roteiro, da pauta, dos dados do filme e dos textos do corte perguntam antes de fechar com algo não salvo (Esc, clique fora, X ou troca de tela), e o Ctrl+S dentro deles salva o que está na janela.
 - **Registro:** mensagens ao vivo, com busca, filtro de avisos e erros e cópia.
 
@@ -527,6 +528,8 @@ Cada rede tem horários e dias da semana próprios. O padrão é:
 
 A Página do Facebook não tem horário próprio: o Reel sai logo depois do Instagram.
 
+**Horários de imagem.** O TikTok e o Instagram têm também `horarios_imagens` e `dias_imagens` (vazio = os mesmos dias dos vídeos), que só valem com os [posts de imagem](#posts-de-imagem-instagram-e-tiktok) ligados. O padrão é Instagram 10:00 e 16:00 e TikTok 10:30 e 15:30, a pelo menos 90 min de qualquer vídeo da rede. O calendário mostra vídeos e imagens misturados. Um horário de imagem a menos do intervalo mínimo (mais a variação) de um vídeo da mesma rede sai do dia, porque o vídeo tem preferência, e a Agenda avisa qual saiu e por quê. Vídeo e imagem da mesma rede contam juntos no intervalo mínimo e no limite de 6 por dia. Os presets também trazem horários de imagem.
+
 Regras:
 - **Variação:** cada horário ganha um atraso aleatório de 0 a 10 min, sorteado uma vez por dia. Reiniciar o programa não muda o sorteio.
 - **PC desligado:** o PC precisa estar ligado para postar. Se o horário passar com ele desligado, o post ainda sai até 90 min depois; fora disso, o horário fica como "não postado". Enquanto o motor roda, o Windows não entra em suspensão.
@@ -660,6 +663,34 @@ Alvo entre **aspas** é procurado pelo texto que aparece na tela (`innerText`, `
 
 **Roteiros padrão.** A instalação traz roteiros prontos para o YouTube Studio, o TikTok Studio e o Instagram em português, na pasta `roteiros/`. São os que postaram os vídeos do AutoCortes em outubro de 2026. Enquanto um perfil não tem roteiro próprio, vale o padrão, e o cartão da rede mostra "roteiro padrão". Gravar ou salvar no editor cria o seu em `dados/roteiros/<rede>.txt`, que passa a valer no lugar dele; "Voltar ao roteiro padrão" apaga o seu. Os padrões chegam junto com as [atualizações](#atualização-automática), então quando uma rede muda a página, a correção vale para quem ainda usa o padrão. Eles não têm linha `conferir`, porque o texto de confirmação de cada rede não foi conferido: o post termina como publicado, com uma observação. O Bilibili não tem roteiro padrão e usa os passos fixos.
 
+### Posts de imagem (Instagram e TikTok)
+
+Além dos vídeos, o TikTok e o Instagram podem receber posts de imagem tirados dos cortes já editados, em três tipos que se revezam em cada rede:
+- **Momento:** um quadro do trecho, com o nome do filme e a parte em cima e, quando o vídeo daquela parte já saiu na rede, a chamada "A Parte N completa está no perfil" embaixo.
+- **Frase:** a fala real do trecho escrita sobre o quadro dela. Só sai de trecho com fala.
+- **Carrossel:** de 3 a 5 quadros de cenas diferentes, em ordem (`[imagens].quadros_carrossel`, padrão 4).
+
+As imagens saem do arquivo original do filme (sem a legenda nem a barra do corte), em JPEG no formato da rede: 4:5 (1080×1350) no Instagram e 9:16 (1080×1920) no TikTok, com o fundo desfocado e a fonte e as cores do modelo visual em uso. O quadro escolhido é nítido, não é escuro e fica longe das trocas de cena. Nunca sai imagem de um vídeo criado do zero nem de um trecho que ainda não foi editado.
+
+Como ligar:
+1. Em Redes sociais, deixe a rede com o envio **pelo navegador**: as imagens saem só pelo roteiro, como os vídeos.
+2. No cartão "Roteiro de imagem", clique em **Gravar o roteiro de imagem**. O AutoCortes prepara as imagens de exemplo (o próximo carrossel de verdade daquela rede) numa pasta e abre a página de envio.
+3. Poste essas imagens à mão, na ordem. **Escolha os arquivos pelo botão de escolher arquivo da própria página, não arraste**: arrastadas, eu não consigo repetir. Cole `@@LEGENDA@@` na legenda e, antes de publicar, troque pelo texto do botão "Copiar a legenda". Espere o envio das imagens terminar antes de clicar em publicar.
+4. **Esse post sai de verdade na sua conta**, e ele é o próximo carrossel. Por isso ele fica em "A conferir" no Início: diga lá se saiu. Até você responder, o motor não posta o mesmo carrossel; se você disser que não saiu, ele volta a poder sair. Se você cancelar a gravação depois de publicar, a janela pergunta e deixa o post a conferir do mesmo jeito.
+5. Ligue **Imagens** no cartão da rede e salve. Desligar **Vídeos** no mesmo salvar deixa a rede só com imagens.
+
+No Instagram, no passo de recorte, escolha **4:5** ou **Original** antes de Avançar. Sem isso, o Instagram corta em quadrado (o texto já fica no quadrado do meio, por segurança).
+
+**TikTok, com todas as letras:** a fonte mais recente (de julho de 2026, e não oficial) diz que o TikTok Studio no computador aceita fotos e carrossel, mas nada disso foi visto com a conta logada, e a opção pode variar por conta ou região. Se a gravação mostrar que o campo de arquivo da página só aceita vídeo, o roteiro não é salvo, o cartão mostra "Sem fotos nesta conta" e as imagens do TikTok ficam desligadas. Se o campo aceitar na gravação e recusar num envio, as imagens do TikTok param até você gravar de novo, e os vídeos continuam. A imagem como tarefa à mão, que resolveria esse caso, ainda não existe (P6 nas [pendências](#pendências-e-próximos-passos)).
+
+O roteiro de imagem fica em `dados/roteiros/<rede>-imagem.txt`, separado do de vídeo, e não tem roteiro padrão. Ele usa a mesma linguagem, com a linha `imagens [em <alvo>]` no lugar de `video`: ela entrega todas as imagens do post de uma vez, na ordem do carrossel. O nome dos arquivos de exemplo nunca entra no roteiro nem no registro, e na hora do post as imagens chegam à página com o nome do filme (`nome-do-filme-1.jpg`). Se o campo de arquivo que você usou aceita uma imagem por vez, o carrossel fica de fora nessa rede e os outros tipos continuam.
+
+No horário de imagem, o motor escolhe o corte e o tipo da vez: numa rede que também posta vídeos, o corte mais recente cujo vídeo já saiu ali; numa rede só de imagens, os cortes editados na ordem da fila. O motor nunca posta duas vezes o mesmo tipo do mesmo corte na mesma rede ("Postar imagem agora", no detalhe do corte, pode repetir e avisa antes). Valem os mesmos cuidados do vídeo: o ensaio para antes de publicar, o post que a rede recebeu e não confirmou fica a conferir, e um bloqueio para a rede inteira, vídeos inclusive. Uma falha do PC ao gerar as imagens (FFmpeg, disco, prazo de 5 min) tenta de novo sem gastar o corte.
+
+A legenda vem de `[imagens].legenda_momento`, `legenda_frase` e `legenda_carrossel`, com as variáveis dos textos mais `{quadros}` e `{chamada_perfil}` (a chamada para o vídeo, que só entra quando o vídeo daquela parte já saiu na rede; sem ele, a linha some). No Instagram vão no máximo 5 hashtags. Pela API oficial, pelo Upload-Post, à mão, no YouTube, no Kwai e no Bilibili não há imagens nesta versão, e o painel mostra o motivo de cada um.
+
+Se você voltar para uma versão sem imagens depois de postar imagens, os cortes que já tiveram imagem numa rede não saem mais em vídeo nela.
+
 ### Postagem à mão (Kwai, Bilibili e qualquer rede)
 
 Kwai e Bilibili só têm essa forma de envio, e YouTube, TikTok e Instagram podem usar também (`envio = "manual"`). No horário da agenda nada é enviado: o AutoCortes cria uma **tarefa** no Início com o vídeo e os textos já no formato da rede.
@@ -713,7 +744,7 @@ Nenhum serviço terceiro testado (Upload-Post, Zernio, Ayrshare, Buffer, Metrico
 > Cortes de filmes protegidos geram Content ID, strikes e bloqueio de conta, e as seis redes tratam trecho de filme com pouca edição como conteúdo não original.
 
 - **YouTube:** a política de conteúdo reutilizado cita clipes de série editados sem narrativa própria e vale para o canal inteiro ([política](https://support.google.com/youtube/answer/1311392?hl=en)).
-- **Meta:** desde 13/03/2026, juntar clipes e fazer mudanças de baixo valor, como bordas, legendas inseridas e mudança de velocidade, conta como não original e tira alcance e monetização ([Meta](https://about.fb.com/news/2026/03/rewarding-original-creators-on-facebook/)). Isso inclui a moldura e as legendas do AutoCortes. No Instagram, conta que reposta 10 ou mais conteúdos de terceiros em 30 dias sai das recomendações ([Instagram](https://creators.instagram.com/blog/recommendations-and-originality)).
+- **Meta:** desde 13/03/2026, juntar clipes e fazer mudanças de baixo valor, como bordas, legendas inseridas e mudança de velocidade, conta como não original e tira alcance e monetização ([Meta](https://about.fb.com/news/2026/03/rewarding-original-creators-on-facebook/)). Isso inclui a moldura e as legendas do AutoCortes, e vale também para os [posts de imagem](#posts-de-imagem-instagram-e-tiktok): o quadro do filme tem os mesmos direitos do vídeo, e o nome do filme e a frase escritos nele são mudanças pequenas. No Instagram, conta que reposta 10 ou mais conteúdos de terceiros em 30 dias sai das recomendações ([Instagram](https://creators.instagram.com/blog/recommendations-and-originality)).
 - **TikTok:** o programa de recompensas só paga vídeos originais com 1 min ou mais ([TikTok](https://newsroom.tiktok.com/en-us/introducing-the-new-creator-rewards-program/)); cortes de 30 a 59 s ficam fora só pela duração.
 - **Kwai e Bilibili:** os programas de incentivo pagam só obra original; no Bilibili, vídeo 转载 não entra.
 
@@ -733,6 +764,7 @@ Tudo fica no `config.toml`, criado a partir do `config.example.toml`. O painel g
 | `[cortes]` | duração, cortes por filme, palavras-chave, ordem e pesos da nota |
 | `[edicao]` | modelo visual em uso, moldura, formato, tamanho e altura do vídeo, fonte, cores, tamanho e lugar da legenda, título (texto, fonte, cor, altura), barra, codec |
 | `[textos]` | modelos de título e descrição (com e sem IA), hashtags |
+| `[imagens]` | posts de imagem: tipos (`momento`, `frase`, `carrossel`), quadros do carrossel (3 a 5), o texto de cima e a chamada para o vídeo, a legenda de cada tipo e se usa o texto da IA |
 | `[ia]` | ligar a IA, endereço da API, modelo, chave, criatividade e tempo limite |
 | `[criacao]` | vídeos criados do zero: ligar, quem sai primeiro (filmes ou criação), duração que a IA mira, quadros por segundo, música (pasta e volume), sobra no fim, zoom lento e ordem dos clipes |
 | `[estoque]` | imagens de fundo dos vídeos criados: de onde vêm (pasta própria, Pexels ou Pixabay), a pasta, as chaves (secretas, alternadas), clipe mínimo e não repetir material |
@@ -742,7 +774,7 @@ Tudo fica no `config.toml`, criado a partir do `config.example.toml`. O painel g
 | `[navegador]` | envio pelo navegador: caminho do Chrome, porta do DevTools, janela visível, pausas, tempo limite e ensaio |
 | `[metricas]` | ler as métricas, de quanto em quanto tempo e de quantos dias para trás |
 | `[agenda]` | horários gerais, dias, variação, tolerância, intervalo mínimo, limites e pausa |
-| `[youtube]` `[tiktok]` `[instagram]` | ativar, forma de envio (`envio = "oficial"`, `"upload_post"`, `"navegador"` ou `"manual"`), credenciais, privacidade, horários e dias de cada rede; no YouTube, a duração máxima dos Shorts (`max_segundos`); no Instagram, a Página do Facebook (`pagina_facebook`, `facebook_pagina_id`) |
+| `[youtube]` `[tiktok]` `[instagram]` | ativar, o que posta (`videos`, e no TikTok e no Instagram `imagens`, com `horarios_imagens` e `dias_imagens`), forma de envio (`envio = "oficial"`, `"upload_post"`, `"navegador"` ou `"manual"`), credenciais, privacidade, horários e dias de cada rede; no YouTube, a duração máxima dos Shorts (`max_segundos`); no Instagram, a Página do Facebook (`pagina_facebook`, `facebook_pagina_id`) |
 | `[kwai]` `[bilibili]` | ativar (desligados por padrão), horários e dias; o Kwai só aceita `"manual"` e o Bilibili, `"navegador"` ou `"manual"`; no Bilibili, as tags fixas |
 
 Variáveis dos textos: `{filme}`, `{ano}`, `{ano_parenteses}`, `{parte}`, `{frase}` (melhor fala do corte) e `{hashtags}`; nos modelos com IA, também `{titulo_ia}` e `{descricao_ia}`. Nos vídeos baixados de um [canal do YouTube](#canais-do-youtube), `{canal}` e `{link_original}` dão o crédito do vídeo original (nos filmes da pasta, ficam vazios).
@@ -811,6 +843,7 @@ AutoCortes/
 | `legendas.py` | leitura de SRT e Whisper, ajuste pela voz e legenda animada (ASS) |
 | `selecao.py` | nota e escolha dos trechos |
 | `edicao.py` | render vertical, moldura (área transparente), geometria, miniatura e prévia do estilo |
+| `imagens.py` | posts de imagem: escolha dos quadros (brilho, nitidez e cenas), geometria e texto do cartaz, render em JPEG e prévia |
 | `modelos_visuais.py` | modelos visuais com nome (criar, trocar, renomear, excluir) |
 | `textos.py` | título a partir do arquivo, dados do filme e textos das postagens |
 | `ia.py` | textos do post escritos por IA (API compatível com a da OpenAI) |
@@ -834,20 +867,20 @@ As rotas `/api` exigem o cabeçalho `X-AutoCortes` com o token da sessão; a mí
 |---|---|
 | Visão geral | `GET /api/estado`, `POST /api/motor` |
 | Agenda | `GET /api/plano?dias=7`, `POST /api/agenda/pausa` |
-| Configuração | `GET` e `POST /api/config`, `POST /api/previa`, `POST /api/ferramentas/baixar`, `POST /api/ia/testar` e `/api/ia/modelos` |
+| Configuração | `GET` e `POST /api/config`, `POST /api/previa`, `POST /api/imagens/previa` (`tipo`, `rede` e as alterações; 409 com outra geração no meio), `POST /api/ferramentas/baixar`, `POST /api/ia/testar` e `/api/ia/modelos` |
 | Estúdio | `GET /api/estudio`, `POST /api/estudio/geometria`, `POST /api/modelos/usar`, `/criar`, `/renomear` e `/excluir`, `POST /api/molduras/enviar` |
-| Cortes | `GET /api/cortes?aba=`, `GET /api/cortes/{id}`, `POST /api/cortes/{id}/acao`, `/textos` e `/postar` (`rede` pode ser `facebook`; numa rede à mão devolve a tarefa), `POST /api/cortes/aprovar-todos`, `/refazer-fila` (`ids` opcional: só esses, se estiverem na fila ou aguardando aprovação; os outros voltam em `fora`) e `/lote` (`acao` e `ids`, de 1 a 500: `descartar`, `restaurar`, `aprovar`, `priorizar`, `normal` ou `apagar_video`; devolve `feitos` e `falhas`) |
+| Cortes | `GET /api/cortes?aba=`, `GET /api/cortes/{id}`, `POST /api/cortes/{id}/acao`, `/textos` e `/postar` (`rede` pode ser `facebook`; numa rede à mão devolve a tarefa), `/postar-imagem` (`rede` e `tipo`; 400 sem roteiro de imagem ou num corte não editado, 409 com a rede pausada ou um envio em andamento), `POST /api/cortes/aprovar-todos`, `/refazer-fila` (`ids` opcional: só esses, se estiverem na fila ou aguardando aprovação; os outros voltam em `fora`) e `/lote` (`acao` e `ids`, de 1 a 500: `descartar`, `restaurar`, `aprovar`, `priorizar`, `normal` ou `apagar_video`; devolve `feitos` e `falhas`) |
 | Postagem à mão | `GET /api/tarefas/{id}` (vídeo, textos da rede e passos), `POST /api/tarefas/{id}/feito` (link opcional) e `/pular` |
 | A conferir | `POST /api/postagens/{id}/conferir` (`saiu` true ou false, link opcional) |
 | Criação | `GET /api/pautas` (com o arquivo da fila de temas e a versão dele), `POST /api/pautas/nova`, `POST /api/pautas/temas` (409 se a fila mudou), `GET` e `POST /api/pautas/{id}`, `POST /api/pautas/{id}/acao` |
-| Roteiro | `GET` e `POST /api/redes/{rede}/roteiro`, `POST .../roteiro/apagar`, `GET` e `POST .../gravar`, `POST .../gravar/fim`, `/cancelar`, `/desfazer` e `/recomecar` |
+| Roteiro | `GET` e `POST /api/redes/{rede}/roteiro`, `POST .../roteiro/apagar`, `GET` e `POST .../gravar`, `POST .../gravar/fim`, `/cancelar`, `/desfazer` e `/recomecar`; com `midia: "imagem"` (no GET, `?midia=imagem`), o roteiro de imagem: o `gravar` prepara antes as imagens de exemplo (400 sem corte que sirva, 409 com outra geração ou um envio na rede), e o `fim` e o `cancelar` com `publicou: true` deixam o post da gravação a conferir |
 | Perfis | `GET /api/perfis`, `POST /api/perfis/novo` e `/opcoes`, `POST /api/perfis/{slug}/abrir`, `/fechar`, `/salvar` e `/excluir`, `GET .../conteudo` |
 | Filmes | `GET /api/filmes`, `POST /api/filmes/enviar`, `/varrer`, `/{id}/acao` e `/{id}/meta` |
 | Canais do YouTube | `GET /api/canais`, `POST /api/canais/novo`, `/verificar` (um canal ou todos; durante a pausa, 409 com `motivo: "pausa"`, e passa com `forcar: true`) e `/{id}/acao` (`pausar`, `ativar`, `remover`), `POST /api/downloads/{id}/acao` (`tentar`); a conta separada: `GET /api/canais/conta`, `POST /api/canais/conta/conectar` (com uma janela aberta, devolve a mesma), `/cancelar` e `/esquecer` |
 | Redes | `GET /api/redes`, `GET` e `POST /api/redes/{rede}/login`, `POST .../cancelar`, `/testar` e `/desconectar`, `POST /api/redes/instagram/conta` |
 | Sistema | `GET /api/logs?desde=`, `POST /api/sistema/abrir`, `/inicializacao` e `/encerrar` |
 | Atualização | `GET /api/atualizacao`, `POST /api/atualizacao/verificar`, `/aplicar` (409 se algo está trabalhando) e `/opcoes` |
-| Mídia | `GET /media/corte/{id}.mp4` e `.jpg` (com Range), `GET /media/previa.jpg` |
+| Mídia | `GET /media/corte/{id}.mp4` e `.jpg` (com Range), `GET /media/previa.jpg`, `GET /media/imagem/{id}/{n}.jpg` (só de dentro da pasta de dados) e `GET /media/previa-imagem/{tipo}-{formato}-{n}.jpg` |
 
 Ações de corte: `aprovar`, `descartar`, `restaurar`, `reeditar`, `editar_agora`, `recriar` (vídeo criado), `priorizar`, `normal`, `gerar_textos`, `limpar_textos_ia` e `apagar_video` (só em publicado: apaga o `.mp4`, o `.ass` e o `.jpg`; o corte e o histórico ficam); descartar, reeditar, recriar e apagar_video esperam o envio em andamento terminar (409, com `motivo: "enviando"`). Em lote, cada corte passa pelas mesmas regras, e o que um corte não deixa vai em `falhas` sem parar os outros; nenhuma ação apaga a linha do corte. Ações de filme: `reanalisar`, `reanalisar_tudo`, `ignorar`, `reativar`, `mostrar` (as quatro primeiras só em filme, não em pauta). Ações de pauta: `criar_agora`, `escrever_com_ia`, `excluir`, `mostrar`.
 
@@ -856,7 +889,7 @@ Ações de corte: `aprovar`, `descartar`, `restaurar`, `reeditar`, `editar_agora
 Ciclo de vida no banco:
 - **Filme:** `novo` → `analisando` → `analisado` (ou `erro`, `ausente`, `ignorado`). A pauta de um vídeo criado é uma linha com `tipo = 'pauta'`: `novo` → `criando` → `analisado`.
 - **Corte:** `candidato` → `renderizando` → `revisao` (com aprovação ligada) → `pronto` → `concluido` (ou `erro`, `descartado`)
-- **Postagem:** `enviando` → `publicado` ou `simulado` (ou `falhou`, `pulado`, `interrompido`, `ensaio`); quando a rede recebeu e não confirmou, `conferir` → `publicado` ou `falhou`, pela sua resposta; à mão, `aguardando` → `publicado` ou `pulado`. O Reel da Página fica como a rede `facebook`. As pausas de cada rede ficam na tabela `estado` (`bloqueio:<rede>`).
+- **Postagem:** `enviando` → `publicado` ou `simulado` (ou `falhou`, `pulado`, `interrompido`, `ensaio`); quando a rede recebeu e não confirmou, `conferir` → `publicado` ou `falhou`, pela sua resposta; à mão, `aguardando` → `publicado` ou `pulado`. O Reel da Página fica como a rede `facebook`. O post de imagem é uma postagem com `midia = 'imagem'` e o tipo em `imagem_tipo`, e as imagens geradas ficam na tabela `imagens`. As pausas de cada rede ficam na tabela `estado` (`bloqueio:<rede>`), junto com o que o envio e a gravação descobriram das imagens (`imagens:<rede>`).
 
 ## Arquivos gerados
 
@@ -870,6 +903,9 @@ Ciclo de vida no banco:
 | `dados/logs/autocortes.log` | registro, com até 5 arquivos de 5 MB |
 | `<[manual].pasta>/<Rede>/` | cópia do vídeo (`nome-parte05-tarefa12.mp4`) e dos textos (`.txt`) de cada tarefa à mão, apagada quando ela é resolvida |
 | `dados/roteiros/<rede>.txt` | o seu roteiro de envio pelo navegador (gravado ou editado), que vale no lugar do padrão de `roteiros/` |
+| `dados/roteiros/<rede>-imagem.txt` | o roteiro dos posts de imagem da rede (não tem padrão) |
+| `dados/imagens/<corte>/` | as imagens de cada corte (`carrossel-4x5-1.jpg`...), o cache da medição dos quadros e, só durante o envio, as cópias com o nome do filme em `envio/<rede>/` |
+| `dados/previa/exemplo-imagem/<n>/` | as imagens de exemplo da gravação do roteiro de imagem (`exemplo-1.jpg`...) |
 | `filmes/YouTube/<canal>/` | vídeos baixados dos canais, cada um com um `.json` (título, canal e link) |
 | `ferramentas/yt-dlp/` | yt-dlp e, se preciso, o Deno |
 | `.atualizacao.json` | situação da atualização pelo GitHub (versão instalada, última conferência, falhas); na instalação por ZIP, `.atualizacao/` guarda o ZIP baixado e a cópia dos arquivos trocados |
@@ -906,7 +942,7 @@ Ciclo de vida no banco:
 
 ## Testes feitos
 
-Os testes fixos ficam em `tests/` (unittest) e rodam com `.venv\Scripts\python -m unittest tests.test_gravador tests.test_canais tests.test_runtime_whisper`. O resto de cada rodada usa scripts temporários numa pasta própria, com filmes sintéticos, servidores que imitam as APIs das redes e o Edge sem janela para o painel.
+Os testes fixos ficam em `tests/` (unittest) e rodam com `.venv\Scripts\python -m unittest tests.test_gravador tests.test_canais tests.test_runtime_whisper tests.test_imagens`. O resto de cada rodada usa scripts temporários numa pasta própria, com filmes sintéticos, servidores que imitam as APIs das redes e o Edge sem janela para o painel.
 
 <details>
 <summary><b>Ver todos os testes</b></summary>
@@ -974,6 +1010,8 @@ Os testes fixos ficam em `tests/` (unittest) e rodam com `.venv\Scripts\python -
   - Testes fixos em `tests/test_runtime_whisper.py` (38, em cerca de 4 s): a conferência com um System32 falso (sem e com as DLLs, DLL ao lado do executável, cópia de 32 bits, arquivo que não é DLL, Sysnative num Python de 32 bits), a lista contra os binários de verdade, os códigos com e sem sinal virando erro legível, 4 análises seguidas sem gastar tentativa nem gravar "nenhuma (erro)", a espera de 30 min, o motor sem laço, a mineração, a linha de comando, o alerta do Início e o 409 do download.
   - Ponta a ponta com um filme de 90 s narrado pela voz do Windows (92 checagens, 0 erros no console, 10 capturas conferidas). Sem o Visual C++ (um System32 falso vazio), `verificar`, `analisar` e `baixar` avisam e saem com 1; o painel mostra o aviso e o alerta; e o motor esperou 103 s sem tocar no filme (0,03 s de CPU em 82 s). Com as DLLs copiadas, "Já instalei, conferir de novo" confirmou sem perder a alteração não salva, e o filme foi transcrito (12 frases) sem baixar nada. Com um `.bat` que sai com 0xC0000135 no lugar do detector de voz e depois do Whisper, o filme esperou com o erro legível: uma linha no registro em 2 min e 4 aberturas sem gastar tentativa; sem o `.bat`, foi transcrito. Com o runtime de verdade deste PC, nenhum aviso no painel, no `/api/config` nem no `verificar`.
   - O que foi corrigido: a lista não tinha o `VCOMP140.dll` (achado na tabela de importação); a falta do runtime gastava as tentativas da transcrição e gravava "sem legenda" para sempre (no dublado, a legenda do original); e, achados na tela, o recado do Início mandava "ver o Início" e o cartão dizia "Tudo pronto" com a transcrição desligada e o runtime faltando.
+- **Posts de imagem por rede** (outubro de 2026), sem nenhuma conta logada:
+  - Testes fixos em `tests/test_imagens.py`: config, migração do banco e da agenda do formato anterior, as consultas de vídeo sem as imagens, o planejador e o plano com vídeos e imagens misturados, a escolha dos quadros e o render com dois filmes sintéticos (2,39:1 e 4:3), o envio de vários arquivos pelo DevTools com um WebSocket falso (o envio de vídeo com as mesmas chamadas de antes), o roteiro de imagem na repetição, o publicador com os erros de cada tipo e o gravador sem o nome dos arquivos de exemplo; nas rotas do painel, o "Postar imagem agora", a prévia, a mídia só de dentro da pasta de dados, a gravação de imagem com os exemplos, o post da gravação a conferir e os 400 e 409 que deixam a gravação aberta intacta. Os testes fixos todos juntos: 281 em cerca de 105 s.
 
 </details>
 
@@ -993,6 +1031,21 @@ Pendências conhecidas:
 - As métricas da Página do Facebook e dos posts feitos à mão não são lidas.
 - Editar de novo um corte com tarefa à mão apaga a cópia da pasta sincronizada; o vídeo novo fica no painel.
 - **Conta separada dos canais:** o login de verdade no Google e o que o YouTube faz com a conta não foram testados (o teste usou cookies plantados): se ele aceita os cookies, se pede verificação de novo e quanto tempo a conta dura.
+- **Posts de imagem:** nada foi visto com a conta logada. Na primeira gravação de cada rede, confira se o TikTok Studio oferece fotos e carrossel pelo computador, se o Instagram mostra o recorte 4:5 ou Original, se as páginas preenchem o título ou a legenda com o nome do arquivo e quanto tempo leva medir os quadros de um corte. O que ainda não existe:
+  - P1: fotos pelo Upload-Post (`/api/upload_photos`);
+  - P2: fotos na Página do Facebook (`/{page-id}/photos`);
+  - P3: curiosidade do filme (Wikidata) como post de imagem;
+  - P4: notícia como post de imagem;
+  - P5: posts da Comunidade do YouTube pelo roteiro do navegador (a página de post da Comunidade não foi verificada, e a API do YouTube não posta lá);
+  - P6: imagem como tarefa à mão (o Kwai, e a reserva do TikTok se a conta não postar fotos pelo computador);
+  - P7: imagem pela linha de comando (`postar --imagem <tipo>`);
+  - P8: carrossel que junta as imagens em vários passos (o "+" de algumas páginas);
+  - P9: moldura nas imagens 9:16;
+  - P10: o limite de 90 caracteres do título do post de fotos do TikTok não tem fonte oficial;
+  - P11: roteiros padrão de imagem no repositório, depois que um post de verdade sair por eles;
+  - P12: métricas dos posts de imagem;
+  - P14: imagens no Bilibili pelo roteiro do navegador (a página de envio de fotos não foi verificada);
+  - P15: imagem de um trecho sem editar o vídeo antes, para quem só posta imagens (hoje a rede só de imagens faz o AutoCortes editar vídeos que nenhuma rede posta).
 - **Visual C++ do Whisper:** testado com um System32 falso e com um `.bat` que sai com 0xC0000135, não num Windows sem o pacote. Uma DLL que falte apesar da conferência (whisper.cpp próprio ou pacote antigo demais) ainda pode abrir a caixa de erro do próprio Windows antes do aviso do AutoCortes: ele não liga o `SEM_FAILCRITICALERRORS`, que valeria para todos os programas que ele abre.
 
 Melhorias levantadas na pesquisa, por prioridade:
