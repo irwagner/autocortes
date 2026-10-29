@@ -6,10 +6,13 @@ dela). Nada toca em dados\\, perfis\\ nem no config.toml da instalação.
 
 import contextlib
 import copy
+import html
+import http.server
 import io
 import json
 import re
 import sqlite3
+import subprocess
 import tempfile
 import threading
 import time
@@ -19,6 +22,9 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlencode, urlsplit
+
+import requests
 
 from autocortes import (agenda, analise, cli, config, db, edicao, gravador, imagens, legendas, loop, midia, navegador,
                         planejador, produtor, publicador, roteiro, selecao, textos, util)
@@ -3205,6 +3211,507 @@ class TestGravacaoNoPainel(BasePainel):
         self.assertEqual(planejador.ler_estado_imagens(self.conn, "instagram"), {})
         r = api.ler_roteiro(self.ctx(consulta={"midia": "imagem"}), "instagram")
         self.assertEqual((r["texto"], r["origem"], r["resumo"]), ("", None, None))
+
+
+# ---------------------------------------------------------------- páginas falsas no navegador sem janela
+
+# As páginas mostram o nome do arquivo escolhido de todos os jeitos que vazariam para o roteiro (CA-05):
+# num span clicável, no aria-label e no title da miniatura, num campo que a página preenche sozinha, na
+# legenda pré-preenchida e no texto depois de publicar. O que chegou (nomes e textos) fica em data-.
+PAGINA_INSTAGRAM = r"""<!doctype html><html><head><meta charset="utf-8"><title>Instagram de mentira</title>
+<style>button, [role=button] { display: inline-block; padding: 6px; margin: 4px; border: 1px solid #888; }
+.miniatura img { display: inline-block; width: 40px; height: 40px; background: #ccc; }</style></head><body>
+<nav><button id="criar" aria-label="Criar">Criar</button></nav>
+<div role="dialog" id="janela" hidden>
+  <h2>Criar novo post</h2>
+  <input type="file" id="arquivo" __MULTIPLE__ accept="__ACCEPT__">
+  <div id="previa"></div>
+  <div id="recorte" hidden><button id="r11">1:1</button><button id="r45">4:5</button>
+    <button id="rorig">Original</button><div role="button" id="avancar">Avançar</div></div>
+  <div id="detalhes" hidden>
+    <input id="alt" type="text" aria-label="Texto alternativo">
+    <textarea id="legenda" aria-label="Escreva uma legenda"></textarea>
+    <div role="button" id="compartilhar">Compartilhar</div>
+  </div>
+</div>
+<div id="feito"></div>
+<script>
+const $ = (s) => document.querySelector(s);
+const semExtensao = (n) => n.replace(/\.[^.]+$/, "");
+let nomes = [];
+$("#criar").addEventListener("click", () => { $("#janela").hidden = false; });
+$("#arquivo").addEventListener("change", (ev) => {
+  nomes = [...ev.target.files].map((f) => f.name);
+  document.body.dataset.arquivos = JSON.stringify(nomes);
+  $("#previa").innerHTML = `<span class="nome" role="button" tabindex="0">${nomes[0]}</span>` + nomes.map((n) =>
+    `<div class="miniatura"><img alt="" aria-label="${n}" title="${n}" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></div>`).join("");
+  $("#recorte").hidden = false;
+  $("#detalhes").hidden = false;
+  $("#alt").value = semExtensao(nomes[0]);
+  $("#legenda").value = semExtensao(nomes[0]) + " ";
+});
+$("#rorig").addEventListener("click", () => { document.body.dataset.recorte = "original"; });
+$("#compartilhar").addEventListener("click", () => {
+  document.body.dataset.publicado = JSON.stringify({ arquivos: nomes, legenda: $("#legenda").value });
+  $("#janela").hidden = true;
+  $("#feito").innerHTML = `<div role="dialog"><span>Sua publicação ${nomes[0]} foi compartilhada</span> <a href="#">Ver publicação</a></div>`;
+});
+</script></body></html>"""
+
+# No TikTok de mentira, título, legenda e "Post" ficam num shadow DOM, e o "Post" (aria-label
+# "Publicar agora") só libera depois do "Enviado". O campo de arquivo fica fora: o "change" não sai
+# do shadow DOM e o gravador não o veria (achado do V2; nas três redes de verdade o campo está fora,
+# como mostram os roteiros padrão gravados em out/2026).
+PAGINA_TIKTOK = r"""<!doctype html><html><head><meta charset="utf-8"><title>TikTok de mentira</title></head><body>
+<input type="file" class="upload" __MULTIPLE__ accept="__ACCEPT__">
+<tt-upload id="host"></tt-upload><div id="feito"></div>
+<script>
+const raiz = document.querySelector("#host").attachShadow({ mode: "open" });
+raiz.innerHTML = `<section class="envio">
+  <div id="info"></div>
+  <input name="titulo" class="titulo" placeholder="Título">
+  <div class="legenda" contenteditable="true" role="textbox" aria-label="Descrição" style="min-height: 40px; border: 1px solid #888"></div>
+  <span id="estado">Escolha as fotos</span>
+  <div role="button" class="post" aria-label="Publicar agora" aria-disabled="true" style="padding: 6px; border: 1px solid #888">Post</div>
+</section>`;
+const q = (s) => raiz.querySelector(s);
+let nomes = [];
+document.querySelector(".upload").addEventListener("change", (ev) => {
+  nomes = [...ev.target.files].map((f) => f.name);
+  document.body.dataset.arquivos = JSON.stringify(nomes);
+  q("#info").innerHTML = nomes.map((n) => `<div class="arquivo" title="${n}">${n}</div>`).join("");
+  q(".titulo").value = nomes[0].replace(/\.[^.]+$/, "");
+  q("#estado").textContent = "Enviando...";
+  setTimeout(() => { q("#estado").textContent = "Enviado"; q(".post").setAttribute("aria-disabled", "false"); }, 1500);
+});
+q(".post").addEventListener("click", () => {
+  if (q(".post").getAttribute("aria-disabled") === "true") return;
+  document.body.dataset.publicado = JSON.stringify({ arquivos: nomes, titulo: q(".titulo").value,
+                                                     legenda: q(".legenda").innerText });
+  document.querySelector("#feito").textContent = "Seu post foi publicado";
+});
+</script></body></html>"""
+
+# Dois campos de arquivo que casam com o mesmo seletor: o de vídeo primeiro (DF-11).
+PAGINA_DUPLO = r"""<!doctype html><html><head><meta charset="utf-8"></head><body>
+<input type="file" id="video" accept="video/mp4,video/*"><input type="file" id="fotos" multiple accept="image/png, image/jpeg">
+<script>
+for (const el of document.querySelectorAll("input")) el.addEventListener("change", () => {
+  document.body.dataset[el.id] = JSON.stringify([...el.files].map((f) => f.name)); });
+</script></body></html>"""
+
+
+class _Paginas(http.server.BaseHTTPRequestHandler):
+    """Serve as páginas falsas; ?multiple=0 tira o multiple e ?accept=... troca o accept."""
+
+    def do_GET(self):
+        partes = urlsplit(self.path)
+        consulta = parse_qs(partes.query)
+        modelo = {"instagram": PAGINA_INSTAGRAM, "tiktok": PAGINA_TIKTOK, "duplo": PAGINA_DUPLO}.get(
+            partes.path.strip("/"))
+        if modelo is None:
+            self.send_error(404)
+            return
+        multiplo = consulta.get("multiple", ["1"])[0] == "1"
+        aceita = consulta.get("accept", ["image/jpeg,image/png"])[0]
+        corpo = (modelo.replace("__MULTIPLE__", "multiple" if multiplo else "")
+                 .replace("__ACCEPT__", html.escape(aceita, quote=True))).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(corpo)))
+        self.end_headers()
+        self.wfile.write(corpo)
+
+    def log_message(self, *args):
+        pass
+
+
+class _NavegadorDaPaginaFalsa:
+    """O Navegador do AutoCortes trocado pela aba do navegador sem janela do teste."""
+
+    aba = None
+
+    def __init__(self, cfg, parar=None):
+        pass
+
+    def nova_aba(self, url: str = "about:blank"):
+        return _NavegadorDaPaginaFalsa.aba
+
+    def fechar_aba(self, aba) -> None:
+        pass
+
+
+LEGENDA_DE_VERDADE = "Trecho de Filme Teste - Parte 1 #filme"
+
+
+class TestPaginasFalsas(BaseImagens):
+    """V2: gravação e repetição do roteiro de imagem num navegador sem janela, contra páginas locais.
+
+    Perfil temporário, páginas em 127.0.0.1 e nenhuma conta: os sites de verdade não são abertos.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pasta = tempfile.TemporaryDirectory(prefix="autocortes-teste-imagens-nav-")
+        cls.addClassCleanup(cls.pasta.cleanup)
+        try:
+            programa = navegador.caminho_programa(Config(copy.deepcopy(PADRAO), Path(cls.pasta.name) / "config.toml"))
+        except navegador.ErroNavegador as erro:
+            raise unittest.SkipTest(str(erro)) from erro
+        cls.servidor = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Paginas)
+        threading.Thread(target=cls.servidor.serve_forever, daemon=True).start()
+        cls.addClassCleanup(cls.servidor.server_close)
+        cls.addClassCleanup(cls.servidor.shutdown)
+        cls.site = f"http://127.0.0.1:{cls.servidor.server_address[1]}"
+        porta = navegador.porta_livre()
+        cls.devtools = f"http://127.0.0.1:{porta}"
+        cls.processo = subprocess.Popen(
+            [str(programa), "--headless=new", f"--remote-debugging-port={porta}",
+             "--remote-debugging-address=127.0.0.1", f"--user-data-dir={cls.pasta.name}/chrome",
+             "--no-first-run", "--no-default-browser-check", "about:blank"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        cls.addClassCleanup(cls._encerrar)
+        limite = time.monotonic() + 20
+        while time.monotonic() < limite:
+            try:
+                paginas = requests.get(f"{cls.devtools}/json/list", timeout=1).json()
+                pagina = next(p for p in paginas if p["type"] == "page")
+                cls.aba = navegador.Aba(navegador._Websocket(pagina["webSocketDebuggerUrl"], timeout=10), ritmo=(0, 0))
+                cls.addClassCleanup(cls.aba._ws.fechar)
+                return
+            except (requests.RequestException, StopIteration):
+                time.sleep(0.1)
+        raise RuntimeError("O navegador de teste não abriu")
+
+    @classmethod
+    def _encerrar(cls):
+        try:
+            url = requests.get(f"{cls.devtools}/json/version", timeout=2).json()["webSocketDebuggerUrl"]
+            ws = navegador._Websocket(url, timeout=2)
+            try:
+                ws.enviar(json.dumps({"id": 1, "method": "Browser.close"}))
+            finally:
+                ws.fechar()
+            cls.processo.wait(timeout=5)
+        except (requests.RequestException, navegador.ErroNavegador, subprocess.TimeoutExpired):
+            cls.processo.terminate()
+            cls.processo.wait(timeout=5)
+
+    def setUp(self):
+        super().setUp()
+        _NavegadorDaPaginaFalsa.aba = self.aba
+        # se algo quebrar, o teste falha em segundos, e não nos 15 min do botão de publicar
+        troca = patch.object(plat_nav, "ESPERA_PUBLICAR", 20)
+        troca.start()
+        self.addCleanup(troca.stop)
+        self.exemplos = []
+        for nome in gravador.NOMES_EXEMPLO[:3]:
+            arquivo = self.raiz / "exemplos" / nome
+            arquivo.parent.mkdir(parents=True, exist_ok=True)
+            arquivo.write_bytes(b"\xff\xd8\xff\xe0")
+            self.exemplos.append(arquivo)
+        self.fotos = []
+        for i in range(1, 4):
+            arquivo = self.raiz / "envio" / f"nome-do-filme-{i}.jpg"
+            arquivo.parent.mkdir(parents=True, exist_ok=True)
+            arquivo.write_bytes(b"\xff\xd8\xff\xe0")
+            self.fotos.append(arquivo)
+        self.conteudo = textos.Conteudo("Filme Teste - Parte 1", "A legenda do post de verdade #filme", ["#filme"])
+
+    # ---- o que a pessoa faz na janela
+    def url(self, pagina: str, **consulta) -> str:
+        return f"{self.site}/{pagina}" + (f"?{urlencode(consulta)}" if consulta else "")
+
+    def abrir(self, url: str) -> None:
+        self.aba.navegar(url)
+        self.aba.avaliar(gravador.SCRIPT)
+
+    def clicar(self, expressao: str) -> None:
+        """Clique de verdade (Input.dispatchMouseEvent) no meio do elemento."""
+        x, y = self.aba.avaliar("(() => { const el = " + expressao + "; el.scrollIntoView({block: 'center'}); "
+                                "const r = el.getBoundingClientRect(); return [r.left + r.width / 2, "
+                                "r.top + r.height / 2]; })()")
+        self.aba.comando("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y)
+        for tipo in ("mousePressed", "mouseReleased"):
+            self.aba.comando("Input.dispatchMouseEvent", type=tipo, x=x, y=y, button="left", clickCount=1)
+
+    def escolher(self, expressao: str, arquivos: list[Path]) -> None:
+        """Os arquivos escolhidos no campo, como a janela do Windows faria."""
+        self.aba.comando("DOM.getDocument", depth=0)
+        objeto = self.aba.avaliar(expressao, objeto=True)
+        no = self.aba.comando("DOM.requestNode", objectId=objeto["objectId"])["nodeId"]
+        self.aba.comando("DOM.setFileInputFiles", nodeId=no, files=[str(a) for a in arquivos])
+
+    def escrever_no_fim(self, expressao: str, texto: str) -> None:
+        """Cola o texto no fim do que já está no campo (sem apagar)."""
+        self.aba.avaliar("(() => { const el = " + expressao + "; el.focus(); if (el.setSelectionRange) "
+                         "el.setSelectionRange(el.value.length, el.value.length); else { const s = getSelection(); "
+                         "s.selectAllChildren(el); s.collapseToEnd(); } return 1; })()")
+        self.aba.comando("Input.insertText", text=texto)
+        self.varrer()
+
+    def trocar_texto(self, expressao: str, texto: str) -> None:
+        self.aba.avaliar("(() => { const el = " + expressao + "; el.focus(); if (el.select) el.select(); "
+                         "else document.execCommand('selectAll'); return 1; })()")
+        self.aba.comando("Input.insertText", text=texto)
+        self.varrer()
+
+    def varrer(self) -> None:
+        self.aba.avaliar("window.__acGrav.varrer()")
+
+    def dados(self, chave: str):
+        valor = self.aba.avaliar(f"document.body.dataset.{chave} || ''")
+        if not valor:
+            return None
+        try:
+            return json.loads(valor)
+        except ValueError:
+            return valor
+
+    def esperar(self, expressao: str) -> None:
+        self.aba.esperar(expressao, 10, expressao)
+
+    # ---- gravações
+    def gravar_instagram(self, url: str) -> tuple[dict, list[dict], str]:
+        """Posta à mão as 3 imagens de exemplo, colando a marca e trocando pela legenda de verdade (DF-2)."""
+        self.abrir(url)
+        inicial = str(self.aba.avaliar("window.__acGrav.texto()") or "")
+        self.clicar("document.querySelector('#criar')")
+        self.escolher("document.querySelector('#arquivo')", self.exemplos)
+        self.esperar("document.querySelector('#detalhes').hidden ? 0 : 1")
+        self.varrer()
+        self.clicar("document.querySelector('span.nome')")  # o nome do arquivo num span clicável
+        self.clicar("document.querySelector('.miniatura img')")  # aria-label e title com o nome
+        self.clicar("document.querySelector('#rorig')")
+        self.clicar("document.querySelector('#avancar')")
+        self.escrever_no_fim("document.querySelector('#legenda')", "@@LEGENDA@@")  # "exemplo-1 @@LEGENDA@@"
+        self.trocar_texto("document.querySelector('#legenda')", LEGENDA_DE_VERDADE)
+        self.clicar("document.querySelector('#compartilhar')")
+        self.esperar("document.body.dataset.publicado ? 1 : 0")
+        passos = self.aba.avaliar("window.__acGrav.tirar()")
+        confirmacao = str(self.aba.avaliar("window.__acGrav.texto()") or "")
+        resultado = gravador.salvar(self.cfg, "instagram-imagem", passos, url, confirmacao, inicial, exemplos=True)
+        return resultado, passos, confirmacao
+
+    def gravar_tiktok(self, url: str) -> tuple[dict, list[dict]]:
+        sombra = "document.querySelector('#host').shadowRoot.querySelector"
+        self.abrir(url)
+        inicial = str(self.aba.avaliar("window.__acGrav.texto()") or "")
+        self.escolher("document.querySelector('.upload')", self.exemplos)
+        self.esperar(f"{sombra}('.titulo').value ? 1 : 0")
+        self.varrer()  # o título que a página preencheu sozinha com o nome
+        self.clicar(f"{sombra}('.arquivo')")  # title e texto com o nome
+        self.escrever_no_fim(f"{sombra}('.legenda')", "@@LEGENDA@@")
+        self.trocar_texto(f"{sombra}('.legenda')", LEGENDA_DE_VERDADE)
+        self.esperar(f"{sombra}('#estado').textContent === 'Enviado' ? 1 : 0")
+        self.clicar(f"{sombra}('.post')")
+        self.esperar("document.body.dataset.publicado ? 1 : 0")
+        passos = self.aba.avaliar("window.__acGrav.tirar()")
+        confirmacao = str(self.aba.avaliar("window.__acGrav.texto()") or "")
+        return gravador.salvar(self.cfg, "tiktok-imagem", passos, url, confirmacao, inicial, exemplos=True), passos
+
+    def sem_exemplo(self, nome: str, passos: list[dict], resultado: dict) -> None:
+        lista = gravador.lista_passos(nome, passos, exemplos=True)
+        self.assertNotIn("exemplo", json.dumps(lista, ensure_ascii=False).lower())
+        self.assertNotIn("exemplo", resultado["texto"].lower())
+        self.assertNotIn("exemplo", gravador.carregar(self.cfg, nome).lower())
+
+    # ---- repetição
+    def repetir(self, nome: str, arquivos: list[Path], ensaio: bool = False) -> tuple[plat_base.Resultado,
+                                                                                      plat_base.Entrega]:
+        rede = roteiro.rede_do_roteiro(nome)
+        via = plat_nav.ViaNavegador(rede, self.cfg)
+        via._id_envio = "navegador-teste"
+        entrega = plat_base.Entrega()
+        t = plat_nav.textos(self.cfg, rede, self.conteudo)
+        resultado = via._repetir(self.aba, gravador.carregar(self.cfg, nome), arquivos, t, ensaio, entrega,
+                                 "perfil", nome)
+        return resultado, entrega
+
+    def com_a_via(self, rede: str, url: str) -> contextlib.ExitStack:
+        """O ViaNavegador inteiro (publicar_imagens) com a página falsa no lugar da página de envio."""
+        pilha = contextlib.ExitStack()
+        pilha.enter_context(patch.object(plat_nav, "Navegador", _NavegadorDaPaginaFalsa))
+        pilha.enter_context(patch.object(plat_nav, "esperar_sessao", lambda *a, **k: None))
+        pilha.enter_context(patch.dict(plat_nav.PAGINAS, {rede: (url, url)}))
+        return pilha
+
+    # ---- testes
+    def test_gravacao_do_instagram_sem_o_nome_dos_exemplos(self):  # CA-05, DF-2
+        r, passos, confirmacao = self.gravar_instagram(self.url("instagram"))
+        self.assertTrue(r["ok"], r)
+        self.assertIn("exemplo-1.jpg", confirmacao)  # a página mostrou o nome depois de publicar
+        self.sem_exemplo("instagram-imagem", passos, r)
+        texto = r["texto"]
+        self.assertRegex(texto, r"(?m)^imagens em ")
+        self.assertRegex(texto, r"(?m)^escrever legenda em .*#legenda")  # a marca colada na legenda pronta
+        self.assertIn(roteiro.MARCA_PREENCHIDO, texto)  # o texto alternativo que a página preencheu
+        self.assertTrue(any("nome do arquivo" in a for a in r["resumo"]["avisos"]), r["resumo"]["avisos"])
+        self.assertRegex(texto, r'(?m)^publicar .*(Compartilhar|#compartilhar)')
+        self.assertEqual((r["quantos"], r["publicou"], r["publicar_incerto"], r["so_uma"]), (3, True, False, False))
+        self.assertEqual(roteiro.analisar(texto, "instagram-imagem")[1], [])
+        # a legenda de verdade foi a publicada na gravação (o post da gravação sai de verdade)
+        self.assertEqual(self.dados("publicado")["legenda"], LEGENDA_DE_VERDADE)
+
+    def test_ensaio_e_envio_com_uma_e_tres_imagens(self):  # CA-06 (ordem), CA-07
+        url = self.url("instagram")
+        self.assertTrue(self.gravar_instagram(url)[0]["ok"])
+        legenda = plat_nav.textos(self.cfg, "instagram", self.conteudo)["legenda"]
+        # ensaio: preenche tudo e para antes do Compartilhar
+        resultado, entrega = self.repetir("instagram-imagem", self.fotos, ensaio=True)
+        self.assertFalse(entrega.aceita)
+        self.assertEqual(self.dados("arquivos"), [f.name for f in self.fotos])
+        self.assertEqual(self.aba.avaliar("document.querySelector('#legenda').value"), legenda)
+        self.assertEqual(self.dados("recorte"), "original")
+        self.assertIsNone(self.dados("publicado"))
+        # de verdade, com 1 e com 3 imagens, na ordem e com a legenda
+        for arquivos in (self.fotos[:1], self.fotos):
+            with self.subTest(quantas=len(arquivos)):
+                resultado, entrega = self.repetir("instagram-imagem", arquivos)
+                self.assertTrue(entrega.aceita)
+                self.assertTrue(resultado.confirmado, resultado)
+                self.assertEqual(self.dados("publicado"), {"arquivos": [a.name for a in arquivos], "legenda": legenda})
+
+    def test_gravacao_e_envio_no_tiktok_em_shadow_dom(self):  # CA-05 (a), DF-12
+        url = self.url("tiktok", accept="image/*,video/*")
+        r, passos = self.gravar_tiktok(url)
+        self.assertTrue(r["ok"], r)
+        self.sem_exemplo("tiktok-imagem", passos, r)
+        self.assertRegex(r["texto"], r"(?m)^escrever titulo em ")  # o título que a página preencheu com o nome
+        self.assertRegex(r["texto"], r"(?m)^escrever legenda em ")
+        self.assertRegex(r["texto"], r"(?m)^publicar ")
+        # pelo publicar_imagens inteiro: o "Post" desabilitado espera o "Enviado"
+        with self.com_a_via("tiktok", url):
+            via = plat_nav.ViaNavegador("tiktok", self.cfg)
+            entrega = plat_base.Entrega()
+            resultado = via.publicar_imagens(self.fotos, self.conteudo, None, entrega)
+        self.assertTrue(entrega.aceita)
+        publicado = self.dados("publicado")
+        self.assertEqual(publicado["arquivos"], [f.name for f in self.fotos])
+        self.assertEqual(publicado["titulo"], "Filme Teste - Parte 1")
+        self.assertEqual(publicado["legenda"], plat_nav.textos(self.cfg, "tiktok", self.conteudo)["legenda"])
+        self.assertTrue(resultado.id_remoto.startswith("navegador-"))
+
+    def test_campo_que_nao_aceita_foto_na_gravacao(self):  # CA-22
+        r, passos, _ = self.gravar_instagram(self.url("instagram", accept="video/*"))
+        self.assertEqual((r["ok"], r.get("motivo")), (False, "sem_fotos"))
+        self.assertIn("não aceita imagem", r["mensagem"])
+        self.assertEqual(gravador.carregar(self.cfg, "instagram-imagem"), ROTEIRO_IMAGEM)  # nada gravado por cima
+        self.assertNotIn("exemplo", json.dumps(gravador.lista_passos("instagram-imagem", passos, True),
+                                               ensure_ascii=False).lower())
+
+    def test_imagens_arrastadas(self):  # DF-3
+        self.abrir(self.url("instagram"))
+        self.clicar("document.querySelector('#criar')")
+        self.aba.avaliar("(() => { const dt = new DataTransfer(); for (const n of " + json.dumps(
+            [a.name for a in self.exemplos]) + ") dt.items.add(new File(['x'], n, {type: 'image/jpeg'})); "
+            "document.querySelector('#janela').dispatchEvent(new DragEvent('drop', {dataTransfer: dt, "
+            "bubbles: true, cancelable: true})); return 1; })()")
+        self.clicar("document.querySelector('#criar')")
+        passos = self.aba.avaliar("window.__acGrav.tirar()")
+        self.assertIn({"tipo": "soltou", "quantos": 3}, [{k: p[k] for k in ("tipo", "quantos") if k in p}
+                                                        for p in passos])
+        r = gravador.salvar(self.cfg, "instagram-imagem", passos, self.url("instagram"), "", "", exemplos=True)
+        self.assertEqual((r["ok"], r["motivo"]), (False, "arrastou"))
+        self.assertNotIn("exemplo", json.dumps(gravador.lista_passos("instagram-imagem", passos, True),
+                                               ensure_ascii=False).lower())
+
+    def test_postar_imagem_entrega_copias_de_nome_neutro(self):  # CA-06
+        url = self.url("instagram")
+        self.assertTrue(self.gravar_instagram(url)[0]["ok"])
+        corte = self.novo_corte()
+        self.postagem(corte, "instagram", "publicado")
+        pub = publicador.Publicador(self.cfg, threading.Event())
+        pub.plataformas["instagram"] = plat_nav.ViaNavegador("instagram", self.cfg)
+        fontes = []
+        pasta = imagens.pasta_imagens(self.cfg, corte)
+        pasta.mkdir(parents=True, exist_ok=True)
+        for i in range(1, 4):
+            fontes.append(pasta / f"carrossel-4x5-{i}.jpg")
+            fontes[-1].write_bytes(b"\xff\xd8\xff\xe0")
+        with self.com_a_via("instagram", url), \
+                patch.object(imagens, "preparar", side_effect=lambda *a, **k: _linha_de_imagem(self.conn, a[2], a[3],
+                                                                                               fontes)):
+            self.assertEqual(pub.postar_imagem(self.conn, "instagram", self.corte_row(corte), "carrossel"), "publicado")
+        self.assertEqual(self.dados("publicado")["arquivos"], ["filme-teste-1.jpg", "filme-teste-2.jpg",
+                                                              "filme-teste-3.jpg"])
+        self.assertFalse((pasta / "envio" / "instagram").exists())
+        linha = self.conn.execute("SELECT status, via, imagem_tipo FROM postagens WHERE midia='imagem'").fetchone()
+        self.assertEqual(tuple(linha), ("publicado", "navegador", "carrossel"))
+
+    def preparar_com(self, corte: int):
+        pasta = imagens.pasta_imagens(self.cfg, corte)
+        pasta.mkdir(parents=True, exist_ok=True)
+
+        def preparar(cfg, conn, row, tipo, *a, **k):
+            fontes = []
+            for i in range(1, (3 if tipo == "carrossel" else 1) + 1):
+                fontes.append(pasta / f"{tipo}-4x5-{i}.jpg")
+                fontes[-1].write_bytes(b"\xff\xd8\xff\xe0")
+            return _linha_de_imagem(conn, row, tipo, fontes)
+        return patch.object(imagens, "preparar", side_effect=preparar)
+
+    def test_carrossel_sem_multiple(self):  # CA-13
+        url = self.url("instagram", multiple="0")
+        self.assertTrue(self.gravar_instagram(url)[0]["ok"])  # gravado com 3 num campo de uma (a página aceitou)
+        planejador.limpar_estado_imagens(self.conn, "instagram")
+        corte = self.novo_corte()
+        self.postagem(corte, "instagram", "publicado")
+        pub = publicador.Publicador(self.cfg, threading.Event())
+        pub.plataformas["instagram"] = plat_nav.ViaNavegador("instagram", self.cfg)
+        with self.com_a_via("instagram", url), self.preparar_com(corte):
+            self.assertEqual(pub.postar_imagem(self.conn, "instagram", self.corte_row(corte), "carrossel"), "formato")
+            self.assertEqual(list(planejador.ler_estado_imagens(self.conn, "instagram")), ["sem_carrossel"])
+            self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM postagens WHERE midia='imagem'").fetchone()[0], 0)
+            self.assertEqual(publicador.ler_bloqueios(self.conn), {})
+            # uma imagem só sai pelo mesmo campo
+            self.assertEqual(pub.postar_imagem(self.conn, "instagram", self.corte_row(corte), "momento"), "publicado")
+        self.assertEqual(self.dados("publicado")["arquivos"], ["filme-teste-1.jpg"])
+
+    def test_campo_que_nao_aceita_foto_no_envio(self):  # CA-30
+        url = self.url("instagram")
+        self.assertTrue(self.gravar_instagram(url)[0]["ok"])
+        corte = self.novo_corte()
+        self.postagem(corte, "instagram", "publicado")
+        via = plat_nav.ViaNavegador("instagram", self.cfg)
+        pub = publicador.Publicador(self.cfg, threading.Event())
+        pub.plataformas["instagram"] = via
+        with self.com_a_via("instagram", self.url("instagram", accept="video/*")), self.preparar_com(corte):
+            # o roteiro abre a página do "abrir": aponto o abrir para a página que só aceita vídeo
+            arquivo = gravador.arquivo_roteiro(self.cfg, "instagram-imagem")
+            arquivo.write_text(arquivo.read_text(encoding="utf-8").replace(url, self.url("instagram", accept="video/*")),
+                               encoding="utf-8")
+            self.assertEqual(pub.postar_imagem(self.conn, "instagram", self.corte_row(corte), "momento"), "formato")
+        self.assertIn("parado", planejador.ler_estado_imagens(self.conn, "instagram"))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM postagens WHERE midia='imagem'").fetchone()[0], 0)
+        self.assertEqual(publicador.ler_bloqueios(self.conn), {})
+        self.assertFalse(planejador.imagens_prontas(self.cfg, self.conn, "instagram")[0])
+        # o ciclo seguinte nem abre o navegador para as imagens desta rede
+        horario = agenda.horarios_com_chave(self.cfg, "instagram", date.today(), "imagem")[0][0]
+        with patch.object(plat_nav, "Navegador", side_effect=AssertionError("não devia abrir o navegador")), \
+                patch.object(imagens, "preparar", side_effect=AssertionError("não devia gerar imagem")):
+            pub._ciclo_imagem(self.conn, "instagram", via, horario + timedelta(minutes=1))
+
+    def test_campo_de_imagem_depois_do_de_video(self):  # DF-11 e CA-35 na página de verdade
+        self.aba.navegar(self.url("duplo"))
+        metodos = []
+        original = self.aba.comando
+
+        def anotar(metodo, _prazo=None, **params):
+            metodos.append(metodo)
+            return original(metodo, _prazo, **params)
+        with patch.object(self.aba, "comando", side_effect=anotar):
+            self.aba.enviar_arquivos(["input[type=file]"], self.fotos, midia="imagem")
+            self.assertEqual(self.dados("fotos"), [f.name for f in self.fotos])
+            self.assertIsNone(self.dados("video"))
+            video = self.raiz / "envio" / "corte.mp4"
+            video.write_bytes(b"\x00")
+            metodos.clear()
+            self.aba.enviar_arquivo("input[type=file]", video)
+        self.assertEqual(metodos, METODOS_VIDEO_MAIN)
+        self.assertEqual(self.dados("video"), ["corte.mp4"])
 
 
 if __name__ == "__main__":
