@@ -190,6 +190,23 @@ def _exigir_pagina(aba: Aba, cfg: Config, trocar: bool) -> str:
     return c_user
 
 
+def conferir_facebook(cfg: Config, trocar: bool) -> pagina_facebook.Identidade:
+    """Com que perfil a janela está agindo (o "Ver quem está ativo" do painel), anotado em navegador.json.
+
+    Quem chama segura a TRAVA do navegador. Sem sessão ou com a janela caída, ErroNavegador.
+    """
+    navegador = Navegador(cfg)
+    aba = navegador.nova_aba("about:blank")
+    try:
+        aba.navegar(PAGINAS["facebook"][1])
+        esperar_sessao(aba, "facebook")
+        ident = pagina_facebook.conferir(aba, cfg, trocar=trocar, conferir_bloqueio=_conferir_bloqueio)
+        lembrar_identidade(cfg, ident)
+        return ident
+    finally:
+        navegador.fechar_aba(aba)
+
+
 def _chave_do_link(link: str) -> str:
     """O id do post no link (youtu.be/ID e youtube.com/shorts/ID são o mesmo vídeo)."""
     partes = [p for p in re.split(r"[/?#&=]", link) if p]

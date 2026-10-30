@@ -1381,5 +1381,343 @@ class TestNoNavegador(ti.BaseBanco):
         self.assertEqual(_FacebookFalso.trocas, ["1"])  # o parágrafo "Cortes" fora da lista não conta
 
 
+# ---------------------------------------------------------------- item 8: rotas do painel
+
+def _me(numero: str, titulo: str) -> dict:
+    url = f"{pagina_facebook.BASE}/profile.php?id={numero}"
+    return {"url": url, "id": pagina_facebook._id_da_url(url), "caminho": pagina_facebook._caminho(url),
+            "titulo": f"{titulo} | Facebook"}
+
+
+# os dois sinais (cookies e destino do /me) de cada perfil, como a janela os leria
+SINAIS = {
+    "pessoal": ({"c_user": C_USER, "i_user": None}, _me(C_USER, "Fulano Pessoal")),
+    "pagina": ({"c_user": C_USER, "i_user": PAGINA}, _me(PAGINA, "Página Certa")),
+    "outra": ({"c_user": C_USER, "i_user": OUTRA}, _me(OUTRA, "Outra Página")),
+}
+
+
+class _AbaDoPainel:
+    """Aba que aceita qualquer comando e não faz nada: a conferência é trocada nos testes."""
+
+    def url(self):
+        return "https://exemplo.invalid/"
+
+    def __getattr__(self, nome):
+        return lambda *a, **k: None
+
+
+class _NavegadorDoPainel:
+    falha: str | None = None
+
+    def __init__(self, cfg, parar=None):
+        self.conf = {}
+
+    def abrir(self):
+        if _NavegadorDoPainel.falha:
+            raise navegador.ErroNavegador(_NavegadorDoPainel.falha)
+
+    def nova_aba(self, url: str = "about:blank"):
+        self.abrir()
+        return _AbaDoPainel()
+
+    def fechar_aba(self, aba) -> None:
+        pass
+
+
+class _MotorDoPainel:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.publicador = None
+        self.rodando = self.parando = False
+        self.iniciado_em = None
+        self.atualizadas: list[tuple[str, bool]] = []
+
+    def aplicar_config(self, novo) -> None:
+        self.cfg.atualizar_de(novo)
+
+    def rede_atualizada(self, rede: str, persistente: bool = False) -> None:
+        self.atualizadas.append((rede, persistente))
+        conn = db.conectar(self.cfg.banco, preparar=False)
+        try:
+            publicador.desbloquear(conn, rede, persistente)
+        finally:
+            conn.close()
+
+
+class TestPainelFacebook(ti.BaseBanco):
+    """Item 8: as rotas do Facebook no painel (critérios 14 a 17 e o R7), com a conferência trocada."""
+
+    def setUp(self):
+        super().setUp()
+        from types import SimpleNamespace
+
+        from autocortes.painel import api
+        self.api = api
+        self.so_redes("facebook")
+        self.cfg["facebook"].update(envio="navegador", pagina=LINK_PAGINA, pagina_id=PAGINA, pagina_nome="Página Certa")
+        (self.cfg.pasta_dados / "chrome").mkdir(parents=True, exist_ok=True)
+        self.motor = _MotorDoPainel(self.cfg)
+        self.painel = SimpleNamespace(cfg=self.cfg, motor=self.motor, gravacoes={}, logins={}, reinicio={},
+                                      encerrar=threading.Event(), conta_canais=None, trava_config=threading.RLock(),
+                                      conectar=lambda: db.conectar(self.cfg.banco))
+        self.sinais = SINAIS["pessoal"]
+        self.troca_funciona = True
+        self.trocas = 0
+        _NavegadorDoPainel.falha = None
+
+        def ler(aba, cfg):
+            ck, me = self.sinais
+            return pagina_facebook.decidir(ck, me, cfg["facebook"]), ck
+
+        def trocar(aba, cfg, conferir_bloqueio=None):
+            self.trocas += 1
+            if self.troca_funciona:
+                self.sinais = SINAIS["pagina"]
+
+        for troca in (patch.object(plat_nav, "Navegador", _NavegadorDoPainel),
+                      patch.object(plat_nav, "esperar_sessao", lambda aba, rede, segundos=30: None),
+                      patch.object(pagina_facebook, "_ler", ler),
+                      patch.object(pagina_facebook, "trocar", trocar)):
+            troca.start()
+            self.addCleanup(troca.stop)
+        self.registro = _Registro()
+        logger = logging.getLogger("autocortes")
+        nivel = logger.level
+        logger.addHandler(self.registro)
+        logger.setLevel(logging.DEBUG)
+        self.addCleanup(logger.setLevel, nivel)
+        self.addCleanup(logger.removeHandler, self.registro)
+        self.addCleanup(self._fechar_gravacoes)
+
+    def _fechar_gravacoes(self):
+        for sessao in self.painel.gravacoes.values():
+            sessao.cancelar()
+
+    # ---- ajudantes
+    def ctx(self, corpo=None):
+        from types import SimpleNamespace
+        return SimpleNamespace(cfg=self.cfg, conn=self.conn, painel=self.painel, corpo=corpo or {}, consulta={},
+                               tratador=None)
+
+    def erro(self, funcao, *args, corpo=None):
+        with self.assertRaises(self.api.ErroHttp) as erro:
+            funcao(self.ctx(corpo), *args)
+        return erro.exception
+
+    def perfil(self, **corpo) -> dict:
+        return self.api.perfil_facebook(self.ctx(corpo))
+
+    def conferencia(self) -> dict:
+        return (plat_nav.ViaNavegador("facebook", self.cfg).token().get("paginas") or {}).get("facebook") or {}
+
+    def no_arquivo(self) -> dict:
+        return config.carregar(self.caminho)["facebook"]
+
+    def assertSemCUser(self, *extras):
+        textos = [json.dumps(plat_nav.ViaNavegador("facebook", self.cfg).token(), ensure_ascii=False),
+                  *self.registro.linhas, *(json.dumps(x, ensure_ascii=False, default=str) for x in extras)]
+        textos += [str(v) for (v,) in self.conn.execute("SELECT valor FROM estado").fetchall()]
+        for texto in textos:
+            self.assertNotIn(C_USER, texto)
+
+    # ---- rotas registradas
+    def test_rotas(self):
+        api = self.api
+        self.assertIs(api.encontrar("POST", "/redes/facebook/perfil")[0], api.perfil_facebook)
+        self.assertIs(api.encontrar("POST", "/redes/facebook/pagina")[0], api.pagina_upload_post)
+        self.assertEqual(api.encontrar("POST", "/redes/facebook/conta")[:2], (api.escolher_conta, ("facebook",)))
+        self.assertEqual(api.encontrar("POST", "/redes/instagram/conta")[:2], (api.escolher_conta, ("instagram",)))
+        self.assertIsNone(api.encontrar("POST", "/redes/youtube/conta"))
+        texto = Path(api.__file__).read_text(encoding="utf-8")
+        self.assertEqual(texto.count("@rota("), 85)
+
+    # ---- critério 14: gravação
+    def test_14_gravacao(self):
+        e = self.erro(self.api.iniciar_gravacao, "facebook")
+        self.assertEqual(e.status, 409)
+        self.assertIn("Troque para a Página", str(e))
+        self.assertEqual(e.extra["agindo_como"], "pessoal")
+        self.assertNotIn("facebook", self.painel.gravacoes)
+        self.assertEqual(plat_nav.gravando(), [])
+        self.assertSemCUser(str(e), e.extra)
+        _NavegadorDoPainel.falha = "a janela do navegador não abriu"
+        e = self.erro(self.api.iniciar_gravacao, "facebook")
+        self.assertEqual(e.status, 400)
+        self.assertIn("não abriu", str(e))
+        _NavegadorDoPainel.falha = None
+        self.sinais = SINAIS["pagina"]
+        resposta = self.api.iniciar_gravacao(self.ctx(), "facebook")
+        self.assertTrue(resposta["ok"])
+        self.assertIn("facebook", self.painel.gravacoes)
+        self.assertEqual(self.trocas, 0)  # na gravação quem troca é você
+
+    # ---- critério 15 e 15a: Ver quem está ativo e Trocar para a Página
+    def test_15_perfil_mostra_quem_esta_ativo_e_troca(self):
+        for quem, numero in (("pessoal", None), ("outra", OUTRA), ("pagina", PAGINA)):
+            self.sinais = SINAIS[quem]
+            r = self.perfil(trocar=False)
+            self.assertEqual((r["agindo_como"], r["id"], r["confere"]), (quem, numero, quem == "pagina"))
+            self.assertEqual(self.conferencia()["agindo_como"], quem)
+        self.assertEqual(r["nome"], "Página Certa")
+        self.assertEqual(self.trocas, 0)
+        self.sinais = SINAIS["pessoal"]
+        r = self.perfil(trocar=True)
+        self.assertEqual(self.trocas, 1)
+        self.assertTrue(r["confere"])
+        self.assertEqual(r["agindo_como"], "pagina")
+        self.assertTrue(r["pagina"]["confirmada"])
+        ultima = self.api._resumo_redes(self.ctx())["facebook"]["pagina"]["ultima"]
+        self.assertEqual((ultima["agindo_como"], ultima["id"], ultima["confere"]), ("pagina", PAGINA, True))
+        self.assertSemCUser(r)
+
+    def test_15a_privacidade_no_perfil_pessoal(self):
+        self.troca_funciona = False
+        r = self.perfil(trocar=True)
+        self.assertFalse(r["confere"])
+        self.assertEqual(r["agindo_como"], "pessoal")
+        self.assertIsNone(r["id"])
+        e = self.erro(self.api.testar_rede, "facebook")
+        self.assertEqual(e.status, 400)
+        self.assertIn("o seu perfil pessoal", str(e))
+        redes = self.api._resumo_redes(self.ctx())
+        self.assertSemCUser(r, str(e), e.extra, redes)
+
+    def test_perfil_recusa(self):
+        self.assertEqual(self.erro(self.api.perfil_facebook, corpo={"usar": "abc"}).status, 400)
+        self.assertEqual(self.erro(self.api.perfil_facebook, corpo={"trocar": "sim"}).status, 400)
+        self.painel.gravacoes["tiktok"] = SimpleGravacao()
+        self.assertEqual(self.erro(self.api.perfil_facebook).status, 409)
+        self.painel.gravacoes.clear()
+        with patch.object(plat_nav, "esperar_sessao", side_effect=navegador.ErroNavegador("sem sessão")):
+            e = self.erro(self.api.perfil_facebook)
+        self.assertEqual((e.status, str(e)), (400, "sem sessão"))
+        presa = threading.Lock()
+        presa.acquire()
+        with patch.object(self.api, "TRAVA_NAVEGADOR", presa):
+            self.assertEqual(self.erro(self.api.perfil_facebook).status, 409)
+        self.cfg["facebook"]["envio"] = "upload_post"
+        self.assertEqual(self.erro(self.api.perfil_facebook).status, 400)
+
+    # ---- critério 15b: entrada só com o nome e entrada com link
+    def test_15b_nome_pede_confirmacao(self):
+        self.cfg["facebook"].update(pagina="Página Certa", pagina_id="", pagina_nome="")
+        self.sinais = SINAIS["pagina"]
+        e = self.erro(self.api.testar_rede, "facebook")
+        self.assertEqual(e.status, 400)
+        self.assertEqual(e.extra["sugestao"], {"pagina_id": PAGINA, "pagina_nome": "Página Certa"})
+        self.assertEqual(self.cfg["facebook"]["pagina_id"], "")
+        r = self.perfil()
+        self.assertEqual(r["sugestao"]["pagina_id"], PAGINA)
+        self.assertFalse(r["confere"])
+        self.assertEqual(self.cfg["facebook"]["pagina_id"], "")
+        self.sinais = SINAIS["outra"]  # a Página ativa mudou entre a pergunta e o clique
+        self.assertEqual(self.erro(self.api.perfil_facebook, corpo={"usar": PAGINA}).status, 409)
+        self.assertEqual(self.cfg["facebook"]["pagina_id"], "")
+        self.sinais = SINAIS["pagina"]
+        r = self.perfil(usar=PAGINA)
+        self.assertTrue(r["confere"])
+        self.assertIsNone(r["sugestao"])
+        self.assertEqual((self.cfg["facebook"]["pagina_id"], self.cfg["facebook"]["pagina_nome"]),
+                         (PAGINA, "Página Certa"))
+        self.assertEqual(self.no_arquivo()["pagina_id"], PAGINA)
+        self.assertEqual(self.cfg["facebook"]["pagina"], "Página Certa")  # o nome que você digitou fica
+        self.assertTrue(self.conferencia()["confere"])
+        self.assertIn(("facebook", True), self.motor.atualizadas)
+
+    def test_15b_link_aprende_o_id(self):
+        self.cfg["facebook"].update(pagina=LINK_PAGINA, pagina_id="", pagina_nome="")
+        self.sinais = SINAIS["pagina"]
+        conta = self.api.testar_rede(self.ctx(), "facebook")["conta"]
+        self.assertIn(PAGINA, conta)
+        self.assertEqual(self.cfg["facebook"]["pagina_id"], PAGINA)
+        guardado = self.no_arquivo()
+        self.assertEqual((guardado["pagina_id"], guardado["pagina_nome"]), (PAGINA, "Página Certa"))
+        self.assertEqual(self.cfg["facebook"]["pagina"], LINK_PAGINA)  # o link que você informou fica
+
+    # ---- critério 15c e R7: a pausa persistente só sai com a Página confirmada
+    def test_15c_pausa_so_sai_com_a_pagina(self):
+        publicador.bloquear(self.conn, "facebook", "não consegui confirmar que estou na Página", "bloqueio", None)
+        self.troca_funciona = False
+        e = self.erro(self.api.testar_rede, "facebook")
+        self.assertEqual(e.status, 400)
+        self.assertIn("facebook", publicador.ler_bloqueios(self.conn))
+        self.assertNotIn(("facebook", True), self.motor.atualizadas)
+        r = self.perfil(trocar=False)
+        self.assertFalse(r["confere"])
+        self.assertIn("facebook", publicador.ler_bloqueios(self.conn))
+        self.troca_funciona = True
+        r = self.perfil(trocar=True)
+        self.assertTrue(r["confere"])
+        self.assertIn(("facebook", True), self.motor.atualizadas)
+        self.assertNotIn("facebook", publicador.ler_bloqueios(self.conn))
+
+    # ---- critério 16: API oficial pelas rotas de conectar
+    def test_16_conectar_pela_api_oficial(self):
+        srv = _Servidor(_graph)
+        self.addCleanup(srv.fechar)
+        self.cfg["facebook"].update(envio="oficial", app_id="123", app_secret="segredo", pagina="", pagina_id="",
+                                    pagina_nome="")
+        self.cfg.pasta_tokens.mkdir(parents=True, exist_ok=True)
+        with patch.object(Facebook, "graph_url", srv.url):
+            r = self.api.iniciar_login(self.ctx({"token": "TOKEN-CURTO"}), "facebook")
+            self.assertEqual(r["estado"], "escolher")
+            self.assertEqual(r["contas"], [{"indice": 0, "pagina": "Cortes"}, {"indice": 1, "pagina": "Outra"}])
+            r2 = self.api.escolher_conta(self.ctx({"indice": 1}), "facebook")
+            redes = self.api._resumo_redes(self.ctx())
+        self.assertEqual(r2["estado"], "ok")
+        for texto in (json.dumps(r), json.dumps(r2), json.dumps(redes, default=str)):
+            self.assertNotIn("TOKEN", texto)
+        self.assertEqual(ler_token(self.cfg.pasta_tokens / "facebook.json")["pagina_id"], "333")
+        guardado = self.no_arquivo()
+        self.assertEqual((guardado["pagina_id"], guardado["pagina_nome"], guardado["pagina"]), ("333", "Outra", "Outra"))
+        pagina = redes["facebook"]["pagina"]
+        self.assertEqual((pagina["id"], pagina["confirmada"], pagina["so_leitura"]), ("333", True, True))
+        self.assertTrue(redes["facebook"]["pronta"])
+        self.assertIn(("facebook", True), self.motor.atualizadas)
+
+    def test_16_login_herdado_do_instagram(self):
+        self.cfg["facebook"].update(envio="oficial", pagina="", pagina_id="", pagina_nome="")
+        self.cfg.pasta_tokens.mkdir(parents=True, exist_ok=True)
+        salvar_token(self.cfg.pasta_tokens / "instagram.json",
+                     {"access_token": "TOKEN-IG", "pagina_id": "444", "pagina_nome": "Página do Instagram"})
+        pagina = self.api._resumo_redes(self.ctx())["facebook"]["pagina"]
+        self.assertEqual((pagina["id"], pagina["nome"], pagina["origem"]), ("444", "Página do Instagram",
+                                                                             "login do Instagram"))
+        self.assertNotIn("TOKEN", json.dumps(pagina))
+
+    # ---- critério 17: Upload-Post pela rota da Página
+    def test_17_escolher_a_pagina_do_upload_post(self):
+        def responder(pedido):
+            if pedido["caminho"] == "/api/uploadposts/facebook/pages":
+                return 200, {"success": True, "pages": [{"id": "111", "name": "Cortes"}, {"id": "333", "name": "Outra"}]}
+            return 404, {"message": "não existe"}
+
+        srv = _Servidor(responder)
+        self.addCleanup(srv.fechar)
+        self.cfg["upload_post"].update(api_key="CHAVE-UP", perfil="meuperfil")
+        self.cfg["facebook"].update(envio="upload_post", pagina="", pagina_id="", pagina_nome="")
+        from autocortes.plataformas import upload_post
+        with patch.object(upload_post, "API", srv.url):
+            r = self.api.pagina_upload_post(self.ctx())
+            self.assertEqual(r["paginas"], [{"id": "111", "nome": "Cortes"}, {"id": "333", "nome": "Outra"}])
+            self.assertEqual(self.erro(self.api.pagina_upload_post, corpo={"id": "999"}).status, 400)
+            self.assertEqual(self.erro(self.api.pagina_upload_post, corpo={"id": "x1"}).status, 400)
+            r = self.api.pagina_upload_post(self.ctx({"id": "111"}))
+        self.assertEqual(r["atual"], "111")
+        guardado = self.no_arquivo()
+        self.assertEqual((guardado["pagina_id"], guardado["pagina_nome"], guardado["pagina"]), ("111", "Cortes", "Cortes"))
+        self.assertIn(("facebook", True), self.motor.atualizadas)
+        self.cfg["facebook"]["envio"] = "navegador"
+        self.assertEqual(self.erro(self.api.pagina_upload_post).status, 400)
+
+
+class SimpleGravacao:
+    """Uma gravação de outra rede aberta no painel."""
+
+    def cancelar(self):
+        pass
+
+
 if __name__ == "__main__":
     unittest.main()

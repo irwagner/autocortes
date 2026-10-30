@@ -10,7 +10,7 @@ import shutil
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time as dtime
 from pathlib import Path
 from typing import Any, Callable
@@ -20,10 +20,11 @@ from .. import (__version__, agenda, analise, canais, canais_conta, config, cria
 from ..config import (ENVIOS, FORMATOS_IMAGEM, IMAGEM_INDISPONIVEL, PLATAFORMAS, REDES_IMAGEM, ROTULOS, TIPOS_IMAGEM,
                       ErroConfig)
 from ..midia import ErroMidia, Interrompido, base_ffmpeg, executar
+from ..navegador import TRAVA as TRAVA_NAVEGADOR
 from ..navegador import ErroNavegador
-from ..plataformas import ErroPublicacao, criar
+from ..plataformas import ErroPublicacao, criar, pagina_facebook
 from ..plataformas import manual as tarefas_manual
-from ..plataformas.navegador import Gravacao, proxima_sessao
+from ..plataformas.navegador import Gravacao, conferir_facebook, gravando, lembrar_identidade, proxima_sessao
 from ..produtor import EXTENSOES, TRAVA_ANALISE, TRAVA_EDICAO, Produtor, escrever_textos_ia, varrer_biblioteca
 from ..publicador import TRAVAS_REDE, Publicador, ler_bloqueios
 from ..textos import (fonte_dos_textos, ler_metadados, montar_conteudo, montar_conteudo_imagem, texto_topo, textos_ia,
@@ -304,8 +305,33 @@ def _resumo_redes(ctx: Contexto) -> dict:
             saida[rede]["gravando"] = rede in ctx.painel.gravacoes
             gravacao = ctx.painel.gravacoes.get(rede)
             saida[rede]["gravando_midia"] = getattr(gravacao, "midia", "video") if gravacao is not None else None
+        if rede == "facebook":
+            saida[rede]["pagina"] = _pagina_facebook(cfg, plataforma)
         saida[rede].update(_resumo_imagens(ctx, rede, videos, depois))
     return saida
+
+
+def _pagina_facebook(cfg, plataforma) -> dict:
+    """A Página que recebe os Reels, para o cartão do Facebook (sem token nem c_user)."""
+    fb = cfg["facebook"]
+    pagina_id = str(fb["pagina_id"]).strip()
+    bloco = {
+        "entrada": str(fb["pagina"]),
+        "id": pagina_id or None,
+        "nome": str(fb["pagina_nome"]).strip() or None,
+        "confirmada": bool(pagina_id),
+        # na API oficial e no Upload-Post a Página vem da escolha na lista, não do campo
+        "so_leitura": fb["envio"] in ("oficial", "upload_post"),
+        "ultima": None,
+    }
+    if fb["envio"] == "navegador":
+        # a última conferência (Testar sessão, envio, gravação ou "Ver quem está ativo")
+        bloco["ultima"] = (plataforma.token().get("paginas") or {}).get("facebook")
+    elif fb["envio"] == "oficial" and not pagina_id:
+        tok = plataforma.token()
+        if tok.get("herdado"):  # o config migrado: a Página ligada ao login do Instagram
+            bloco.update(id=tok.get("pagina_id"), nome=tok.get("pagina_nome"), origem="login do Instagram")
+    return bloco
 
 
 def _resumo_imagens(ctx: Contexto, rede: str, videos: bool, depois: datetime | None) -> dict:
@@ -2372,12 +2398,15 @@ class SessaoLogin:
 
     def publico(self) -> dict:
         dados = {"estado": self.estado, "mensagem": self.mensagem, "url": self.url}
-        if self.estado == "escolher":
-            dados["contas"] = [
-                {"indice": i, "pagina": p.get("name"),
-                 "usuario": (p.get("instagram_business_account") or {}).get("username")}
-                for i, p in enumerate(self.paginas)
-            ]
+        if self.estado == "escolher":  # nunca o token da Página
+            if self.rede == "facebook":
+                dados["contas"] = [{"indice": i, "pagina": p.get("name")} for i, p in enumerate(self.paginas)]
+            else:
+                dados["contas"] = [
+                    {"indice": i, "pagina": p.get("name"),
+                     "usuario": (p.get("instagram_business_account") or {}).get("username")}
+                    for i, p in enumerate(self.paginas)
+                ]
         return dados
 
 
@@ -2427,14 +2456,12 @@ def iniciar_login(ctx: Contexto, rede):
     plataforma = criar(rede, ctx.cfg)
     sessao = SessaoLogin(rede)
 
-    if rede == "instagram":
+    if rede in ("instagram", "facebook"):
         try:
             paginas = plataforma.trocar_token(str(ctx.corpo.get("token") or ""))
             if len(paginas) == 1:
-                sessao.mensagem = plataforma.salvar_pagina(paginas[0])
+                sessao.mensagem = _salvar_pagina_meta(ctx, rede, plataforma, paginas[0])
                 sessao.estado = "ok"
-                painel.motor.rede_atualizada(rede, persistente=True)
-                log.info("Instagram conectado: %s", sessao.mensagem)
             else:
                 sessao.paginas, sessao.estado = paginas, "escolher"
         except ErroPublicacao as e:
@@ -2485,20 +2512,109 @@ def cancelar_login(ctx: Contexto, rede):
     return {"ok": True}
 
 
-@rota("POST", r"/redes/instagram/conta")
-def escolher_conta(ctx: Contexto):
-    sessao = ctx.painel.logins.get("instagram")
+@rota("POST", r"/redes/(instagram|facebook)/conta")
+def escolher_conta(ctx: Contexto, rede):
+    sessao = ctx.painel.logins.get(rede)
     _exigir(sessao is not None and sessao.estado == "escolher", "Nenhuma escolha de conta pendente")
     indice = _int(ctx.corpo.get("indice"), -1)
     _exigir(0 <= indice < len(sessao.paginas), "Conta inválida")
     try:
-        sessao.mensagem = criar("instagram", ctx.cfg).salvar_pagina(sessao.paginas[indice])
+        sessao.mensagem = _salvar_pagina_meta(ctx, rede, criar(rede, ctx.cfg), sessao.paginas[indice])
     except ErroPublicacao as e:
         raise ErroHttp(400, str(e)) from e
     sessao.estado, sessao.paginas = "ok", []
-    ctx.painel.motor.rede_atualizada("instagram", persistente=True)
-    log.info("Instagram conectado: %s", sessao.mensagem)
     return sessao.publico()
+
+
+def _salvar_pagina_meta(ctx: Contexto, rede: str, plataforma, escolhida: dict) -> str:
+    """Guarda o login da Página escolhida (Instagram ou Facebook); no Facebook, a Página vai para o config."""
+    mensagem = plataforma.salvar_pagina(escolhida)
+    if rede == "facebook":
+        nome = str(escolhida.get("name") or "").strip()
+        _gravar_pagina_facebook(ctx, {"pagina": nome or str(escolhida["id"]), "pagina_id": str(escolhida["id"]),
+                                      "pagina_nome": nome})
+    ctx.painel.motor.rede_atualizada(rede, persistente=True)
+    log.info("%s conectado: %s", ROTULOS[rede], mensagem)
+    return mensagem
+
+
+def _gravar_pagina_facebook(ctx: Contexto, dados: dict) -> None:
+    """A Página do Facebook escolhida ou aprendida vai para o config pelo mesmo caminho do POST /config."""
+    _salvar(ctx, {"facebook": dados})
+    invalidar_cache(ctx.painel)
+    log.info("Facebook: Página gravada no config (%s)", pagina_facebook.alvo(ctx.cfg["facebook"]))
+
+
+def _resposta_perfil(ctx: Contexto, ident) -> dict:
+    dados = ident.publico()
+    resposta = {k: dados[k] for k in ("agindo_como", "id", "nome", "confere", "motivo", "sugestao")}
+    resposta["pagina"] = _pagina_facebook(ctx.cfg, criar("facebook", ctx.cfg))
+    return resposta
+
+
+@rota("POST", r"/redes/facebook/perfil")
+def perfil_facebook(ctx: Contexto):
+    """Com que perfil a janela do Facebook está agindo ({"trocar": true} troca para a Página).
+
+    {"usar": "<id>"} é o "Usar esta Página": grava a sugestão só se a Página ainda está ativa agora.
+    """
+    cfg = ctx.cfg
+    _exigir(cfg["facebook"]["envio"] == "navegador",
+            "O Facebook não está com o envio pelo navegador: a Página vem da escolha na lista.")
+    trocar = ctx.corpo.get("trocar", False)
+    _exigir(isinstance(trocar, bool), "trocar deve ser verdadeiro ou falso")
+    usar = ctx.corpo.get("usar")
+    if usar is not None:
+        usar = str(usar).strip()
+        _exigir(bool(re.fullmatch(r"\d{1,30}", usar)), "Página inválida")
+    _exigir(not ctx.painel.gravacoes and not gravando(),
+            "Há uma gravação de roteiro aberta: termine ou cancele antes de conferir a Página.", 409)
+    _exigir(TRAVA_NAVEGADOR.acquire(timeout=5),
+            "o AutoCortes está usando o navegador agora. Confira de novo quando o envio terminar.", 409)
+    try:
+        try:
+            ident = conferir_facebook(cfg, trocar)
+        except ErroNavegador as e:
+            raise ErroHttp(400, str(e)) from e
+        if ident.aprendido:  # a Página informada pelo link: o id vale sem perguntar
+            _gravar_pagina_facebook(ctx, dict(ident.aprendido))
+        if usar is not None:
+            sugestao = ident.sugestao or {}
+            _exigir(sugestao.get("pagina_id") == usar, "a Página ativa mudou; confira de novo", 409)
+            _gravar_pagina_facebook(ctx, {"pagina_id": usar, "pagina_nome": sugestao.get("pagina_nome") or ""})
+            nome = sugestao.get("pagina_nome")
+            ident = replace(ident, confere=True, sugestao=None,
+                            motivo=f"agindo como a Página {nome} (id {usar})" if nome else f"agindo como a Página id {usar}")
+            lembrar_identidade(ctx.cfg, ident)
+    finally:
+        TRAVA_NAVEGADOR.release()
+    if ident.confere:
+        # a Página confirmada vale como o Testar sessão: tira até a pausa que só sai testando a conta
+        ctx.painel.motor.rede_atualizada("facebook", persistente=True)
+    log.info("Facebook: %s", ident.motivo)
+    return _resposta_perfil(ctx, ident)
+
+
+@rota("POST", r"/redes/facebook/pagina")
+def pagina_upload_post(ctx: Contexto):
+    """As Páginas do perfil do Upload-Post (sem "id") ou a escolha de uma delas ({"id": "<id>"})."""
+    cfg = ctx.cfg
+    _exigir(cfg["facebook"]["envio"] == "upload_post", "O Facebook não está com o envio pelo Upload-Post.")
+    numero = ctx.corpo.get("id")
+    numero = "" if numero is None else str(numero).strip()
+    _exigir(not numero or bool(re.fullmatch(r"\d{1,30}", numero)), "Página inválida")
+    try:
+        paginas = criar("facebook", cfg).paginas_facebook()
+    except ErroPublicacao as e:
+        raise ErroHttp(400, str(e)) from e
+    if not numero:
+        return {"paginas": paginas, "atual": str(cfg["facebook"]["pagina_id"]).strip() or None}
+    achada = next((p for p in paginas if p["id"] == numero), None)
+    _exigir(achada is not None, "Página não encontrada no perfil do Upload-Post")
+    _gravar_pagina_facebook(ctx, {"pagina": achada["nome"], "pagina_id": numero, "pagina_nome": achada["nome"]})
+    ctx.painel.motor.rede_atualizada("facebook", persistente=True)
+    return {"ok": True, "paginas": paginas, "atual": numero,
+            "pagina": _pagina_facebook(ctx.cfg, criar("facebook", ctx.cfg))}
 
 
 # ---------------------------------------------------------------- aprender a postar (navegador)
@@ -2608,6 +2724,12 @@ def iniciar_gravacao(ctx: Contexto, rede):
             "tipo": gerado["tipo"]})
     try:
         sessao.iniciar()
+    except pagina_facebook.ErroPagina as e:  # a janela não está na Página: gravar ali postaria no lugar errado
+        if gerado is not None:
+            shutil.rmtree(gerado["pasta"], ignore_errors=True)
+        raise ErroHttp(409, f"Troque para a Página {pagina_facebook.alvo(ctx.cfg['facebook'])} antes de gravar "
+                            f"(use Trocar para a Página): {e.identidade.motivo}",
+                       {"agindo_como": e.identidade.agindo_como}) from e
     except ErroNavegador as e:
         if gerado is not None:
             shutil.rmtree(gerado["pasta"], ignore_errors=True)
@@ -2794,7 +2916,13 @@ def testar_rede(ctx: Contexto, rede):
     try:
         conta = plataforma.verificar()
     except ErroPublicacao as e:
-        raise ErroHttp(400, str(e)) from e
+        # Facebook pelo nome: a Página ativa tem esse título; o cartão pergunta se é ela (Usar esta Página)
+        ident = getattr(plataforma, "identidade", None)
+        extra = {"sugestao": ident.sugestao} if ident is not None and ident.sugestao else None
+        raise ErroHttp(400, str(e), extra) from e
+    ident = getattr(plataforma, "identidade", None)
+    if ident is not None and ident.aprendido:  # a Página informada pelo link: o id vale sem perguntar
+        _gravar_pagina_facebook(ctx, dict(ident.aprendido))
     plataforma.lembrar_conta(conta)
     # a conta respondeu: vale até para o bloqueio que não passa sozinho (verificação, conta restrita)
     ctx.painel.motor.rede_atualizada(rede, persistente=True)
