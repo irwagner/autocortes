@@ -93,7 +93,7 @@ def _url_publica(valor) -> str | None:
 
 
 class ViaUploadPost(Plataforma):
-    """Uma rede (youtube, tiktok ou instagram) publicada pelo Upload-Post."""
+    """Uma rede (youtube, tiktok, instagram ou facebook) publicada pelo Upload-Post."""
 
     via = "upload_post"
 
@@ -155,8 +155,8 @@ class ViaUploadPost(Plataforma):
             raise ErroPublicacao(f"Upload-Post fora do ar ({r.status_code}): {msg}", "temporario")
         if "available_pages" in dados:  # mais de uma Página do Facebook no perfil
             raise ErroPublicacao(
-                "Upload-Post: o perfil tem mais de uma Página do Facebook. Informe o ID da Página em "
-                "Redes sociais > Instagram > Opções dos posts", "bloqueio",
+                "Upload-Post: o perfil tem mais de uma Página do Facebook; escolha a Página em "
+                "Redes sociais > Facebook", "bloqueio",
             )
         if "invalid_platforms" in dados or "None of the requested platforms" in msg:
             raise ErroPublicacao(
@@ -197,8 +197,41 @@ class ViaUploadPost(Plataforma):
             raise ErroPublicacao(f"Reconecte o {ROTULOS[self.nome]} no painel do Upload-Post ({PAINEL})", "bloqueio")
         nome = (conta.get("handle") or conta.get("display_name") or conta.get("username")) if isinstance(conta, dict) else None
         texto = f"{'@' + str(nome).lstrip('@') if nome else 'conta conectada'} via Upload-Post (plano {plano})"
+        if self.nome == "facebook":
+            texto = self._conferir_pagina(plano)
         self.lembrar_conta(texto)
         return texto
+
+    def paginas_facebook(self) -> list[dict]:
+        """As Páginas do Facebook conectadas no perfil do Upload-Post: [{"id", "nome"}]."""
+        perfil = str(self.up["perfil"]).strip()
+        r = self.requisicao("GET", f"{self.api}/api/uploadposts/facebook/pages", params={"profile": perfil},
+                            headers=self._cabecalhos())
+        if r.status_code != 200:
+            self._erro_http(r, "facebook")
+        saida = []
+        for p in json_seguro(r).get("pages") or []:
+            if isinstance(p, dict) and str(p.get("id") or "").strip().isdigit():
+                saida.append({"id": str(p["id"]).strip(), "nome": str(p.get("name") or p.get("nome") or p["id"])})
+        return saida
+
+    def _conferir_pagina(self, plano: str) -> str:
+        """Qual Página do perfil recebe os Reels (com pagina_id fora da lista, para a rede)."""
+        paginas = self.paginas_facebook()
+        pagina_id = str(self.conf.get("pagina_id") or "").strip()
+        if pagina_id:
+            achada = next((p for p in paginas if p["id"] == pagina_id), None)
+            if achada is None:
+                raise ErroPublicacao(f"Upload-Post: a Página {pagina_id} não está no perfil do Upload-Post; escolha "
+                                     "de novo em Redes sociais > Facebook", "bloqueio")
+            return f"Página {achada['nome']} via Upload-Post (plano {plano})"
+        if not paginas:
+            raise ErroPublicacao(f"Nenhuma Página do Facebook apareceu no perfil '{self.up['perfil']}' do Upload-Post. "
+                                 f"Conecte em {PAINEL}", "bloqueio")
+        if len(paginas) == 1:
+            return f"Página {paginas[0]['nome']} via Upload-Post (plano {plano}): é a única do perfil e recebe os Reels"
+        return (f"{len(paginas)} Páginas no perfil do Upload-Post (plano {plano}): o Upload-Post vai usar a Página "
+                "fixada no perfil; escolha uma em Redes sociais > Facebook para ter certeza")
 
     # ------------------------------------------------------------ publicação
     def _campos(self, conteudo: Conteudo, request_id: str) -> list[tuple[str, str]]:
@@ -225,6 +258,18 @@ class ViaUploadPost(Plataforma):
                 ("embeddable", "true"),
             ]
             campos += [("tags[]", tag) for tag in meta["snippet"]["tags"]]
+        elif self.nome == "facebook":
+            from .manual import textos
+
+            t = textos(self.cfg, "facebook", conteudo)
+            campos += [
+                ("facebook_title", t["titulo"]),
+                ("facebook_description", t["descricao"]),
+                ("facebook_media_type", "REELS"),
+            ]
+            pagina = str(c.get("pagina_id") or "").strip()
+            if pagina:
+                campos.append(("facebook_page_id", pagina))
         elif self.nome == "tiktok":
             while tamanho_utf16(legenda) > 2200:
                 legenda = limitar(legenda, len(legenda) - 20)

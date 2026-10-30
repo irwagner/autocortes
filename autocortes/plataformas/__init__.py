@@ -35,4 +35,8 @@ def criar(nome: str, cfg: Config) -> Plataforma:
         from .instagram import Instagram
 
         return Instagram(cfg)
+    if nome == "facebook":
+        from .facebook import Facebook
+
+        return Facebook(cfg)
     raise ValueError(f"plataforma desconhecida: {nome}")

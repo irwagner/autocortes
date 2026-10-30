@@ -39,12 +39,13 @@ PAPEIS_DA_REDE = {
     "youtube": ("titulo", "descricao", "tags"),
     "tiktok": ("legenda",),
     "instagram": ("legenda",),
+    "facebook": ("descricao",),
     "bilibili": ("titulo", "descricao", "tags", "fonte"),
     "tiktok-imagem": ("legenda",),
     "instagram-imagem": ("legenda",),
 }
 # papéis que o roteiro aceita sem exigir: valem em "escrever", mas não faltam nem são deduzidos
-PAPEIS_OPCIONAIS = {"tiktok-imagem": ("titulo",)}
+PAPEIS_OPCIONAIS = {"tiktok-imagem": ("titulo",), "facebook": ("titulo",)}
 SUFIXO_IMAGEM = "-imagem"
 # começo da linha que o gerar escreve quando a página preencheu um campo com o nome do arquivo
 MARCA_PREENCHIDO = "# a página preencheu este campo com o nome do arquivo"

@@ -11,6 +11,11 @@ from .config import DIAS_SEMANA, Config
 # almoço (12h-14h) e o começo da noite (18h-21h); no YouTube o meio da tarde
 # também aparece bem. O ideal é ajustar depois olhando as métricas de cada conta.
 # O Bilibili tem público na China: 08:00 em Brasília é 19:00 em Pequim, o começo da noite de lá.
+# O Facebook fica a pelo menos 45 min nominais de cada horário (vídeo e imagem) das redes que podem
+# ir pelo navegador (YouTube, TikTok, Instagram e Bilibili; o Kwai é sempre à mão), porque a janela
+# é uma só. A variação só atrasa (0 a 10 min), então a distância real fica em pelo menos 35 min, e o
+# segundo envio espera o primeiro na trava do navegador. Entre os horários do próprio Facebook, pelo
+# menos 75 min, pelo mesmo motivo do Bilibili.
 PRESETS: dict[str, dict] = {
     "recomendado": {
         "rotulo": "Recomendado",
@@ -18,6 +23,7 @@ PRESETS: dict[str, dict] = {
         "youtube": ["12:30", "15:00", "20:00"],
         "tiktok": ["12:00", "18:30", "21:00"],
         "instagram": ["12:15", "19:00"],
+        "facebook": ["13:30", "21:45"],
         "kwai": ["12:00", "19:30"],
         "bilibili": ["08:00"],
         # posts de imagem: a pelo menos 1 h 30 dos vídeos da mesma rede, e o TikTok fora do
@@ -30,6 +36,7 @@ PRESETS: dict[str, dict] = {
         "youtube": ["19:30"],
         "tiktok": ["19:00"],
         "instagram": ["19:15"],
+        "facebook": ["20:30"],
         "kwai": ["19:45"],
         "bilibili": ["08:00"],
         "imagens": {"tiktok": ["16:30"], "instagram": ["17:00"]},
@@ -40,6 +47,7 @@ PRESETS: dict[str, dict] = {
         "youtube": ["12:30", "20:00"],
         "tiktok": ["12:00", "19:30"],
         "instagram": ["12:15", "19:00"],
+        "facebook": ["13:30", "21:00"],
         "kwai": ["12:00", "19:30"],
         "bilibili": ["08:00", "10:30"],
         "imagens": {"tiktok": ["10:30", "16:00"], "instagram": ["10:00", "16:30"]},
@@ -50,6 +58,8 @@ PRESETS: dict[str, dict] = {
         "youtube": ["09:00", "12:30", "15:30", "18:30", "21:30"],
         "tiktok": ["08:30", "12:00", "15:00", "18:30", "21:00"],
         "instagram": ["09:15", "12:15", "15:15", "19:00", "21:15"],
+        # 4 e não 5: no intenso, só quatro brechas cabem a regra dos 45 min (veja o comentário do topo)
+        "facebook": ["13:45", "16:30", "20:00", "22:15"],
         "kwai": ["09:00", "12:00", "15:00", "18:30", "21:00"],
         # 75 min entre um e outro: com 1 h só, a variação sorteada juntava dois horários abaixo do
         # intervalo mínimo e um deles sumia do dia (18:00 a 23:00 em Pequim)

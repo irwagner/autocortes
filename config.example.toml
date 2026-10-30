@@ -549,6 +549,42 @@ horarios_imagens = ["10:00", "16:00"]
 dias_imagens = []
 
 # ---------------------------------------------------------------------
+# Facebook: Reels na Página (nunca no perfil pessoal), com agenda própria.
+# Formas de envio:
+#  - "navegador" (veja [navegador]: contraria os termos): antes de cada post
+#    e de novo logo antes de publicar, o AutoCortes confere que o Chrome está
+#    agindo como a Página. Se não estiver, troca pelo seletor de perfis do
+#    Facebook e confere de novo; sem confirmar, não posta e pausa a rede até
+#    você testar a conta em Redes sociais.
+#  - "oficial" (API de Reels da Página): precisa da permissão
+#    pages_manage_posts no app da Meta. Sem app_id/app_secret aqui, vale o
+#    app do [instagram]; sem login próprio, vale o do Instagram.
+#  - "upload_post": a Página conectada no perfil do Upload-Post.
+#  - "manual": a tarefa no Início, para você postar.
+# Se a Central de Contas já repassa os Reels do Instagram para a Página,
+# desligue lá para não sair repetido.
+# A Página aceita Reels de 3 a 90 s: cortes mais longos ficam fora daqui.
+# ---------------------------------------------------------------------
+[facebook]
+ativo = false
+videos = true
+envio = "navegador"
+# O link da Página (https://www.facebook.com/SuaPagina ou
+# https://www.facebook.com/profile.php?id=...) ou o nome exato dela.
+# Na API oficial e no Upload-Post, a Página vem da escolha na lista do painel.
+pagina = ""
+# Preenchidos pelo AutoCortes quando ele confirma a Página
+pagina_id = ""
+pagina_nome = ""
+# API oficial: vazios = o app do [instagram]
+app_id = ""
+app_secret = ""
+versao_api = "v26.0"
+max_segundos = 90
+horarios = ["13:30", "21:45"]
+dias = []
+
+# ---------------------------------------------------------------------
 # Kwai: não tem API de postagem para criadores nem envio pelo site.
 # No horário, o AutoCortes cria uma tarefa com o vídeo e a legenda, e você
 # posta pelo app do Kwai no celular (veja [manual]).

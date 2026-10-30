@@ -26,6 +26,8 @@ SITES = {
     "youtube": ("https://studio.youtube.com/", "Abrir o YouTube Studio"),
     "tiktok": ("https://www.tiktok.com/tiktokstudio/upload", "Abrir o TikTok Studio"),
     "instagram": ("https://www.instagram.com/", "Abrir o Instagram"),
+    # reserva: o site da tarefa do Facebook sai da Página configurada (site_da_rede)
+    "facebook": ("https://www.facebook.com/", "Abrir o Facebook"),
     "bilibili": ("https://member.bilibili.com/platform/upload/video/frame", "Abrir o envio do Bilibili"),
 }
 # limites dos textos do Bilibili (formulário de envio do site; a descrição aceita mais, 250 vale sempre)
@@ -112,6 +114,8 @@ def textos(cfg: Config, rede: str, conteudo: Conteudo) -> dict:
         from .instagram import MAX_HASHTAGS
 
         return {"legenda": limitar(limitar_hashtags(legenda, MAX_HASHTAGS), 2200)}
+    if rede == "facebook":
+        return {"descricao": limitar(legenda, 2200), "titulo": limitar(conteudo.titulo, 255)}
     if rede == "kwai":
         return {"legenda": _com_texto(conteudo, legenda)}
     if rede == "bilibili":
@@ -159,6 +163,19 @@ def pacote(cfg: Config, rede: str, conteudo: Conteudo) -> dict:
         if cfg["instagram"]["pagina_facebook"]:
             passos.append("Para sair também na Página do Facebook, ligue \"Compartilhar no Facebook\" antes de publicar.")
         passos.append("Publique agora ou agende pelo próprio app.")
+    elif rede == "facebook":
+        fb = cfg["facebook"]
+        nome = (str(fb.get("pagina_nome") or "").strip() or str(fb.get("pagina") or "").strip()
+                or "configurada em Redes sociais > Facebook")
+        campo("Título", t["titulo"], 255)
+        campo("Descrição", t["descricao"], 2200)
+        passos = [
+            f"Abra a Página {nome}.",
+            "Antes de publicar, confira no canto de cima que está agindo como a Página e não como o seu perfil "
+            "pessoal (troque em Ver todos os perfis).",
+            "Crie um Reel, envie o vídeo e cole a descrição.",
+            "Publique agora ou agende pela própria Página.",
+        ]
     elif rede == "kwai":
         campo("Legenda", t["legenda"])
         passos = [
@@ -180,8 +197,21 @@ def pacote(cfg: Config, rede: str, conteudo: Conteudo) -> dict:
         ]
     else:
         raise ValueError(f"rede desconhecida: {rede}")
+    return {"campos": campos, "passos": passos, "site": site_da_rede(cfg, rede)}
+
+
+def site_da_rede(cfg: Config, rede: str) -> dict | None:
+    """Onde postar pelo computador. O do Facebook é a própria Página, quando ela é conhecida."""
+    if rede == "facebook":
+        fb = cfg["facebook"]
+        pagina = str(fb.get("pagina") or "").strip()
+        if pagina.lower().startswith(("https://", "http://")):
+            return {"url": pagina, "rotulo": "Abrir a Página"}
+        pagina_id = str(fb.get("pagina_id") or "").strip()
+        if pagina_id.isdigit():
+            return {"url": f"https://www.facebook.com/profile.php?id={pagina_id}", "rotulo": "Abrir a Página"}
     site = SITES.get(rede)
-    return {"campos": campos, "passos": passos, "site": {"url": site[0], "rotulo": site[1]} if site else None}
+    return {"url": site[0], "rotulo": site[1]} if site else None
 
 
 def texto_do_pacote(rede: str, dados: dict) -> str:

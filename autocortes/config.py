@@ -12,8 +12,8 @@ from pathlib import Path
 from .util import escrever_atomico, log
 
 RAIZ = Path(__file__).resolve().parent.parent
-PLATAFORMAS = ("youtube", "tiktok", "instagram", "kwai", "bilibili")
-# nomes nos textos e no log (o Facebook não tem agenda própria: vai junto com o Instagram)
+PLATAFORMAS = ("youtube", "tiktok", "instagram", "facebook", "kwai", "bilibili")
+# nomes nos textos e no log
 ROTULOS = {
     "youtube": "YouTube", "tiktok": "TikTok", "instagram": "Instagram", "kwai": "Kwai", "bilibili": "Bilibili",
     "facebook": "Facebook",
@@ -26,6 +26,7 @@ ENVIOS = {
     "youtube": ("oficial", "upload_post", "navegador", "manual"),
     "tiktok": ("oficial", "upload_post", "navegador", "manual"),
     "instagram": ("oficial", "upload_post", "navegador", "manual"),
+    "facebook": ("oficial", "upload_post", "navegador", "manual"),
     "kwai": ("manual",),
     "bilibili": ("navegador", "manual"),
 }
@@ -41,6 +42,8 @@ FORMATOS_IMAGEM = {
 IMAGEM_INDISPONIVEL = {
     "youtube": "As imagens do YouTube (posts da Comunidade) ficam para uma próxima etapa: a página de post da "
                "Comunidade ainda não foi verificada, e a API do YouTube não posta na Comunidade.",
+    "facebook": "As imagens da Página do Facebook ficam para uma próxima etapa: a API de fotos da Página aceita "
+                "o arquivo direto, mas o envio e a conferência da Página no post de foto ainda não foram feitos.",
     "kwai": "O Kwai não tem página de envio no computador, e a imagem como tarefa à mão fica para uma "
             "próxima etapa.",
     "bilibili": "As imagens do Bilibili ficam para uma próxima etapa: a página de envio de fotos dele ainda "
@@ -50,7 +53,7 @@ SO_PELO_NAVEGADOR = "as imagens saem só pelo navegador: troque o envio para Nav
 # campos que nunca voltam para o painel em texto puro
 SEGREDOS = (
     ("youtube", "client_secret"), ("tiktok", "client_secret"), ("instagram", "app_secret"),
-    ("upload_post", "api_key"), ("ia", "api_key"),
+    ("facebook", "app_secret"), ("upload_post", "api_key"), ("ia", "api_key"),
     # listas de chaves: também nunca voltam para o painel
     ("estoque", "pexels_chaves"), ("estoque", "pixabay_chaves"),
 )
@@ -390,6 +393,25 @@ PADRAO: dict = {
         "horarios_imagens": ["10:00", "16:00"],
         "dias_imagens": [],
     },
+    "facebook": {
+        # Reels na Página do Facebook (nunca no perfil pessoal)
+        "ativo": False,
+        "videos": True,
+        "envio": "navegador",
+        # o link da Página (https://www.facebook.com/SuaPagina ou profile.php?id=...) ou o nome exato dela
+        "pagina": "",
+        # preenchidos pelo AutoCortes quando ele confirma a Página
+        "pagina_id": "",
+        "pagina_nome": "",
+        # API oficial: vazios = o app do [instagram]
+        "app_id": "",
+        "app_secret": "",
+        "versao_api": "v26.0",
+        # a API de Reels da Página aceita de 3 a 90 s
+        "max_segundos": 90,
+        "horarios": ["13:30", "21:45"],
+        "dias": [],
+    },
     "kwai": {
         # sem API de postagem para criadores: no horário, vira uma tarefa para você postar pelo app
         "ativo": False,
@@ -711,6 +733,41 @@ def _validar_imagens(cfg: Config, erros: list[str]) -> None:
         erros.append("[imagens].tipos precisa de pelo menos um tipo com as imagens ligadas em alguma rede")
 
 
+_LINK_FACEBOOK = re.compile(r"^https?://(www\.|m\.|web\.)?facebook\.com/\S+$", re.I)
+
+
+def id_do_link_facebook(pagina: str) -> str:
+    """O id numérico que o link da Página traz (profile.php?id=N ou /people/<nome>/N), ou ""."""
+    texto = str(pagina or "").strip()
+    if not _LINK_FACEBOOK.match(texto):
+        return ""
+    m = re.search(r"[?&]id=(\d{1,30})(?:&|#|$)", texto) or re.search(r"/people/[^/?#]+/(\d{1,30})(?:[/?#]|$)", texto)
+    return m.group(1) if m else ""
+
+
+def _validar_facebook(cfg: Config, erros: list[str]) -> None:
+    fb = cfg["facebook"]
+    if not 5 <= fb["max_segundos"] <= 90:
+        erros.append(f"[facebook].max_segundos deve ficar entre 5 e 90 (atual: {fb['max_segundos']!r})")
+    if not re.fullmatch(r"v\d{1,3}\.\d", str(fb["versao_api"]).strip()):
+        erros.append("[facebook].versao_api deve ser como v26.0")
+    pagina = str(fb["pagina"]).strip()
+    if len(pagina) > 300 or re.search(r"[\x00-\x1f\x7f]", pagina):
+        erros.append("[facebook].pagina deve ter até 300 caracteres, sem quebra de linha")
+    elif pagina.lower().startswith("http") and not _LINK_FACEBOOK.match(pagina):
+        erros.append("[facebook].pagina deve ser o link da Página no facebook.com ou o nome exato dela")
+    pagina_id = str(fb["pagina_id"]).strip()
+    if not re.fullmatch(r"\d{0,30}", pagina_id):
+        erros.append("[facebook].pagina_id deve ter só os números do ID da Página")
+    if len(str(fb["pagina_nome"])) > 200 or re.search(r"[\x00-\x1f\x7f]", str(fb["pagina_nome"])):
+        erros.append("[facebook].pagina_nome deve ter até 200 caracteres, sem quebra de linha")
+    if not re.fullmatch(r"\d{0,30}", str(fb["app_id"]).strip()):
+        erros.append("[facebook].app_id deve ter só os números do App ID da Meta")
+    do_link = id_do_link_facebook(pagina)
+    if do_link and pagina_id and re.fullmatch(r"\d+", pagina_id) and do_link != pagina_id:
+        erros.append(f"[facebook]: o link da Página tem o id {do_link}, mas pagina_id é {pagina_id}")
+
+
 def validar(cfg: Config) -> None:
     erros: list[str] = []
     _checar_tipos(PADRAO, cfg.dados, "", erros)
@@ -797,6 +854,7 @@ def validar(cfg: Config) -> None:
         erros.append("[youtube].categoria deve ser o número da categoria do YouTube (ex.: 1 = Filmes e animação)")
     if not re.fullmatch(r"v\d{1,3}\.\d", str(cfg["instagram"]["versao_api"]).strip()):
         erros.append("[instagram].versao_api deve ser como v26.0")
+    _validar_facebook(cfg, erros)
     porta_yt = cfg["youtube"]["porta_redirect"]
     if porta_yt != 0 and not 1024 <= porta_yt <= 65535:
         erros.append("[youtube].porta_redirect deve ser 0 (automática) ou de 1024 a 65535")
