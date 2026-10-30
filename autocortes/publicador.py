@@ -589,15 +589,21 @@ class Publicador:
         ativas = [nome for nome in self.plataformas if self.cfg[nome].get("videos", True)]
         if self.cfg.simulacao or not ativas:
             return  # em simulação nada é concluído: os cortes continuam valendo para o modo real
-        marc = ",".join("?" * len(ativas))
-        for corte in conn.execute("SELECT id, arquivo FROM cortes WHERE status='pronto'").fetchall():
+        maximos = {nome: planejador.duracao_maxima(self.cfg, nome) for nome in ativas}
+        for corte in conn.execute("SELECT id, arquivo, inicio, fim FROM cortes WHERE status='pronto'").fetchall():
+            # a rede cujo limite de duração o corte passa está resolvida: a fila nunca o manda para ela
+            duracao = corte["fim"] - corte["inicio"]
+            redes = [nome for nome in ativas if maximos[nome] is None or duracao <= maximos[nome] + 0.5]
+            if not redes:
+                continue  # não cabe em nenhuma rede ativa: não saiu em lugar nenhum, então não conclui
+            marc = ",".join("?" * len(redes))
             # a rede está resolvida com o post feito ou pulado (ou, no histórico antigo, com as falhas no limite)
             feitas = conn.execute(
                 f"SELECT plataforma FROM postagens WHERE corte_id=? AND plataforma IN ({marc}) AND midia='video' "
                 "GROUP BY plataforma HAVING SUM(status IN ('publicado', 'pulado')) > 0 OR SUM(status = 'falhou') >= ?",
-                (corte["id"], *ativas, FALHAS_POR_CORTE),
+                (corte["id"], *redes, FALHAS_POR_CORTE),
             ).fetchall()
-            if len(feitas) < len(ativas):
+            if len(feitas) < len(redes):
                 continue
             if conn.execute("SELECT 1 FROM postagens WHERE corte_id=? AND midia='video' "
                             "AND status IN ('aguardando', 'conferir') LIMIT 1", (corte["id"],)).fetchone():
@@ -610,6 +616,15 @@ class Publicador:
 
     def ciclo(self, conn: sqlite3.Connection) -> None:
         pausas = self._bloqueios_vigentes(conn)
+        # antes do teste da pausa da agenda: a marcação vale uma vez por perfil, e a conclusão dos cortes
+        # (que roda mesmo com a agenda pausada) já precisa dela para não esperar um Facebook que não vem
+        if "facebook" in self.plataformas and not self.cfg.simulacao:
+            try:
+                planejador.preparar_facebook(self.cfg, conn)
+            except sqlite3.Error:
+                log.exception("Facebook: não consegui separar os cortes que já saíram no Instagram; "
+                              "o ciclo segue sem o Facebook nesta volta")
+                pausas = {**pausas, "facebook": {"tipo": "rede"}}
         if self.cfg["agenda"]["pausado"]:
             self.atualizar_concluidos(conn)
             self._coletar_metricas(conn)

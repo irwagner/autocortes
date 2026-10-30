@@ -8,6 +8,7 @@ from pathlib import Path
 
 from . import agenda, analise, db, gravador, roteiro
 from .config import REDES_IMAGEM, TIPOS_IMAGEM, Config, motivo_sem_imagens
+from .util import log
 
 
 # falhas comuns de um corte numa rede antes de desistir dele (a última vira 'pulado', com o motivo)
@@ -38,12 +39,14 @@ def status_ocupam_horario(cfg: Config) -> tuple[str, ...]:
 
 
 def duracao_maxima(cfg: Config, rede: str) -> float | None:
-    """Duração máxima de um corte nesta rede (o YouTube só recebe Shorts)."""
-    return float(cfg["youtube"]["max_segundos"]) if rede == "youtube" else None
+    """Duração máxima de um corte nesta rede (o YouTube só recebe Shorts; a Página, Reels de até 90 s)."""
+    if rede in ("youtube", "facebook"):
+        return float(cfg[rede]["max_segundos"])
+    return None
 
 
 def sem_cortes_possiveis(cfg: Config, rede: str) -> bool:
-    """Nenhum corte cabe na rede: no YouTube, a duração mínima dos cortes passa do limite dos Shorts."""
+    """Nenhum corte cabe na rede: a duração mínima dos cortes passa do limite dela (Shorts, Reels da Página)."""
     maximo = duracao_maxima(cfg, rede)
     return maximo is not None and float(cfg["cortes"]["duracao_min"]) > maximo + 0.5
 
@@ -73,6 +76,38 @@ def fila(cfg: Config, conn: sqlite3.Connection, rede: str, limite: int | None = 
         sql += " LIMIT ?"
         params.append(limite)
     return conn.execute(sql, params).fetchall()
+
+
+MOTIVO_REPASSE = ('já tinha saído no Instagram antes do Facebook separado: o repasse do Instagram pode ter levado '
+                  'à Página. Use "Postar agora" se quiser mesmo assim')
+
+
+def preparar_facebook(cfg: Config, conn: sqlite3.Connection) -> int:
+    """Uma vez por perfil, quando o Facebook vira rede própria: os cortes prontos que já saíram no Instagram
+    ficam fora da fila do Facebook (o repasse do Instagram, ou o Reel antigo da Página, pode tê-los levado).
+
+    Linhas 'pulado' com o motivo, em vez de um filtro na fila: a fila, a conclusão do corte, o plano e o
+    histórico concordam sem caso especial. A linha 'simulado' só conta na simulação e o 'ensaio' nunca:
+    por isso elas não impedem a marcação."""
+    if db.ler_estado(conn, "facebook:inicio") is not None:
+        return 0
+    with db.transacao(conn):
+        if db.ler_estado(conn, "facebook:inicio") is not None:
+            return 0
+        t = db.agora()
+        n = conn.execute(
+            "INSERT INTO postagens (corte_id, plataforma, status, midia, erro, via, criado_em, atualizado_em) "
+            "SELECT c.id, 'facebook', 'pulado', 'video', ?, ?, ?, ? FROM cortes c WHERE c.status = 'pronto' "
+            "AND NOT EXISTS (SELECT 1 FROM postagens p WHERE p.corte_id = c.id AND p.plataforma = 'facebook' "
+            "                AND p.midia = 'video' AND p.status NOT IN ('simulado', 'ensaio')) "
+            "AND EXISTS (SELECT 1 FROM postagens p WHERE p.corte_id = c.id AND p.plataforma = 'instagram' "
+            "            AND p.midia = 'video' AND p.status IN ('publicado', 'conferir', 'aguardando', 'enviando'))",
+            (MOTIVO_REPASSE, str(cfg["facebook"]["envio"]), t, t),
+        ).rowcount
+        db.gravar_estado(conn, "facebook:inicio", {"em": t, "pulados": n})
+    log.info("Facebook: %d corte(s) que já saíram no Instagram ficam fora da fila do Facebook "
+             "(o repasse do Instagram pode ter levado à Página)", n)
+    return n
 
 
 def horario_atendido(conn: sqlite3.Connection, rede: str, ts: float, sucesso: tuple[str, ...],

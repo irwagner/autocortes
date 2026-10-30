@@ -7,15 +7,17 @@ import copy
 import http.server
 import json
 import threading
+import time
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
-from autocortes import agenda, config
+from autocortes import agenda, config, db, planejador, publicador
 from autocortes.plataformas import facebook as plat_fb
 from autocortes.plataformas import manual
-from autocortes.plataformas.base import Entrega, ErroPublicacao
+from autocortes.plataformas.base import Entrega, ErroPublicacao, Resultado
 from autocortes.plataformas.facebook import Facebook
 from autocortes.plataformas.upload_post import ViaUploadPost
 from autocortes.segredos import ler_token, salvar_token
@@ -539,6 +541,165 @@ class TestUploadPostSimulado(ti.Base):
         self.cfg["facebook"]["pagina_id"] = ""
         self.paginas[:] = [{"id": "111", "name": "Cortes"}]
         self.assertIn("Página Cortes", self.plataforma().verificar())
+
+
+class _RedeFalsa:
+    """Plataforma que anota o que recebeu (nada sai do PC)."""
+
+    def __init__(self, nome: str):
+        self.nome, self.rotulo, self.via = nome, ROTULOS_FALSOS[nome], "oficial"
+        self.recebidos: list[str] = []
+
+    def pronta(self):
+        return True, "ok"
+
+    def publicar(self, arquivo, conteudo, parar=None, entrega=None):
+        self.recebidos.append(Path(arquivo).name)
+        if entrega is not None:
+            entrega.aceitou(f"id-{len(self.recebidos)}")
+        return Resultado(f"id-{len(self.recebidos)}", f"https://exemplo.invalid/{len(self.recebidos)}")
+
+
+ROTULOS_FALSOS = {"instagram": "Instagram (falso)", "facebook": "Facebook (falso)", "youtube": "YouTube (falso)"}
+
+
+class TestBancoMigracao(ti.BaseBanco):
+    """Critérios 6 e 7, R1, R9 e R11."""
+
+    def setUp(self):
+        super().setUp()
+        self.so_redes("instagram", "facebook")
+        self.cfg["agenda"]["variacao_minutos"] = 0
+        self.cfg["agenda"]["intervalo_minimo_min"] = 0
+        agora_ = datetime.now()
+        self.cfg["facebook"]["horarios"] = [(agora_ - timedelta(minutes=2)).strftime("%H:%M")]
+        self.cfg["instagram"]["horarios"] = [(agora_ + timedelta(hours=6)).strftime("%H:%M")]
+
+    def publicador(self, *redes: str):
+        pub = publicador.Publicador(self.cfg, threading.Event())
+        falsas = {nome: _RedeFalsa(nome) for nome in redes}
+        pub.plataformas = dict(falsas)
+        return pub, falsas
+
+    def reabrir(self):
+        db.conectar(self.cfg.banco).close()
+
+    def test_migracao_e_ciclo_real(self):
+        """Critério 6: A, B e D não vão ao Facebook, B e D ganham 'pulado', C é tentado de novo."""
+        dois_dias = time.time() - 2 * 86400
+        horario_a = dois_dias + 60
+        a = self.novo_corte(inicio=10, fim=40)
+        b = self.novo_corte(inicio=50, fim=80)
+        c = self.novo_corte(inicio=100, fim=130)
+        d = self.novo_corte(inicio=150, fim=180)
+        self.postagem(a, "instagram", "publicado", slot="2026-10-28 12:15", horario=horario_a, criado_em=dois_dias)
+        self.postagem(a, "facebook", "publicado", horario=horario_a, criado_em=dois_dias)
+        for corte in (b, c, d):
+            self.postagem(corte, "instagram", "publicado", criado_em=dois_dias)
+        self.postagem(c, "facebook", "falhou", horario=horario_a, criado_em=dois_dias)
+        self.postagem(d, "facebook", "simulado", criado_em=dois_dias)
+        db.apagar_estado(self.conn, "facebook:slots")
+        self.reabrir()  # a migração do banco roda ao abrir
+
+        slot_a = self.conn.execute("SELECT slot FROM postagens WHERE corte_id=? AND plataforma='facebook'",
+                                   (a,)).fetchone()[0]
+        self.assertEqual(slot_a, "2026-10-28 12:15")
+        self.assertIsNotNone(db.ler_estado(self.conn, "facebook:slots"))
+        # reabrir não refaz: a marca existe
+        self.conn.execute("UPDATE postagens SET slot=NULL WHERE corte_id=? AND plataforma='facebook'", (a,))
+        self.reabrir()
+        self.assertIsNone(self.conn.execute("SELECT slot FROM postagens WHERE corte_id=? AND plataforma='facebook'",
+                                            (a,)).fetchone()[0])
+
+        pub, falsas = self.publicador("instagram", "facebook")
+        pub.ciclo(self.conn)
+        nomes = {corte: Path(self.corte_row(corte)["arquivo"]).name for corte in (a, b, c, d)}
+        self.assertEqual(falsas["facebook"].recebidos, [nomes[c]])
+        self.assertEqual(falsas["instagram"].recebidos, [])
+        for corte in (b, d):
+            linha = self.conn.execute("SELECT status, erro, via FROM postagens WHERE corte_id=? AND "
+                                      "plataforma='facebook' AND status='pulado'", (corte,)).fetchone()
+            self.assertIsNotNone(linha, corte)
+            self.assertIn("repasse do Instagram", linha["erro"])
+            self.assertEqual(linha["via"], "navegador")
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM postagens WHERE corte_id IN (?, ?) AND "
+                                            "plataforma='facebook' AND status='pulado'", (a, c)).fetchone())
+        self.assertEqual(db.ler_estado(self.conn, "facebook:inicio")["pulados"], 2)
+        # o corte que já saiu nas duas redes conclui; o C também, depois de publicado no Facebook
+        for corte in (a, b, c, d):
+            self.assertEqual(self.corte_row(corte)["status"], "concluido", corte)
+        # uma vez por perfil
+        e = self.novo_corte(inicio=200, fim=230)
+        self.postagem(e, "instagram", "publicado")
+        self.assertEqual(planejador.preparar_facebook(self.cfg, self.conn), 0)
+
+    def test_nova_tentativa_antiga_nao_atende_horario(self):
+        """R9: a nova tentativa do código antigo (sem horário, manual = 0) vira manual = 1."""
+        hoje = datetime.now().replace(hour=13, minute=30, second=0, microsecond=0)
+        corte = self.novo_corte()
+        self.postagem(corte, "facebook", "publicado", criado_em=hoje.timestamp() + 30 * 60)
+        sucesso = planejador.status_ocupam_horario(self.cfg)
+        chave = hoje.strftime("%Y-%m-%d %H:%M")
+        self.assertTrue(planejador.horario_atendido(self.conn, "facebook", hoje.timestamp(), sucesso, chave=chave))
+        db.apagar_estado(self.conn, "facebook:slots")
+        self.reabrir()
+        self.assertEqual(self.conn.execute("SELECT manual FROM postagens WHERE corte_id=?", (corte,)).fetchone()[0], 1)
+        self.assertFalse(planejador.horario_atendido(self.conn, "facebook", hoje.timestamp(), sucesso, chave=chave))
+
+    def test_preparar_com_a_agenda_pausada(self):
+        """R11: a marcação roda antes do teste da pausa da agenda."""
+        self.cfg["agenda"]["pausado"] = True
+        corte = self.novo_corte()
+        self.postagem(corte, "instagram", "publicado")
+        pub, falsas = self.publicador("instagram", "facebook")
+        pub.ciclo(self.conn)
+        self.assertEqual(falsas["facebook"].recebidos, [])
+        self.assertIsNotNone(db.ler_estado(self.conn, "facebook:inicio"))
+        self.assertEqual(self.corte_row(corte)["status"], "concluido")
+
+    def test_preparar_fora_da_simulacao_e_com_o_facebook_ligado(self):
+        corte = self.novo_corte()
+        self.postagem(corte, "instagram", "publicado")
+        self.cfg["geral"]["simulacao"] = True
+        pub, _ = self.publicador("instagram", "facebook")
+        pub.ciclo(self.conn)
+        self.cfg["geral"]["simulacao"] = False
+        pub, _ = self.publicador("instagram")
+        pub.ciclo(self.conn)
+        self.assertIsNone(db.ler_estado(self.conn, "facebook:inicio"))
+
+    def test_corte_acima_do_limite_conclui(self):
+        """R1: um corte de 100 s publicado nas outras redes vira concluido com o Facebook ativo."""
+        self.so_redes("youtube", "facebook")
+        corte = self.novo_corte(inicio=100, fim=200)
+        self.postagem(corte, "youtube", "publicado")
+        pub, _ = self.publicador("youtube", "facebook")
+        pub.atualizar_concluidos(self.conn)
+        self.assertEqual(self.corte_row(corte)["status"], "concluido")
+        # sem nenhuma rede em que caiba, não conclui (não saiu em lugar nenhum)
+        so_fb = self.novo_corte(inicio=300, fim=400)
+        pub, _ = self.publicador("facebook")
+        pub.atualizar_concluidos(self.conn)
+        self.assertEqual(self.corte_row(so_fb)["status"], "pronto")
+
+    def test_fila_e_sem_cortes_possiveis(self):
+        """Critério 7."""
+        curto = self.novo_corte(inicio=0, fim=90.4)
+        self.novo_corte(inicio=100, fim=191)
+        self.assertEqual([r["id"] for r in planejador.fila(self.cfg, self.conn, "facebook")], [curto])
+        self.assertFalse(planejador.sem_cortes_possiveis(self.cfg, "facebook"))
+        self.cfg["facebook"]["max_segundos"] = 20
+        self.cfg["cortes"]["duracao_min"] = 30
+        self.assertTrue(planejador.sem_cortes_possiveis(self.cfg, "facebook"))
+        self.assertEqual(planejador.fila(self.cfg, self.conn, "facebook"), [])
+
+    def test_postar_agora_acima_do_limite_pula(self):
+        corte = self.novo_corte(inicio=0, fim=120)
+        pub, falsas = self.publicador("facebook")
+        self.assertEqual(pub.postar(self.conn, "facebook", self.corte_row(corte), manual=True), "pulado")
+        self.assertEqual(falsas["facebook"].recebidos, [])
+        erro = self.conn.execute("SELECT erro FROM postagens WHERE corte_id=?", (corte,)).fetchone()[0]
+        self.assertEqual(erro, "o Reel da Página aceita até 90 s")
 
 
 if __name__ == "__main__":

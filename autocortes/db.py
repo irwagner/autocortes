@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS cortes (
 CREATE TABLE IF NOT EXISTS postagens (
     id            INTEGER PRIMARY KEY,
     corte_id      INTEGER NOT NULL REFERENCES cortes(id) ON DELETE CASCADE,
-    -- as redes da agenda e 'facebook' (o Reel do Instagram repetido na Página)
+    -- as redes da agenda (o Facebook antigo era o Reel do Instagram repetido na Página)
     plataforma    TEXT NOT NULL,
     -- enviando | publicado | simulado | falhou | pulado | interrompido | aguardando (tarefa à mão)
     -- | conferir (a rede recebeu o vídeo, falta você confirmar se saiu) | ensaio (preencheu sem publicar)
@@ -214,6 +214,27 @@ def _migrar(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_filmes_tipo ON filmes(tipo, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_postagens_slot ON postagens(plataforma, slot)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_postagens_midia ON postagens(plataforma, midia, criado_em)")
+    _migrar_facebook(conn)
+
+
+def _migrar_facebook(conn: sqlite3.Connection) -> None:
+    """Uma vez por banco: as linhas do antigo Reel da Página passam a valer como a rede Facebook.
+
+    O Reel saía no horário do Instagram, com o mesmo 'horario': com a chave copiada, o horário do Facebook
+    de mesma chave conta como atendido no dia da migração. As novas tentativas antigas (sem horário)
+    saíram fora da agenda: viram manual = 1 e não atendem nenhum horário."""
+    if ler_estado(conn, "facebook:slots") is not None:
+        return
+    with transacao(conn):
+        linhas = conn.execute(
+            "UPDATE postagens SET slot = (SELECT i.slot FROM postagens i WHERE i.corte_id = postagens.corte_id "
+            "AND i.plataforma = 'instagram' AND i.midia = 'video' AND i.slot IS NOT NULL "
+            "AND i.horario = postagens.horario LIMIT 1) "
+            "WHERE plataforma = 'facebook' AND midia = 'video' AND slot IS NULL AND horario IS NOT NULL"
+        ).rowcount
+        conn.execute("UPDATE postagens SET manual = 1 WHERE plataforma = 'facebook' AND midia = 'video' "
+                     "AND horario IS NULL AND manual = 0")
+        gravar_estado(conn, "facebook:slots", {"em": agora(), "linhas": linhas})
 
 
 @contextmanager
