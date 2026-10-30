@@ -29,14 +29,17 @@ from ..config import ROTULOS, Config
 from ..navegador import TRAVA, Aba, ErroNavegador, Navegador, css
 from ..textos import Conteudo, limitar
 from ..util import log
+from . import pagina_facebook
 from .base import Entrega, ErroPublicacao, Plataforma, Resultado
 from .manual import textos
 
-# páginas de login e de envio de cada rede
+# páginas de login e de envio de cada rede (no Facebook, a inicial: o roteiro gravado traz o
+# caminho até o compositor de Reel)
 PAGINAS = {
     "youtube": ("https://studio.youtube.com/", "https://studio.youtube.com/"),
     "tiktok": ("https://www.tiktok.com/login", "https://www.tiktok.com/tiktokstudio/upload"),
     "instagram": ("https://www.instagram.com/accounts/login/", "https://www.instagram.com/"),
+    "facebook": (pagina_facebook.BASE + "/login", pagina_facebook.BASE + "/"),
     "bilibili": ("https://passport.bilibili.com/login", "https://member.bilibili.com/platform/upload/video/frame"),
 }
 
@@ -145,12 +148,46 @@ def esperar_sessao(aba: Aba, rede: str, segundos: float = 30) -> None:
     limite = time.monotonic() + segundos
     while time.monotonic() < limite:
         _conferir_bloqueio(aba)
-        if any(p in aba.url().lower() for p in URL_LOGIN) or aba.existe("input[type=password]"):
+        url = aba.url().lower()
+        # só no Facebook: nas outras redes ninguém mediu o endereço da verificação
+        if rede == "facebook" and "/checkpoint" in url:
+            raise ErroNavegador("o Facebook pediu uma verificação: resolva na janela do navegador e teste a conta",
+                                "bloqueio", persistente=True)
+        if any(p in url for p in URL_LOGIN) or aba.existe("input[type=password]"):
             raise _erro_sessao(rede)
-        if aba.js(SESSAO[rede]):
+        # no Facebook o sinal é o cookie da sessão (c_user), que a página não lê (HttpOnly)
+        if pagina_facebook.logado(aba) if rede == "facebook" else aba.js(SESSAO[rede]):
             return
         aba.pausa(1.5)
     raise _erro_sessao(rede)
+
+
+def lembrar_identidade(cfg: Config, ident: pagina_facebook.Identidade) -> None:
+    """Anota a última conferência da Página do Facebook em navegador.json (o painel mostra).
+
+    Os campos são os da Identidade, que nunca tem o c_user nem a URL do /me.
+    """
+    via = ViaNavegador("facebook", cfg)
+    dados = via.token()
+    dados.setdefault("paginas", {})["facebook"] = {
+        "agindo_como": ident.agindo_como, "id": ident.id, "nome": ident.nome, "confere": ident.confere,
+        "motivo": ident.motivo, "em": time.time(),
+    }
+    via.salvar_token(dados)
+
+
+def _exigir_pagina(aba: Aba, cfg: Config, trocar: bool) -> str:
+    """A conferência de entrada do Facebook (os dois sinais), anotada com e sem confirmação.
+
+    Devolve o c_user lido nela, para a conferência antes do clique de publicar.
+    """
+    try:
+        ident, c_user = pagina_facebook.exigir(aba, cfg, trocar=trocar, conferir_bloqueio=_conferir_bloqueio)
+    except pagina_facebook.ErroPagina as e:
+        lembrar_identidade(cfg, e.identidade)
+        raise
+    lembrar_identidade(cfg, ident)
+    return c_user
 
 
 def _chave_do_link(link: str) -> str:
@@ -170,6 +207,8 @@ class ViaNavegador(Plataforma):
         super().__init__(cfg)
         self.nav = cfg["navegador"]
         self._id_envio = ""
+        # Facebook: a última conferência do verificar (a API lê o aprendido e a sugestão)
+        self.identidade: pagina_facebook.Identidade | None = None
 
     # ------------------------------------------------------------ conta
     @property
@@ -190,6 +229,7 @@ class ViaNavegador(Plataforma):
         dados = self.token()
         (dados.get("contas") or {}).pop(self.nome, None)
         (dados.get("visto_em") or {}).pop(self.nome, None)
+        (dados.get("paginas") or {}).pop(self.nome, None)  # a última conferência da Página do Facebook
         self.salvar_token(dados)
 
     def pronta(self) -> tuple[bool, str]:
@@ -198,6 +238,11 @@ class ViaNavegador(Plataforma):
             return False, "falta abrir o navegador e entrar na conta"
         if not self.conta():
             return False, "falta entrar na conta pelo navegador (em Redes sociais, use Conectar)"
+        if self.nome == "facebook":  # sem passos fixos e sem Página confirmada, não há o que postar
+            if not gravador.carregar_com_origem(self.cfg, "facebook")[0]:
+                return False, "falta gravar o roteiro do Facebook (Redes sociais > Aprender a postar)"
+            if not str(self.cfg["facebook"]["pagina_id"]).strip():
+                return False, "falta confirmar a Página: informe a Página e use Testar sessão"
         return True, "ok"
 
     @property
@@ -235,8 +280,11 @@ class ViaNavegador(Plataforma):
                 aba = navegador.nova_aba("about:blank")
                 aba.navegar(PAGINAS[self.nome][1])
                 esperar_sessao(aba, self.nome)
-                conta = self._nome_da_conta(aba) or "conta conectada"
-                texto = f"{conta} pelo navegador"
+                if self.nome == "facebook":
+                    texto = f"{self._verificar_pagina(aba)} pelo navegador"
+                else:
+                    conta = self._nome_da_conta(aba) or "conta conectada"
+                    texto = f"{conta} pelo navegador"
                 self.lembrar_conta(texto)
                 return texto
             except ErroNavegador as e:
@@ -247,6 +295,21 @@ class ViaNavegador(Plataforma):
                     navegador.fechar_aba(aba)
         finally:
             TRAVA.release()
+
+    def _verificar_pagina(self, aba: Aba) -> str:
+        """Testar sessão no Facebook: confere a Página (trocando, se preciso) e devolve a conta.
+
+        Sem a Página confirmada, é um bloqueio persistente: o Testar sessão só tira a pausa com ela.
+        """
+        ident = pagina_facebook.conferir(aba, self.cfg, trocar=True, conferir_bloqueio=_conferir_bloqueio)
+        self.identidade = ident
+        lembrar_identidade(self.cfg, ident)
+        if not ident.confere:
+            self._guardar_imagem(aba, "pagina")
+            raise ErroPublicacao(f"{self.rotulo}: {pagina_facebook.mensagem(self.cfg['facebook'], ident)}",
+                                 "bloqueio", persistente=True)
+        nome = ident.nome or (ident.aprendido or {}).get("pagina_nome") or str(self.cfg["facebook"]["pagina_nome"])
+        return f"Página {nome} (id {ident.id})" if nome else f"Página id {ident.id}"
 
     def _nome_da_conta(self, aba: Aba) -> str | None:
         tentativas = {
@@ -307,6 +370,9 @@ class ViaNavegador(Plataforma):
             # só numa corrida (o motor confere o roteiro antes): para as imagens, e não a rede inteira
             raise ErroPublicacao(f"{self.rotulo}: o roteiro de imagem sumiu: grave de novo em Redes sociais",
                                  "formato", parado=True)
+        elif self.nome == "facebook":
+            # o Facebook não tem passos fixos nem roteiro padrão: sem o seu, não há como postar
+            raise ErroPublicacao("Facebook: grave o roteiro em Redes sociais > Aprender a postar", "bloqueio")
         else:
             fixo = {"youtube": self._youtube, "tiktok": self._tiktok,
                     "instagram": self._instagram, "bilibili": self._bilibili}[self.nome]
@@ -335,6 +401,16 @@ class ViaNavegador(Plataforma):
                 aba = navegador.nova_aba("about:blank")
                 aba.navegar(PAGINAS[self.nome][1])
                 esperar_sessao(aba, self.nome)
+                if self.nome == "facebook":
+                    # na Página certa (trocando, se preciso) antes de qualquer passo; o cookie é
+                    # conferido de novo logo antes do clique de publicar
+                    c_user = _exigir_pagina(aba, self.cfg, trocar=True)
+                    aba.navegar(PAGINAS["facebook"][1])
+
+                    def passo_a_passo(aba, arqs, t, ens, ent):
+                        return self._repetir(
+                            aba, aprendido, arqs, t, ens, ent, origem or "perfil", nome,
+                            antes_de_publicar=lambda a: pagina_facebook.antes_de_publicar(a, self.cfg, c_user))
                 # quadro de outro site com cara de uploader: eu não alcanço o que está dentro dele
                 # (os quadros de anúncio e de estatística das redes são ignorados)
                 quadros = [f for f in aba.iframes() if _quadro_de_envio(f)]
@@ -354,6 +430,12 @@ class ViaNavegador(Plataforma):
                 return resultado
             except ErroNavegador as e:
                 tipo, persistente = e.tipo, e.persistente
+                if isinstance(e, pagina_facebook.ErroPagina):
+                    # o motivo da pausa começa pelo que aconteceu ("não consegui confirmar...",
+                    # "a Página mudou..."): o cartão e o registro já dizem que é o Facebook
+                    if aba is not None:
+                        self._guardar_imagem(aba, "pagina")
+                    raise ErroPublicacao(str(e), "bloqueio", persistente=True) from e
                 if aba is not None and not e.conexao:
                     self._guardar_imagem(aba, "erro")
                     if tipo != "bloqueio":
@@ -386,7 +468,10 @@ class ViaNavegador(Plataforma):
 
     # ---- roteiro que você gravou (e pode editar no painel)
     def _repetir(self, aba: Aba, texto_roteiro: str, arquivos: list[Path], t: dict, ensaio: bool,
-                 entrega: Entrega, origem: str = "perfil", nome_roteiro: str | None = None) -> Resultado:
+                 entrega: Entrega, origem: str = "perfil", nome_roteiro: str | None = None,
+                 antes_de_publicar=None) -> Resultado:
+        """antes_de_publicar(aba) roda no passo de publicar (no Facebook, a Página de novo): antes do
+        ensaio parar e logo antes do clique, depois da espera pelo botão. Levantando, nada é clicado."""
         nome_roteiro = nome_roteiro or self.nome
         de_imagem = roteiro.midia_do_roteiro(nome_roteiro) == "imagem"
         o_post = "o post" if de_imagem else "o vídeo"
@@ -415,6 +500,8 @@ class ViaNavegador(Plataforma):
             # cara de publicar depois do arquivo (a gravação pode ter dado o nome errado ao passo).
             ponto = (depois_do_arquivo and not publicou and ins.comando in ("publicar", "clicar")
                      and (ins.comando == "publicar" or roteiro.parece_publicar(ins.alvos)))
+            if ponto and antes_de_publicar:
+                antes_de_publicar(aba)  # vale também para o ensaio, que para logo abaixo
             if ponto and ensaio:
                 log.info("%s: ensaio, paro antes da linha %d (\u201c%s\u201d)", self.rotulo, ins.linha, ins.descricao)
                 return self._fim()
@@ -423,7 +510,12 @@ class ViaNavegador(Plataforma):
                     links_antes = self._links(aba)
                 if ponto:
                     _conferir_bloqueio(aba, so_dialogos=True)
-                    self._clicar(aba, ins, ESPERA_PUBLICAR, antes=lambda: self._aceitar(entrega))
+
+                    def antes():
+                        if antes_de_publicar:
+                            antes_de_publicar(aba)  # o botão pode ter levado até 15 min para liberar
+                        self._aceitar(entrega)
+                    self._clicar(aba, ins, ESPERA_PUBLICAR, antes=antes)
                     publicou = True
                 elif ins.comando == "conferir" and publicou:
                     try:
@@ -438,6 +530,8 @@ class ViaNavegador(Plataforma):
                 else:
                     self._rodar(aba, ins, arquivos, t)
             except ErroNavegador as e:
+                if isinstance(e, pagina_facebook.ErroPagina):
+                    raise  # nem num passo opcional: a Página mudou, e nada mais é clicado
                 parou = aba.parar is not None and aba.parar.is_set()
                 if ins.opcional and not e.conexao and not parou:
                     log.info("%s: passo opcional da linha %d não deu, seguindo (%s)", self.rotulo, ins.linha, e)
@@ -769,6 +863,11 @@ class Gravacao:
             try:
                 aba.navegar(PAGINAS[self.rede][1], 60)
                 esperar_sessao(aba, self.rede)
+                if self.rede == "facebook":
+                    # sem trocar: na gravação quem troca é você, e o post sairia na Página errada.
+                    # O ErroPagina sobe como está (o painel responde 409 com o perfil ativo)
+                    _exigir_pagina(aba, self.cfg, trocar=False)
+                    aba.navegar(PAGINAS["facebook"][1], 60)
                 aba.avaliar(gravador.SCRIPT)
                 self.texto_inicial = str(aba.avaliar("window.__acGrav.texto()") or "")
             except ErroNavegador:
@@ -873,6 +972,7 @@ class Gravacao:
         if self.thread is not None:
             self.thread.join(timeout=5)
         diagnostico: dict = {}
+        ck: dict | None = None  # Facebook: com que perfil o post da gravação saiu
         with self._trava:
             aba = self._aba
             if aba is not None:
@@ -881,6 +981,11 @@ class Gravacao:
                     diagnostico = aba.avaliar("window.__acGrav.diagnostico()") or {}
                 except ErroNavegador:
                     pass
+                if self.rede == "facebook":
+                    try:  # antes de fechar a aba: depois não há como ler os cookies dela
+                        ck = pagina_facebook.cookies(aba)
+                    except ErroNavegador:
+                        ck = None
                 self._aba = None
         if aba is not None:
             self._navegador.fechar_aba(aba)
@@ -897,6 +1002,14 @@ class Gravacao:
             # sem digitação anotada, o diagnóstico mostra se o campo estava num quadro (iframe)
             log.warning("%s: diagnóstico da página ao terminar: %s", ROTULOS[self.rede], diagnostico)
             resultado["diagnostico"] = diagnostico
+        if self.rede == "facebook":
+            pagina_id = str(self.cfg["facebook"]["pagina_id"]).strip()
+            if ck is None:
+                resultado["aviso"] = ("não consegui ler com que perfil o post desta gravação saiu: confira na "
+                                      "Página")
+            elif not pagina_id or ck.get("i_user") != pagina_id:
+                resultado["aviso"] = (f"o post desta gravação saiu agindo como {pagina_facebook.descrever(ck)}: "
+                                      "confira na Página")
         return resultado
 
     def cancelar(self) -> None:

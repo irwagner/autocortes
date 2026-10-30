@@ -1,13 +1,17 @@
-"""Página do Facebook como rede própria: config, migração, agenda, plataformas, fila e banco.
+"""Página do Facebook como rede própria: config, migração, agenda, plataformas, fila, banco e a
+conferência da Página no navegador.
 
-Nada aqui abre o Facebook de verdade: a API oficial e o Upload-Post são servidores HTTP locais.
+Nada aqui abre o Facebook de verdade: a API oficial, o Upload-Post e o próprio Facebook (para o
+navegador sem janela) são servidores HTTP locais.
 """
 
 import copy
 import http.server
 import json
+import logging
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -17,8 +21,11 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
-from autocortes import agenda, config, db, planejador, publicador
+import requests
+
+from autocortes import agenda, config, db, gravador, navegador, planejador, publicador
 from autocortes.plataformas import facebook as plat_fb
+from autocortes.plataformas import navegador as plat_nav
 from autocortes.plataformas import manual, pagina_facebook
 from autocortes.plataformas.base import Entrega, ErroPublicacao, Resultado
 from autocortes.plataformas.facebook import Facebook
@@ -904,6 +911,474 @@ class TestEntradaEDecisao(unittest.TestCase):
             self.assertSemCUser(str(erro.exception), erro.exception.identidade.publico())
         with self.assertRaises(pagina_facebook.ErroPagina):  # sem a Página confirmada, nunca passa
             pagina_facebook.antes_de_publicar(_AbaDeMentira(i_user=PAGINA), self.cfg(pagina_id=""), C_USER)
+
+
+# ---------------------------------------------------------------- Facebook falso no navegador
+
+NOMES_FB = {C_USER: "Fulano Pessoal", PAGINA: "Página Certa", OUTRA: "Outra Página"}
+
+PAGINA_INICIAL = """<!doctype html><html><head><meta charset="utf-8"><title>Facebook</title></head><body>
+<div role="button" tabindex="0" aria-label="Seu perfil" id="menu-conta">foto</div>
+<div id="menu" role="menu" hidden><div role="menuitem" tabindex="0" id="todos">Ver todos os perfis</div></div>
+<div id="perfis" role="dialog" hidden>
+  <div class="linha" role="button" tabindex="0" data-id="__C__"><a href="/profile.php?id=__C__">foto</a>
+    <span>Fulano Pessoal</span></div>
+  <div class="linha" role="button" tabindex="0" data-id="__OUTRA__"><a href="/profile.php?id=__OUTRA__">foto</a>
+    <span>Outra Página</span></div>
+  <linha-sombra data-id="__PAGINA__" data-nome="Página Certa"></linha-sombra>
+</div>
+<a href="/reels/create">Criar reel</a>
+<script>
+function trocar(id) { fetch("/trocar?para=" + id).then(() => { document.getElementById("perfis").hidden = true; }); }
+customElements.define("linha-sombra", class extends HTMLElement {
+  connectedCallback() {
+    if (this.shadowRoot) return;
+    const raiz = this.attachShadow({ mode: "open" });
+    raiz.innerHTML = '<div role="button" tabindex="0" class="linha"><a href="/profile.php?id=' + this.dataset.id
+      + '">foto</a> <span>' + this.dataset.nome + '</span></div>';
+    raiz.querySelector(".linha").addEventListener("click", (e) => { e.preventDefault(); trocar(this.dataset.id); });
+  }
+});
+document.getElementById("menu-conta").addEventListener("click", () => { document.getElementById("menu").hidden = false; });
+document.getElementById("todos").addEventListener("click", () => { document.getElementById("perfis").hidden = false; });
+for (const l of document.querySelectorAll("#perfis > .linha")) {
+  l.addEventListener("click", (e) => { e.preventDefault(); trocar(l.dataset.id); });
+}
+</script></body></html>"""
+
+PAGINA_PERFIL = """<!doctype html><html><head><meta charset="utf-8"><title>__NOME__ | Facebook</title></head><body>
+<h1>__NOME__</h1>__BOTAO__
+<script>
+const b = document.getElementById("mudar");
+if (b) b.addEventListener("click", () => fetch("/trocar?para=__ID__"));
+</script></body></html>"""
+
+COMPOSITOR = """<!doctype html><html><head><meta charset="utf-8"><title>Criar reel | Facebook</title></head><body>
+<input type="file" id="arquivo" accept="video/*">
+<div contenteditable="true" aria-label="Descreva seu reel" id="descricao" style="min-height:40px"></div>
+<div role="button" tabindex="0" id="publicar" aria-disabled="true">Publicar</div>
+<div id="feito"></div>
+<script>
+const cenario = "__CENARIO__";
+const pub = document.getElementById("publicar");
+const liberar = () => pub.setAttribute("aria-disabled", "false");
+document.getElementById("arquivo").addEventListener("change", () => {
+  if (cenario === "muda_antes") {
+    const x = new XMLHttpRequest(); x.open("GET", "/trocar?para=__OUTRA__", false); x.send(); liberar();
+  } else if (cenario === "muda_durante") {
+    setTimeout(() => fetch("/trocar?para=__OUTRA__"), 1000); setTimeout(liberar, 3000);
+  } else liberar();
+});
+pub.addEventListener("click", () => {
+  if (pub.getAttribute("aria-disabled") === "true") return;
+  fetch("/publicar", { method: "POST", body: document.getElementById("descricao").innerText })
+    .then(() => { document.getElementById("feito").textContent = "Seu reel foi publicado"; });
+});
+</script></body></html>"""
+
+# a lista de perfis já aberta, para o R3: tipo r3 (só "Cortes de Filmes" visível), repetido e ok
+LISTAS = {
+    "r3": '<div role="button" class="linha" data-id="1" hidden><span>Cortes</span></div>'
+          '<div role="button" class="linha" data-id="2"><span>Cortes de Filmes</span></div>',
+    "repetido": '<div role="button" class="linha" data-id="1"><span>Cortes</span></div>'
+                '<div role="button" class="linha" data-id="2"><span>Cortes</span></div>',
+    "ok": '<div role="button" class="linha" data-id="1"><span>Cortes</span></div>'
+          '<div role="button" class="linha" data-id="2"><span>Cortes de Filmes</span></div>',
+}
+PAGINA_LISTA = """<!doctype html><html><head><meta charset="utf-8"><title>Lista</title></head><body>
+<p>Cortes</p><div role="dialog">__LINHAS__</div>
+<script>
+for (const l of document.querySelectorAll(".linha")) l.addEventListener("click", () => fetch("/trocar?para=" + l.dataset.id));
+</script></body></html>"""
+
+
+class _FacebookFalso(http.server.BaseHTTPRequestHandler):
+    """Imita o que o AutoCortes olha no Facebook: os cookies, o /me, a troca de perfil e o compositor."""
+
+    cenario = ""  # troca_quebrada, muda_durante ou muda_antes
+    trocas: list[str] = []
+    publicados: list[dict] = []
+
+    def _cookies(self) -> dict:
+        saida = {}
+        for parte in (self.headers.get("Cookie") or "").split(";"):
+            nome, _, valor = parte.strip().partition("=")
+            if nome:
+                saida[nome] = valor
+        return saida
+
+    def _responder(self, corpo: str = "ok", status: int = 200, cookies: dict | None = None, local: str = ""):
+        dados = corpo.encode("utf-8")
+        self.send_response(status)
+        for nome, valor in (cookies or {}).items():
+            # como o servidor de teste é http, sem SameSite=None (o Chrome recusaria sem Secure)
+            fim = "; Max-Age=0" if valor is None else ""
+            self.send_header("Set-Cookie", f"{nome}={valor or ''}; Path=/; HttpOnly{fim}")
+        if local:
+            self.send_header("Location", local)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(dados)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(dados)
+
+    def do_POST(self):
+        tamanho = int(self.headers.get("Content-Length") or 0)
+        texto = self.rfile.read(tamanho).decode("utf-8", "replace")
+        if urlsplit(self.path).path == "/publicar":
+            _FacebookFalso.publicados.append({"i_user": self._cookies().get("i_user"), "texto": texto})
+        self._responder()
+
+    def do_GET(self):
+        partes = urlsplit(self.path)
+        q = {k: v[0] for k, v in parse_qs(partes.query).items()}
+        ck = self._cookies()
+        caminho = partes.path
+        if caminho == "/entrar":
+            como = q.get("como", "pessoal")
+            i_user = {"pagina": PAGINA, "outra": OUTRA}.get(como)
+            self._responder(cookies={"c_user": None if como == "sair" else C_USER, "i_user": i_user})
+        elif caminho == "/trocar":
+            _FacebookFalso.trocas.append(q.get("para", ""))
+            if _FacebookFalso.cenario == "troca_quebrada":
+                self._responder()
+            else:
+                para = q.get("para")
+                self._responder(cookies={"i_user": None if para == C_USER else para})
+        elif caminho in ("/login",) or (caminho == "/" and "c_user" not in ck):
+            self._responder('<!doctype html><title>Entrar</title><form><input type="password"></form>')
+        elif caminho == "/":
+            self._responder(PAGINA_INICIAL.replace("__C__", C_USER).replace("__OUTRA__", OUTRA)
+                            .replace("__PAGINA__", PAGINA))
+        elif caminho == "/me":
+            self._responder(status=302, local=f"/profile.php?id={ck.get('i_user') or ck.get('c_user')}")
+        elif caminho == "/profile.php":
+            numero = q.get("id", "")
+            botao = ('<div role="button" tabindex="0" id="mudar">Mudar agora</div>'
+                     if numero != C_USER and "i_user" not in ck else "")
+            self._responder(PAGINA_PERFIL.replace("__NOME__", NOMES_FB.get(numero, "Alguém"))
+                            .replace("__BOTAO__", botao).replace("__ID__", numero))
+        elif caminho == "/reels/create":
+            self._responder(COMPOSITOR.replace("__CENARIO__", _FacebookFalso.cenario).replace("__OUTRA__", OUTRA))
+        elif caminho == "/lista":
+            self._responder(PAGINA_LISTA.replace("__LINHAS__", LISTAS[q.get("tipo", "ok")]))
+        else:
+            self._responder("não existe", 404)
+
+    def log_message(self, *args):
+        pass
+
+
+class _NavegadorDoTeste:
+    """O Navegador do AutoCortes trocado pela aba do navegador sem janela do teste."""
+
+    aba = None
+
+    def __init__(self, cfg, parar=None):
+        self.conf = {}
+
+    def abrir(self):
+        pass
+
+    def nova_aba(self, url: str = "about:blank"):
+        return _NavegadorDoTeste.aba
+
+    def fechar_aba(self, aba) -> None:
+        pass
+
+
+class _Registro(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.linhas: list[str] = []
+
+    def emit(self, record):
+        self.linhas.append(record.getMessage())
+
+
+class TestNoNavegador(ti.BaseBanco):
+    """Item 7: o envio e a gravação do Facebook num navegador sem janela, contra um Facebook falso local.
+
+    Critérios 8 a 13 e 15a (registro e navegador.json) e o R3. Nada abre o Facebook de verdade.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.pasta = tempfile.TemporaryDirectory(prefix="autocortes-teste-facebook-nav-")
+        cls.addClassCleanup(cls.pasta.cleanup)
+        try:
+            programa = navegador.caminho_programa(
+                config.Config(copy.deepcopy(config.PADRAO), Path(cls.pasta.name) / "config.toml"))
+        except navegador.ErroNavegador as erro:
+            raise unittest.SkipTest(str(erro)) from erro
+        cls.servidor = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FacebookFalso)
+        threading.Thread(target=cls.servidor.serve_forever, daemon=True).start()
+        cls.addClassCleanup(cls.servidor.server_close)
+        cls.addClassCleanup(cls.servidor.shutdown)
+        cls.site = f"http://127.0.0.1:{cls.servidor.server_address[1]}"
+        porta = navegador.porta_livre()
+        cls.devtools = f"http://127.0.0.1:{porta}"
+        cls.processo = subprocess.Popen(
+            [str(programa), "--headless=new", f"--remote-debugging-port={porta}",
+             "--remote-debugging-address=127.0.0.1", f"--user-data-dir={cls.pasta.name}/chrome",
+             "--no-first-run", "--no-default-browser-check", "about:blank"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        cls.addClassCleanup(cls._encerrar)
+        limite = time.monotonic() + 20
+        while time.monotonic() < limite:
+            try:
+                paginas = requests.get(f"{cls.devtools}/json/list", timeout=1).json()
+                pagina = next(p for p in paginas if p["type"] == "page")
+                cls.aba = navegador.Aba(navegador._Websocket(pagina["webSocketDebuggerUrl"], timeout=10), ritmo=(0, 0))
+                cls.addClassCleanup(cls.aba._ws.fechar)
+                return
+            except (requests.RequestException, StopIteration):
+                time.sleep(0.1)
+        raise RuntimeError("O navegador de teste não abriu")
+
+    _encerrar = classmethod(ti.TestPaginasFalsas._encerrar.__func__)
+
+    def setUp(self):
+        super().setUp()
+        _NavegadorDoTeste.aba = self.aba
+        _FacebookFalso.cenario = ""
+        _FacebookFalso.trocas = []
+        _FacebookFalso.publicados = []
+        self.so_redes("facebook")
+        self.cfg["facebook"].update(envio="navegador", pagina=LINK_PAGINA, pagina_id=PAGINA, pagina_nome="Página Certa")
+        self.cfg["navegador"]["ensaio"] = False
+        gravador.gravar_roteiro(self.cfg, "facebook", (
+            f"abrir {self.site}/reels/create\n"
+            "video em input[type=file]\n"
+            'escrever descricao em [aria-label="Descreva seu reel"]\n'
+            'publicar "Publicar"\n'
+            'conferir "Seu reel foi publicado"\n'))
+        for troca in (patch.object(plat_nav, "Navegador", _NavegadorDoTeste),
+                      patch.dict(plat_nav.PAGINAS, {"facebook": (self.site + "/login", self.site + "/")}),
+                      patch.object(pagina_facebook, "BASE", self.site),
+                      patch.object(plat_nav, "ESPERA_PUBLICAR", 20),
+                      patch.object(pagina_facebook, "ESPERA_TROCA", 3),
+                      patch.object(pagina_facebook, "ESPERA_BOTAO", 1.5),
+                      patch.object(pagina_facebook, "ESPERA_LISTA", 3)):
+            troca.start()
+            self.addCleanup(troca.stop)
+        self.registro = _Registro()
+        logger = logging.getLogger("autocortes")
+        nivel = logger.level
+        logger.addHandler(self.registro)
+        logger.setLevel(logging.DEBUG)
+        self.addCleanup(logger.setLevel, nivel)
+        self.addCleanup(logger.removeHandler, self.registro)
+
+    # ---- ajudantes
+    def como(self, quem: str) -> None:
+        """Põe a sessão no perfil pedido (pessoal, pagina, outra ou sair)."""
+        self.aba.navegar(f"{self.site}/entrar?como={quem}")
+
+    def i_user(self):
+        return pagina_facebook.cookies(self.aba)["i_user"]
+
+    def postar(self) -> tuple[str, int]:
+        corte = self.novo_corte()
+        pub = publicador.Publicador(self.cfg, threading.Event())
+        pub.plataformas["facebook"] = plat_nav.ViaNavegador("facebook", self.cfg)
+        return pub.postar(self.conn, "facebook", self.corte_row(corte), manual=True), corte
+
+    def bloqueio(self) -> dict | None:
+        return publicador.ler_bloqueios(self.conn).get("facebook")
+
+    def conferencia(self) -> dict:
+        return (plat_nav.ViaNavegador("facebook", self.cfg).token().get("paginas") or {}).get("facebook") or {}
+
+    def assertSemCUser(self, *extras):
+        guardado = json.dumps(plat_nav.ViaNavegador("facebook", self.cfg).token(), ensure_ascii=False)
+        for texto in [guardado, *self.registro.linhas, *(str(x) for x in extras)]:
+            self.assertNotIn(C_USER, texto)
+
+    def assertPublicou(self, status: str, corte: int) -> None:
+        self.assertEqual(status, "publicado")
+        self.assertEqual([p["i_user"] for p in _FacebookFalso.publicados], [PAGINA])
+        linha = self.conn.execute("SELECT status FROM postagens WHERE corte_id=? AND plataforma='facebook'",
+                                  (corte,)).fetchone()
+        self.assertEqual(linha["status"], "publicado")
+        self.assertTrue(self.conferencia().get("confere"))
+
+    def assertBloqueou(self, status: str, corte: int, comeco: str) -> None:
+        self.assertEqual(status, "bloqueado")
+        self.assertEqual(_FacebookFalso.publicados, [])
+        self.assertIsNone(self.conn.execute("SELECT id FROM postagens WHERE corte_id=?", (corte,)).fetchone())
+        pausa = self.bloqueio()
+        self.assertIsNotNone(pausa)
+        self.assertIsNone(pausa["ate"])
+        self.assertTrue(pausa["motivo"].startswith(comeco), pausa["motivo"])
+        self.assertSemCUser(pausa)
+        self.assertTrue(list((self.cfg.pasta_dados / "navegador").glob("facebook-pagina-*.png")))
+
+    # ---- critérios 8 a 13
+    def test_a_pagina_certa_publica(self):
+        self.como("pagina")
+        status, corte = self.postar()
+        self.assertPublicou(status, corte)
+        self.assertEqual(_FacebookFalso.trocas, [])
+        self.assertSemCUser()
+
+    def test_b_perfil_pessoal_troca_pelo_botao_da_pagina(self):
+        self.como("pessoal")
+        status, corte = self.postar()
+        self.assertPublicou(status, corte)
+        self.assertEqual(_FacebookFalso.trocas, [PAGINA])
+        self.assertSemCUser()  # 15a: o cenário do perfil pessoal, no registro e no navegador.json
+
+    def test_c_outra_pagina_troca_pela_lista_de_perfis(self):
+        self.como("outra")
+        status, corte = self.postar()
+        self.assertPublicou(status, corte)
+        self.assertEqual(_FacebookFalso.trocas, [PAGINA])  # a linha da Página, dentro do shadow DOM
+        self.assertSemCUser()
+
+    def test_d_troca_que_nao_muda_o_cookie_nao_posta(self):
+        self.como("pessoal")
+        _FacebookFalso.cenario = "troca_quebrada"
+        status, corte = self.postar()
+        self.assertBloqueou(status, corte, "não consegui confirmar que estou na Página")
+        self.assertEqual(self.conferencia().get("agindo_como"), "pessoal")
+        self.assertFalse(self.conferencia().get("confere"))
+        self.assertSemCUser()
+
+    def test_e_pagina_muda_enquanto_o_botao_espera(self):
+        self.como("pagina")
+        _FacebookFalso.cenario = "muda_durante"
+        chamadas = []
+        original = pagina_facebook.antes_de_publicar
+
+        def contar(*a, **k):
+            chamadas.append(time.monotonic())
+            return original(*a, **k)
+
+        with patch.object(pagina_facebook, "antes_de_publicar", contar):
+            status, corte = self.postar()
+        self.assertBloqueou(status, corte, "a Página mudou no meio do envio")
+        self.assertEqual(len(chamadas), 2)  # a de antes do passo passou; a de dentro do antes() parou
+        self.assertEqual(self.i_user(), OUTRA)
+
+    def test_e_pagina_muda_antes_do_passo(self):
+        self.como("pagina")
+        _FacebookFalso.cenario = "muda_antes"
+        status, corte = self.postar()
+        self.assertBloqueou(status, corte, "a Página mudou no meio do envio")
+
+    def test_e_entrega_nao_aceita(self):
+        """Critério 12 pela via direta: o ErroPagina sobe e a Entrega não é aceita."""
+        self.como("pagina")
+        _FacebookFalso.cenario = "muda_durante"
+        entrega = Entrega()
+        arquivo = self.raiz / "video.mp4"
+        arquivo.write_bytes(bytes(512))
+        with self.assertRaises(ErroPublicacao) as erro:
+            plat_nav.ViaNavegador("facebook", self.cfg).publicar(arquivo, Conteudo("T", "Descrição", []), None, entrega)
+        self.assertEqual((erro.exception.tipo, erro.exception.persistente), ("bloqueio", True))
+        self.assertFalse(entrega.aceita)
+
+    def test_ensaio(self):
+        """Critério 13: na Página certa, ensaio; com o perfil trocado antes do publicar, bloqueado."""
+        self.cfg["navegador"]["ensaio"] = True
+        self.como("pagina")
+        status, corte = self.postar()
+        self.assertEqual(status, "ensaio")
+        self.assertEqual(_FacebookFalso.publicados, [])
+        self.assertIsNone(self.bloqueio())
+        self.como("pagina")
+        _FacebookFalso.cenario = "muda_antes"
+        status, corte = self.postar()
+        self.assertBloqueou(status, corte, "a Página mudou no meio do envio")
+
+    def test_sem_roteiro_pede_para_gravar(self):
+        gravador.arquivo_roteiro(self.cfg, "facebook").unlink()
+        (self.cfg.pasta_dados / "chrome").mkdir(parents=True, exist_ok=True)
+        plat_nav.ViaNavegador("facebook", self.cfg).lembrar_conta("Página Página Certa (id 5550001)")
+        self.assertEqual(plat_nav.ViaNavegador("facebook", self.cfg).pronta(),
+                         (False, "falta gravar o roteiro do Facebook (Redes sociais > Aprender a postar)"))
+        with self.assertRaises(ErroPublicacao) as erro:
+            plat_nav.ViaNavegador("facebook", self.cfg).publicar(self.raiz / "x.mp4", Conteudo("T", "D", []))
+        self.assertEqual(erro.exception.tipo, "bloqueio")
+        self.assertIn("grave o roteiro", str(erro.exception))
+
+    def test_verificar_e_desconectar(self):
+        (self.cfg.pasta_dados / "chrome").mkdir(parents=True, exist_ok=True)
+        self.como("pessoal")
+        via = plat_nav.ViaNavegador("facebook", self.cfg)
+        self.assertEqual(via.verificar(), "Página Página Certa (id 5550001) pelo navegador")
+        self.assertTrue(via.identidade.confere)
+        self.assertEqual(via.pronta(), (True, "ok"))
+        self.cfg["facebook"]["pagina_id"] = ""
+        self.assertEqual(via.pronta()[1], "falta confirmar a Página: informe a Página e use Testar sessão")
+        self.cfg["facebook"]["pagina_id"] = PAGINA
+        _FacebookFalso.cenario = "troca_quebrada"
+        self.como("pessoal")
+        with self.assertRaises(ErroPublicacao) as erro:
+            via.verificar()
+        self.assertTrue(erro.exception.persistente)
+        self.assertIn("não consegui confirmar que estou na Página", str(erro.exception))
+        self.assertEqual(self.conferencia().get("agindo_como"), "pessoal")
+        self.assertSemCUser(erro.exception)
+        via.desconectar()
+        self.assertEqual(self.conferencia(), {})
+        self.assertIsNone(via.conta())
+
+    def test_checkpoint_e_deslogado(self):
+        self.como("sair")
+        aba = self.aba
+        aba.navegar(self.site + "/")
+        with self.assertRaises(navegador.ErroNavegador) as erro:
+            plat_nav.esperar_sessao(aba, "facebook", 3)
+        self.assertEqual(erro.exception.tipo, "bloqueio")
+        self.como("pagina")
+        aba.navegar(self.site + "/checkpoint/123")
+        with self.assertRaises(navegador.ErroNavegador) as erro:
+            plat_nav.esperar_sessao(aba, "facebook", 3)
+        self.assertTrue(erro.exception.persistente)
+
+    # ---- (f) gravação
+    def test_f_gravacao(self):
+        self.como("pessoal")
+        g = plat_nav.Gravacao(self.cfg, "facebook")
+        with self.assertRaises(pagina_facebook.ErroPagina) as erro:
+            g.iniciar()
+        self.assertEqual(erro.exception.identidade.agindo_como, "pessoal")
+        self.assertEqual(_FacebookFalso.trocas, [])  # na gravação, quem troca é você
+        self.assertEqual(plat_nav.gravando(), [])
+        self.como("pagina")
+        g = plat_nav.Gravacao(self.cfg, "facebook")
+        g.iniciar()
+        try:
+            self.assertEqual(plat_nav.gravando(), ["facebook"])
+            self.assertEqual(self.aba.url(), self.site + "/")
+            g.passos.append({"tipo": "clique"})
+            self.como("outra")  # o post saiu agindo como outra Página
+            with patch.object(plat_nav.gravador, "salvar", lambda *a, **k: {"ok": True}):
+                resultado = g.concluir()
+        finally:
+            g.cancelar()
+        self.assertIn(f"a Página id {OUTRA}", resultado["aviso"])
+        self.assertSemCUser(resultado)
+
+    # ---- R3: a escolha na lista de perfis
+    def test_r3_lista_de_perfis(self):
+        self.aba.navegar(f"{self.site}/lista?tipo=r3")
+        self.assertEqual(pagina_facebook.escolher_perfil(self.aba, "Cortes", "")["estado"], "nenhum")
+        self.aba.navegar(f"{self.site}/lista?tipo=repetido")
+        self.assertEqual(pagina_facebook.escolher_perfil(self.aba, "Cortes", ""), {"estado": "repetido", "n": 2})
+        time.sleep(0.3)
+        self.assertEqual(_FacebookFalso.trocas, [])
+        self.aba.navegar(f"{self.site}/lista?tipo=ok")
+        self.assertEqual(pagina_facebook.escolher_perfil(self.aba, "  cortes ", "")["estado"], "clicado")
+        limite = time.monotonic() + 3
+        while not _FacebookFalso.trocas and time.monotonic() < limite:
+            time.sleep(0.1)
+        self.assertEqual(_FacebookFalso.trocas, ["1"])  # o parágrafo "Cortes" fora da lista não conta
 
 
 if __name__ == "__main__":
