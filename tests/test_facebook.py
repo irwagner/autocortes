@@ -6,8 +6,11 @@ Nada aqui abre o Facebook de verdade: a API oficial e o Upload-Post são servido
 import copy
 import http.server
 import json
+import subprocess
+import sys
 import threading
 import time
+import unicodedata
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -16,7 +19,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from autocortes import agenda, config, db, planejador, publicador
 from autocortes.plataformas import facebook as plat_fb
-from autocortes.plataformas import manual
+from autocortes.plataformas import manual, pagina_facebook
 from autocortes.plataformas.base import Entrega, ErroPublicacao, Resultado
 from autocortes.plataformas.facebook import Facebook
 from autocortes.plataformas.upload_post import ViaUploadPost
@@ -700,6 +703,207 @@ class TestBancoMigracao(ti.BaseBanco):
         self.assertEqual(falsas["facebook"].recebidos, [])
         erro = self.conn.execute("SELECT erro FROM postagens WHERE corte_id=?", (corte,)).fetchone()[0]
         self.assertEqual(erro, "o Reel da Página aceita até 90 s")
+
+
+# ---------------------------------------------------------------- conferência da Página
+
+C_USER = "987654321012345"  # o perfil pessoal de teste: nunca pode aparecer num texto
+PAGINA = "5550001"
+OUTRA = "5550002"
+LINK_PAGINA = f"https://www.facebook.com/profile.php?id={PAGINA}"
+
+
+class _AbaDeMentira:
+    """Aba sem navegador: cookies, /me e URL prontos (para as partes puras da conferência)."""
+
+    def __init__(self, c_user=C_USER, i_user=None, me_url=None, titulo="", url="https://exemplo.invalid/"):
+        self.ck = {"c_user": c_user, "i_user": i_user}
+        self.me_url, self.titulo, self.atual = me_url, titulo, url
+        self.navegou: list[str] = []
+
+    def comando(self, metodo, **params):
+        assert metodo == "Network.getCookies", metodo
+        return {"cookies": [{"name": k, "value": v} for k, v in self.ck.items() if v is not None]}
+
+    def navegar(self, url, segundos=45):
+        self.navegou.append(url)
+        self.atual = self.me_url if url.endswith("/me") and self.me_url else url
+
+    def url(self):
+        return self.atual
+
+    def avaliar(self, expressao, *a, **k):
+        assert expressao == "document.title", expressao
+        return self.titulo
+
+
+class TestEntradaEDecisao(unittest.TestCase):
+    """Item 6: ler_entrada, normalizar, decidir, descrever e as conferências sem navegador (e R5)."""
+
+    def fb(self, pagina=LINK_PAGINA, pagina_id=PAGINA, pagina_nome="Cortes de Filmes") -> dict:
+        return {"pagina": pagina, "pagina_id": pagina_id, "pagina_nome": pagina_nome}
+
+    def assertSemCUser(self, *textos):
+        for texto in textos:
+            self.assertNotIn(C_USER, str(texto))
+
+    def test_r5_importa_sem_o_navegador_das_redes(self):
+        codigo = ("import sys, autocortes.plataformas.pagina_facebook; "
+                  "print(int('autocortes.plataformas.navegador' in sys.modules))")
+        saida = subprocess.run([sys.executable, "-c", codigo], cwd=str(config.RAIZ), capture_output=True,
+                               text=True, timeout=60, stdin=subprocess.DEVNULL)
+        self.assertEqual(saida.returncode, 0, saida.stderr)
+        self.assertEqual(saida.stdout.strip(), "0")
+
+    def test_ler_entrada(self):
+        vazio = {"id": None, "caminho": None, "nome": None}
+        casos = {
+            PAGINA: dict(vazio, id=PAGINA),
+            LINK_PAGINA: dict(vazio, id=PAGINA),
+            f"https://web.facebook.com/people/Cortes-de-Filmes/{PAGINA}/": dict(vazio, id=PAGINA),
+            "https://www.facebook.com/CortesDeFilmes/?ref=bookmarks": dict(vazio, caminho="/cortesdefilmes"),
+            "facebook.com/CortesDeFilmes/": dict(vazio, caminho="/cortesdefilmes"),
+            "  Página   da  Ação ": dict(vazio, nome="página da ação"),
+            "": vazio,
+            "https://www.facebook.com/": vazio,
+        }
+        for texto, esperado in casos.items():
+            with self.subTest(texto=texto):
+                self.assertEqual(pagina_facebook.ler_entrada(texto), esperado)
+
+    def test_normalizar(self):
+        self.assertEqual(pagina_facebook.normalizar("(3) Cortes  de\tFilmes | Facebook"), "cortes de filmes")
+        self.assertEqual(pagina_facebook.normalizar(unicodedata.normalize("NFD", "Página Ação")),
+                         pagina_facebook.normalizar("PÁGINA AÇÃO"))
+
+    def test_decidir_com_pagina_id(self):
+        fb = self.fb()
+        certo = pagina_facebook.decidir({"c_user": C_USER, "i_user": PAGINA},
+                                        {"id": PAGINA, "caminho": "/profile.php",
+                                         "titulo": "(2) Cortes de Filmes | Facebook"}, fb)
+        self.assertTrue(certo.confere)
+        self.assertEqual((certo.agindo_como, certo.id, certo.nome), ("pagina", PAGINA, "Cortes de Filmes"))
+        self.assertIsNone(certo.aprendido)
+        # só pelo título (o /me foi para o link curto da Página)
+        pelo_titulo = pagina_facebook.decidir({"c_user": C_USER, "i_user": PAGINA},
+                                              {"id": None, "caminho": "/cortes", "titulo": "Cortes de Filmes"}, fb)
+        self.assertTrue(pelo_titulo.confere)
+        pessoal = pagina_facebook.decidir({"c_user": C_USER, "i_user": None},
+                                          {"id": C_USER, "titulo": "Fulano Pessoal | Facebook"}, fb)
+        self.assertFalse(pessoal.confere)
+        self.assertEqual((pessoal.agindo_como, pessoal.id, pessoal.nome), ("pessoal", None, None))
+        self.assertIn("o seu perfil pessoal", pessoal.motivo)
+        self.assertNotIn("Fulano", pessoal.motivo)
+        outra = pagina_facebook.decidir({"c_user": C_USER, "i_user": OUTRA}, {"id": OUTRA, "titulo": "Outra"}, fb)
+        self.assertEqual((outra.agindo_como, outra.confere, outra.nome), ("outra", False, "Outra"))
+        self.assertIn(f"a Página Outra (id {OUTRA})", outra.motivo)
+        discordam = pagina_facebook.decidir({"c_user": C_USER, "i_user": PAGINA},
+                                            {"id": C_USER, "titulo": "Fulano Pessoal"}, fb)
+        self.assertFalse(discordam.confere)
+        self.assertTrue(discordam.motivo.startswith("os sinais não concordam"), discordam.motivo)
+        self.assertNotIn("Fulano", discordam.motivo)
+        self.assertSemCUser(pessoal.motivo, discordam.motivo, pessoal.publico(), discordam.publico())
+        # cookie que não é número: como se não existisse
+        self.assertEqual(pagina_facebook.decidir({"c_user": "abc", "i_user": PAGINA}, {"id": PAGINA}, fb).agindo_como,
+                         "deslogado")
+        self.assertEqual(pagina_facebook.decidir({"c_user": C_USER, "i_user": "x1"}, {"id": PAGINA}, fb).agindo_como,
+                         "pessoal")
+        self.assertEqual(pagina_facebook.decidir({"c_user": C_USER, "i_user": C_USER}, {"id": C_USER}, fb).agindo_como,
+                         "pessoal")
+        self.assertFalse(pagina_facebook.decidir({}, {}, fb).confere)
+
+    def test_decidir_aprende_pelo_link(self):
+        pelo_id = pagina_facebook.decidir({"c_user": C_USER, "i_user": PAGINA}, {"id": PAGINA, "titulo": "Cortes"},
+                                          self.fb(pagina_id="", pagina_nome=""))
+        self.assertTrue(pelo_id.confere)
+        self.assertEqual(pelo_id.aprendido, {"pagina_id": PAGINA, "pagina_nome": "Cortes"})
+        self.assertIsNone(pelo_id.sugestao)
+        # o link aponta outra Página que a do cookie: não aprende
+        errado = pagina_facebook.decidir({"c_user": C_USER, "i_user": OUTRA}, {"id": OUTRA},
+                                         self.fb(pagina_id="", pagina_nome=""))
+        self.assertFalse(errado.confere)
+        self.assertIsNone(errado.aprendido)
+        curto = self.fb(pagina="https://www.facebook.com/CortesDeFilmes/", pagina_id="", pagina_nome="")
+        pelo_caminho = pagina_facebook.decidir({"c_user": C_USER, "i_user": PAGINA},
+                                               {"id": None, "caminho": "/cortesdefilmes", "titulo": "Cortes"}, curto)
+        self.assertTrue(pelo_caminho.confere)
+        self.assertEqual(pelo_caminho.aprendido, {"pagina_id": PAGINA, "pagina_nome": ""})
+        no_pessoal = pagina_facebook.decidir({"c_user": C_USER}, {"id": None, "caminho": "/fulano.pessoal"}, curto)
+        self.assertEqual((no_pessoal.confere, no_pessoal.agindo_como), (False, "pessoal"))
+
+    def test_decidir_pelo_nome_so_sugere(self):
+        fb = self.fb(pagina="Cortes de Filmes", pagina_id="", pagina_nome="")
+        ident = pagina_facebook.decidir({"c_user": C_USER, "i_user": PAGINA},
+                                        {"id": PAGINA, "titulo": "Cortes de Filmes | Facebook"}, fb)
+        self.assertFalse(ident.confere)
+        self.assertIsNone(ident.aprendido)
+        self.assertEqual(ident.sugestao, {"pagina_id": PAGINA, "pagina_nome": "Cortes de Filmes"})
+        self.assertIn("confirme", ident.motivo)
+        outro_nome = pagina_facebook.decidir({"c_user": C_USER, "i_user": OUTRA}, {"id": OUTRA, "titulo": "Outra"}, fb)
+        self.assertIsNone(outro_nome.sugestao)
+        vazio = pagina_facebook.decidir({"c_user": C_USER, "i_user": PAGINA}, {"id": PAGINA},
+                                        self.fb(pagina="", pagina_id="", pagina_nome=""))
+        self.assertIn("falta informar a Página", vazio.motivo)
+
+    def test_descrever_sem_o_c_user(self):
+        url_pessoal = f"https://www.facebook.com/profile.php?id={C_USER}"
+        textos = [
+            pagina_facebook.descrever({"c_user": C_USER}, {"id": C_USER, "url": url_pessoal, "titulo": "Fulano"}),
+            pagina_facebook.descrever({"c_user": C_USER, "i_user": PAGINA},
+                                      {"id": C_USER, "url": url_pessoal, "titulo": "Fulano Pessoal"}),
+            pagina_facebook.descrever({}, {"id": C_USER, "url": url_pessoal}),
+            pagina_facebook.descrever({"c_user": C_USER}),
+        ]
+        self.assertSemCUser(*textos)
+        self.assertEqual(textos[0], "o seu perfil pessoal")
+        self.assertIn(f"a Página id {PAGINA}", textos[1])
+        self.assertNotIn("Fulano", textos[1])
+        self.assertIn("uma página que não reconheço", textos[2])
+        # o título só entra com o id do i_user na URL
+        self.assertEqual(pagina_facebook.descrever({"c_user": C_USER, "i_user": PAGINA},
+                                                   {"id": PAGINA, "titulo": "Cortes | Facebook"}),
+                         f"a Página Cortes (id {PAGINA})")
+
+    def cfg(self, **fb) -> dict:
+        return {"facebook": self.fb(**fb)}
+
+    def test_exigir_no_perfil_pessoal(self):
+        aba = _AbaDeMentira(i_user=None, me_url=f"https://www.facebook.com/profile.php?id={C_USER}",
+                            titulo="Fulano Pessoal | Facebook")
+        with self.assertRaises(pagina_facebook.ErroPagina) as erro:
+            pagina_facebook.exigir(aba, self.cfg(), trocar=False)
+        e = erro.exception
+        self.assertEqual((e.tipo, e.persistente, e.identidade.agindo_como), ("bloqueio", True, "pessoal"))
+        self.assertTrue(str(e).startswith("não consegui confirmar que estou na Página"), str(e))
+        self.assertIn("Troque para a Página", str(e))
+        self.assertSemCUser(str(e), e.identidade.publico())
+        self.assertNotIn("Fulano", str(e))
+        self.assertEqual(aba.navegou, [pagina_facebook.BASE + "/me"])  # sem trocar=True, nada de troca
+
+    def test_exigir_na_pagina_certa(self):
+        aba = _AbaDeMentira(i_user=PAGINA, me_url=LINK_PAGINA, titulo="Cortes de Filmes | Facebook")
+        ident, c_user = pagina_facebook.exigir(aba, self.cfg(), trocar=True)
+        self.assertTrue(ident.confere)
+        self.assertEqual(c_user, C_USER)
+
+    def test_antes_de_publicar(self):
+        cfg = self.cfg()
+        pagina_facebook.antes_de_publicar(_AbaDeMentira(i_user=PAGINA, url=f"https://x.invalid/?asset_id={PAGINA}"),
+                                          cfg, C_USER)
+        casos = {
+            "perfil pessoal": _AbaDeMentira(i_user=None),
+            "outra Página": _AbaDeMentira(i_user=OUTRA),
+            "outra pessoa": _AbaDeMentira(c_user="123456", i_user=PAGINA),
+            "asset_id de outra Página": _AbaDeMentira(i_user=PAGINA, url=f"https://x.invalid/?asset_id={OUTRA}"),
+        }
+        for caso, aba in casos.items():
+            with self.subTest(caso=caso), self.assertRaises(pagina_facebook.ErroPagina) as erro:
+                pagina_facebook.antes_de_publicar(aba, cfg, C_USER)
+            self.assertTrue(str(erro.exception).startswith("a Página mudou no meio do envio"))
+            self.assertTrue(erro.exception.persistente)
+            self.assertSemCUser(str(erro.exception), erro.exception.identidade.publico())
+        with self.assertRaises(pagina_facebook.ErroPagina):  # sem a Página confirmada, nunca passa
+            pagina_facebook.antes_de_publicar(_AbaDeMentira(i_user=PAGINA), self.cfg(pagina_id=""), C_USER)
 
 
 if __name__ == "__main__":
