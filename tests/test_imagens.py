@@ -171,6 +171,8 @@ class TestAgenda(Base):
         cfg["instagram"]["imagens"] = True  # imagens ligadas não mexem nos vídeos
         cfg["instagram"]["envio"] = "navegador"
         for p in config.PLATAFORMAS:
+            if p == "facebook":
+                continue  # rede que o main não tinha (os horários dela estão no test_facebook)
             iso = [[h.isoformat(), c] for h, c in agenda.horarios_com_chave(cfg, p, self.DIA)]
             entre = agenda.horarios_entre_com_chave(cfg, p, datetime(2026, 10, 15, 11), datetime(2026, 10, 17, 13))
             vigente = agenda.horario_vigente_com_chave(cfg, p, datetime(2026, 10, 15, 13))
