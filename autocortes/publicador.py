@@ -28,7 +28,6 @@ from .db import agora
 from .midia import ErroMidia, sondar
 from .plataformas import Entrega, ErroPublicacao, Plataforma, criar
 from .plataformas import manual as tarefas
-from .plataformas.instagram import FACEBOOK_MAX_SEG
 from .plataformas.youtube import motivo_nao_short
 from .textos import Conteudo, montar_conteudo, montar_conteudo_imagem
 from .util import ATIVIDADES, log, slug
@@ -40,9 +39,7 @@ PAUSA_RECUSAS_SEG = 6 * 3600   # vídeos recusados em seguida: algo mudou na red
 RECUSAS_PARA_PAUSAR = 2
 FALHAS_POR_CORTE = planejador.FALHAS_POR_CORTE
 # um envio por vez em cada rede, mesmo com o "postar agora" do painel rodando junto com o loop
-TRAVAS_REDE = {p: threading.Lock() for p in (*PLATAFORMAS, "facebook")}
-# Reel da Página do Facebook: tentativas por corte (a primeira junto com o Instagram)
-MAX_TENTATIVAS_FACEBOOK = 3
+TRAVAS_REDE = {p: threading.Lock() for p in PLATAFORMAS}
 
 
 # ---------------------------------------------------------------- pausas e bloqueios (no banco)
@@ -217,15 +214,12 @@ class Publicador:
     def postar(self, conn: sqlite3.Connection, nome: str, corte, horario: datetime | None = None,
                manual: bool = False, chave: str | None = None) -> str:
         # a porta única do envio de vídeo (motor, painel e CLI): rede só de imagens não recebe vídeo
-        base = "instagram" if nome == "facebook" else nome
-        if not self.cfg[base].get("videos", True):
+        if not self.cfg[nome].get("videos", True):
             return "so_imagens"
         trava = TRAVAS_REDE[nome]
         if not trava.acquire(blocking=False):
             return "ocupado"
         try:
-            if nome == "facebook":
-                return self._facebook_avulso(conn, corte, manual)
             return self._postar(conn, nome, corte, horario, manual, chave)
         finally:
             trava.release()
@@ -268,6 +262,18 @@ class Publicador:
                 log.warning("YouTube: pulando %s (não é um Short: %s)", arquivo.name, motivo)
                 return "pulado"
 
+        if nome == "facebook":  # a fila já tira os mais longos: aqui só chega o "Postar agora"
+            maximo = int(self.cfg["facebook"]["max_segundos"])
+            if corte["fim"] - corte["inicio"] > maximo + 0.5:
+                conn.execute(
+                    "INSERT INTO postagens (corte_id, plataforma, status, erro, horario, slot, manual, via, criado_em, "
+                    "atualizado_em) VALUES (?, 'facebook', 'pulado', ?, ?, ?, ?, ?, ?, ?)",
+                    (corte["id"], f"o Reel da Página aceita até {maximo} s", horario_ts, chave, int(manual),
+                     plataforma.via, t, t),
+                )
+                log.warning("Facebook: pulando %s (o Reel da Página aceita até %d s)", arquivo.name, maximo)
+                return "pulado"
+
         if plataforma.via == "manual":
             return self._criar_tarefa(conn, nome, corte, arquivo, conteudo, horario_ts, chave, manual)
 
@@ -290,25 +296,20 @@ class Publicador:
                 plataforma.rotulo, arquivo.name, conteudo.titulo, conteudo.descricao.replace("\n", " / "),
             )
             registrar("simulado")
-            if nome == "instagram":
-                self._postar_facebook(conn, corte, arquivo, conteudo, plataforma, horario_ts, manual)
             return "simulado"
-
-        def depois() -> None:
-            if nome == "instagram":
-                self._postar_facebook(conn, corte, arquivo, conteudo, plataforma, horario_ts, manual)
 
         log.info("%s: publicando %s", plataforma.rotulo, arquivo.name)
         ATIVIDADES.definir(f"Enviando '{conteudo.titulo}' para o {plataforma.rotulo}", 0)
         return self._enviar(conn, nome, plataforma, corte, postagem, registrar,
-                            lambda entrega: plataforma.publicar(arquivo, conteudo, self.parar, entrega),
-                            depois=depois)
+                            lambda entrega: plataforma.publicar(arquivo, conteudo, self.parar, entrega))
 
     def _enviar(self, conn, nome: str, plataforma: Plataforma, corte, postagem: int, registrar, chamada,
-                midia: str = "video", imagem_tipo: str | None = None, depois=None) -> str:
+                midia: str = "video", imagem_tipo: str | None = None) -> str:
         """O envio em si, igual para vídeo e imagem: a Entrega, os erros e a confirmação.
 
-        chamada(entrega) publica; depois() roda quando a rede ficou com o post (o Reel da Página).
+        chamada(entrega) publica. Toda rede passa por aqui, inclusive o Facebook: a rede que aceitou o
+        post (com o id e até o link) e deu erro depois fica para você conferir, nunca "publicado" calado
+        (o antigo Reel da Página dava "publicado" nesse caso; conferir é mais seguro).
         """
         o_post = "a imagem" if midia == "imagem" else "o vídeo"
 
@@ -340,16 +341,12 @@ class Publicador:
                       erro=resultado.observacao or f"a rede recebeu {o_post}, mas não vi a confirmação da publicação")
             log.warning("%s: %s. Ficou para você conferir no painel", plataforma.rotulo,
                         resultado.observacao or "não vi a confirmação da publicação")
-            if depois is not None:
-                depois()
             return "conferir"
         registrar("publicado", id_remoto=resultado.id_remoto, url=resultado.url, erro=resultado.observacao)
         log.info(
             "%s: publicado %s%s", plataforma.rotulo, resultado.url or resultado.id_remoto,
             f" ({resultado.observacao})" if resultado.observacao else "",
         )
-        if depois is not None:
-            depois()
         return "publicado"
 
     def _falhou(self, conn, nome: str, plataforma: Plataforma, corte, postagem: int, registrar, entrega: Entrega,
@@ -582,140 +579,6 @@ class Publicador:
             log.warning("%s: não consegui copiar a tarefa para a pasta sincronizada (%s)", ROTULOS[nome], e)
         return "aguardando"
 
-    # ------------------------------------------------------------ Página do Facebook
-    def facebook_ligado(self) -> bool:
-        """O Reel do Instagram vai também para a Página do Facebook (API oficial ou Upload-Post)."""
-        ig = self.cfg["instagram"]
-        # Instagram só de imagens: não há Reel para repetir na Página
-        return bool(ig["ativo"] and ig.get("videos", True) and ig["pagina_facebook"]
-                    and ig["envio"] in ("oficial", "upload_post"))
-
-    def _postar_facebook(self, conn, corte, arquivo: Path, conteudo: Conteudo, instagram: Plataforma,
-                         horario_ts, manual: bool) -> str:
-        """Companheiro do Instagram: fica registrado como a rede 'facebook' no histórico."""
-        if not self.facebook_ligado() or not hasattr(instagram, "publicar_facebook"):
-            return "desligado"
-        with TRAVAS_REDE["facebook"]:  # espera um "postar agora" da Página que esteja no meio
-            return self._enviar_facebook(conn, corte, arquivo, conteudo, instagram, horario_ts, manual)
-
-    def _facebook_avulso(self, conn, corte, manual: bool) -> str:
-        """Só a Página: nova tentativa automática ou "postar agora" do painel (já com a trava)."""
-        instagram = self.plataformas.get("instagram") or criar("instagram", self.cfg)
-        if not hasattr(instagram, "publicar_facebook"):
-            return "desligado"
-        filme = conn.execute("SELECT * FROM filmes WHERE id=?", (corte["filme_id"],)).fetchone()
-        arquivo = self._arquivo_do_corte(conn, corte)
-        if arquivo is None:
-            return "erro"
-        conteudo = montar_conteudo(self.cfg, filme, corte)
-        return self._enviar_facebook(conn, corte, arquivo, conteudo, instagram, None, manual)
-
-    def _enviar_facebook(self, conn, corte, arquivo: Path, conteudo: Conteudo, instagram: Plataforma,
-                         horario_ts, manual: bool) -> str:
-        t = agora()
-        postagem = conn.execute(
-            "INSERT INTO postagens (corte_id, plataforma, status, horario, manual, via, criado_em, atualizado_em) "
-            "VALUES (?, 'facebook', 'enviando', ?, ?, ?, ?, ?)",
-            (corte["id"], horario_ts, int(manual), instagram.via, t, t),
-        ).lastrowid
-
-        def registrar(status: str, erro: str | None = None, id_remoto: str | None = None, url: str | None = None) -> None:
-            conn.execute(
-                "UPDATE postagens SET status=?, erro=?, id_remoto=COALESCE(?, id_remoto), url=COALESCE(?, url), "
-                "atualizado_em=? WHERE id=?",
-                (status, erro, id_remoto, url, agora(), postagem),
-            )
-
-        if conteudo.duracao > FACEBOOK_MAX_SEG + 0.5:
-            registrar("pulado", erro=f"o Reel da Página aceita até {FACEBOOK_MAX_SEG} s")
-            return "pulado"
-        if self.cfg.simulacao:
-            log.info("[SIMULAÇÃO] Página do Facebook receberia %s", arquivo.name)
-            registrar("simulado")
-            return "simulado"
-
-        def anotar(video_id, url) -> None:
-            conn.execute("UPDATE postagens SET id_remoto=?, url=?, atualizado_em=? WHERE id=?",
-                         (video_id, url, agora(), postagem))
-
-        entrega = Entrega(anotar)
-        log.info("Página do Facebook: publicando %s", arquivo.name)
-        ATIVIDADES.definir(f"Enviando '{conteudo.titulo}' para a Página do Facebook", 0)
-        try:
-            resultado = instagram.publicar_facebook(arquivo, conteudo, self.parar, entrega=entrega)
-        except ErroPublicacao as e:
-            if entrega.aceita:
-                if entrega.url:  # o Facebook aceitou publicar e deu o link: não envia de novo
-                    registrar("publicado", erro=f"o Reel foi aceito, mas não vi o processamento terminar ({e})",
-                              id_remoto=entrega.id_remoto, url=entrega.url)
-                    return "publicado"
-                registrar("conferir", erro=f"A Página recebeu o vídeo, mas não vi a publicação terminar: {e}",
-                          id_remoto=entrega.id_remoto)
-                return "conferir"
-            if self.parar.is_set():
-                registrar("interrompido", erro=str(e))
-                return "interrompido"
-            # 'corte' (vídeo recusado) e 'bloqueio' (falta permissão) não adiantam repetir; o painel avisa
-            status = "falhou" if e.tipo == "temporario" else "pulado"
-            registrar(status, erro=str(e))
-            log.warning("Página do Facebook: %s (%s)", e, "vai tentar de novo" if status == "falhou" else "não vai repetir")
-            return status
-        except Exception as e:
-            log.exception("Página do Facebook: erro inesperado ao publicar")
-            if entrega.aceita:
-                registrar("conferir", erro=f"erro inesperado depois que a Página recebeu o vídeo: {e}"[:500],
-                          id_remoto=entrega.id_remoto, url=entrega.url)
-                return "conferir"
-            registrar("falhou", erro=f"{e.__class__.__name__}: {e}"[:500])
-            return "falhou"
-        finally:
-            ATIVIDADES.limpar()
-        status = "publicado" if resultado.confirmado else "conferir"
-        registrar(status, erro=resultado.observacao, id_remoto=resultado.id_remoto, url=resultado.url)
-        log.info("Página do Facebook: %s %s%s", "publicado" if status == "publicado" else "a conferir",
-                 resultado.url or resultado.id_remoto, f" ({resultado.observacao})" if resultado.observacao else "")
-        return status
-
-    def _repetir_facebook(self, conn: sqlite3.Connection) -> None:
-        """Tenta de novo os Reels que não chegaram à Página (erro temporário ou envio interrompido)."""
-        if self.cfg.simulacao or not self.facebook_ligado():
-            return
-        instagram = self.plataformas.get("instagram")
-        if instagram is None or not hasattr(instagram, "publicar_facebook") or not instagram.pronta()[0]:
-            return
-        if "instagram" in self.bloqueadas:
-            return  # a conta do Instagram está pausada: a Página usa a mesma
-        linhas = conn.execute(
-            "SELECT corte_id, COUNT(*) AS n, MAX(atualizado_em) AS ultima FROM postagens WHERE plataforma='facebook' "
-            "GROUP BY corte_id HAVING SUM(status IN ('publicado', 'pulado', 'enviando', 'conferir')) = 0 "
-            "AND SUM(status IN ('falhou', 'interrompido')) BETWEEN 1 AND ? ORDER BY ultima",
-            (MAX_TENTATIVAS_FACEBOOK - 1,),
-        ).fetchall()
-        for linha in linhas:
-            espera = max(600.0, float(self.cfg["agenda"]["espera_erro_min"]) * 60 * 2 ** (linha["n"] - 1))
-            if time.time() - linha["ultima"] < espera:
-                continue
-            corte = conn.execute(
-                "SELECT * FROM cortes WHERE id=? AND status IN ('pronto', 'concluido') AND arquivo IS NOT NULL",
-                (linha["corte_id"],),
-            ).fetchone()
-            if corte is None or not Path(corte["arquivo"]).exists() or self.parar.is_set():
-                continue
-            log.info("Página do Facebook: tentando de novo o corte %s (tentativa %d de %d)",
-                     corte["id"], linha["n"] + 1, MAX_TENTATIVAS_FACEBOOK)
-            self.postar(conn, "facebook", corte)
-            return  # uma por ciclo
-
-    def _facebook_pendente(self, conn: sqlite3.Connection, corte_id: int) -> bool:
-        """O Reel do corte ainda pode ir para a Página (o corte espera antes de ser concluído)."""
-        estados = [r[0] for r in conn.execute(
-            "SELECT status FROM postagens WHERE corte_id=? AND plataforma='facebook'", (corte_id,))]
-        if not estados or any(s in ("publicado", "pulado", "conferir") for s in estados):
-            return False
-        if "enviando" in estados:
-            return True
-        return sum(s in ("falhou", "interrompido") for s in estados) < MAX_TENTATIVAS_FACEBOOK
-
     # ------------------------------------------------------------ ciclo
     def atualizar_concluidos(self, conn: sqlite3.Connection) -> None:
         """Marca como concluídos os cortes já publicados em todas as redes ativas.
@@ -726,7 +589,6 @@ class Publicador:
         ativas = [nome for nome in self.plataformas if self.cfg[nome].get("videos", True)]
         if self.cfg.simulacao or not ativas:
             return  # em simulação nada é concluído: os cortes continuam valendo para o modo real
-        facebook = self.facebook_ligado()
         marc = ",".join("?" * len(ativas))
         for corte in conn.execute("SELECT id, arquivo FROM cortes WHERE status='pronto'").fetchall():
             # a rede está resolvida com o post feito ou pulado (ou, no histórico antigo, com as falhas no limite)
@@ -737,8 +599,6 @@ class Publicador:
             ).fetchall()
             if len(feitas) < len(ativas):
                 continue
-            if facebook and self._facebook_pendente(conn, corte["id"]):
-                continue  # o Reel da Página ainda vai ser tentado de novo com este arquivo
             if conn.execute("SELECT 1 FROM postagens WHERE corte_id=? AND midia='video' "
                             "AND status IN ('aguardando', 'conferir') LIMIT 1", (corte["id"],)).fetchone():
                 continue  # tarefa à mão ou post a conferir: o vídeo fica até você resolver
@@ -778,8 +638,6 @@ class Publicador:
             pausou = nome in self.bloqueadas and not self.cfg.simulacao  # o bloco de vídeo pode ter pausado a rede
             if nome in self.cfg.redes_de_imagem() and not pausou and not self.parar.is_set():
                 self._ciclo_imagem(conn, nome, plataforma, momento)
-        if not self.parar.is_set():
-            self._repetir_facebook(conn)
         self.atualizar_concluidos(conn)
         self._coletar_metricas(conn)
 

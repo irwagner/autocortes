@@ -18,20 +18,15 @@ PERMISSOES = (
     "instagram_basic, instagram_content_publish, instagram_manage_insights, pages_show_list, "
     "pages_read_engagement, business_management"
 )
-# para postar o Reel também na Página do Facebook ([instagram].pagina_facebook)
-PERMISSAO_PAGINA = "pages_manage_posts"
 METRICAS = "views,likes,comments,shares,saved,reach"
 # o Instagram passou a aceitar no máximo 5 hashtags por post (dez/2025, segundo a imprensa)
 MAX_HASHTAGS = 5
-# Reels da Página do Facebook pela API: de 3 a 90 s, até 30 por Página em 24 h
-FACEBOOK_MAX_SEG = 90
 
 
 class Instagram(GraphMeta):
     nome = "instagram"
     rotulo = "Instagram"
     rupload_url = "https://rupload.facebook.com/ig-api-upload"
-    rupload_facebook_url = "https://rupload.facebook.com/video-upload"
 
     def pronta(self) -> tuple[bool, str]:
         tok = self.token()
@@ -40,7 +35,7 @@ class Instagram(GraphMeta):
         return True, "ok"
 
     def pagina(self) -> str | None:
-        """Nome da Página do Facebook ligada à conta (recebe o Reel com [instagram].pagina_facebook)."""
+        """Nome da Página do Facebook ligada à conta do Instagram (o token do Instagram é o dela)."""
         return self.token().get("pagina_nome")
 
     # ------------------------------------------------------------ login
@@ -52,7 +47,7 @@ class Instagram(GraphMeta):
 
     def autorizar(self) -> None:
         app_id, _ = self._credenciais()
-        permissoes = PERMISSOES + (f", {PERMISSAO_PAGINA}" if self.conf["pagina_facebook"] else "")
+        permissoes = PERMISSOES
         print(
             "\nPara conectar o Instagram:\n"
             "  1. Abra https://developers.facebook.com/tools/explorer/\n"
@@ -145,22 +140,7 @@ class Instagram(GraphMeta):
             texto += f" (posts via API nas últimas 24h: {uso.get('quota_usage', '?')}/{(uso.get('config') or {}).get('quota_total', '?')})"
         except ErroPublicacao:
             pass
-        if self.conf["pagina_facebook"]:
-            texto += self._conferir_pagina(tok)
         return texto
-
-    def _conferir_pagina(self, tok: dict) -> str:
-        """Confere se o token pode postar na Página (permissão pages_manage_posts)."""
-        pagina = tok.get("pagina_nome") or tok.get("pagina_id") or "?"
-        try:
-            app_id, segredo = self._credenciais()
-            dados = self._graph("GET", "debug_token", token=f"{app_id}|{segredo}", input_token=tok.get("access_token"))
-        except ErroPublicacao:
-            return f" · Página {pagina}"
-        escopos = (dados.get("data") or {}).get("scopes") if isinstance(dados.get("data"), dict) else None
-        if isinstance(escopos, list) and PERMISSAO_PAGINA not in escopos:
-            return f" · falta a permissão {PERMISSAO_PAGINA} para postar na Página {pagina}: conecte de novo"
-        return f" · Página {pagina}"
 
     # ------------------------------------------------------------ métricas
     def estatisticas(self, ids: list[str]) -> dict[str, dict]:
@@ -302,90 +282,3 @@ class Instagram(GraphMeta):
             if codigo == "EXPIRED":
                 raise ErroPublicacao("O contêiner do Instagram expirou", "temporario")
         raise ErroPublicacao("O Instagram demorou demais para processar o vídeo", "temporario")
-
-    # ------------------------------------------------------------ Página do Facebook
-    def publicar_facebook(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None,
-                          entrega: Entrega | None = None) -> Resultado:
-        """O mesmo Reel na Página do Facebook ligada à conta (API de Reels da Página, com o token dela).
-
-        A entrega é aceita quando o Facebook aceita publicar (com o link): se o envio for
-        interrompido depois disso, o Reel já existe e não é enviado de novo.
-        """
-        entrega = entrega if entrega is not None else Entrega()
-        tok = self.token()
-        pagina, token = tok.get("pagina_id"), tok.get("access_token")
-        if not pagina or not token:
-            raise ErroPublicacao("Facebook: conecte o Instagram de novo para postar na Página", "bloqueio")
-        inicio = self._graph("POST", f"{pagina}/video_reels", rede="Facebook", upload_phase="start")
-        video_id = str(inicio.get("video_id") or "")
-        if not video_id:
-            raise ErroPublicacao("Facebook não devolveu o id do vídeo", "temporario")
-        destino = inicio.get("upload_url") or f"{self.rupload_facebook_url}/{self.versao}/{video_id}"
-
-        tamanho = arquivo.stat().st_size
-        with LeitorProgresso(arquivo) as f:
-            r = self.requisicao(
-                "POST",
-                destino,
-                headers={"Authorization": f"OAuth {token}", "offset": "0", "file_size": str(tamanho)},
-                data=f,
-                timeout=(20, 900),
-            )
-        resposta = json_seguro(r)
-        if r.status_code >= 400 or not resposta.get("success"):
-            info = resposta.get("debug_info") if isinstance(resposta.get("debug_info"), dict) else {}
-            tipo = "temporario" if r.status_code >= 500 or info.get("retriable") else "corte"
-            detalhe = f"{info.get('type') or ''} {info.get('message') or ''}".strip() or r.text[:200]
-            raise ErroPublicacao(f"Facebook: envio do vídeo falhou (HTTP {r.status_code}) {detalhe}", tipo)
-
-        fim = self._graph(
-            "POST", f"{pagina}/video_reels", rede="Facebook", upload_phase="finish", video_id=video_id,
-            video_state="PUBLISHED", description=limitar(conteudo.descricao or conteudo.titulo, 2200),
-            title=limitar(conteudo.titulo, 255),
-        )
-        if fim.get("success") is False:
-            raise ErroPublicacao("Facebook não aceitou publicar o Reel", "temporario")
-        entrega.aceitou(video_id, f"https://www.facebook.com/reel/{video_id}")
-        observacao = self._aguardar_reel(video_id, parar, entrega)
-        return Resultado(video_id, self._link_reel(video_id), observacao)
-
-    def _aguardar_reel(self, video_id: str, parar, entrega: Entrega) -> str | None:
-        """Espera o Facebook processar e publicar o Reel (até 10 min; depois ele termina sozinho).
-
-        Se o Facebook avisar que não conseguiu (erro no processamento, envio expirado), o Reel não
-        saiu: a entrega é desfeita e o envio pode ser repetido.
-        """
-        limite = time.monotonic() + 10 * 60
-        while time.monotonic() < limite:
-            esperar(parar, 10)
-            try:
-                d = self._graph("GET", video_id, rede="Facebook", fields="status")
-            except ErroPublicacao as e:
-                if e.tipo == "temporario":
-                    continue
-                raise
-            status = d.get("status") if isinstance(d.get("status"), dict) else {}
-            fases = [status.get(k) if isinstance(status.get(k), dict) else {}
-                     for k in ("uploading_phase", "processing_phase", "publishing_phase")]
-            falha = next((f for f in fases if f.get("status") == "error"), None)
-            if status.get("video_status") == "error" or falha is not None:
-                erro = (falha or {}).get("error")
-                motivo = erro.get("message") if isinstance(erro, dict) else None
-                entrega.desfazer()
-                raise ErroPublicacao(f"Facebook não conseguiu processar o Reel{f': {motivo}' if motivo else ''}", "corte")
-            if status.get("video_status") == "expired":
-                entrega.desfazer()
-                raise ErroPublicacao("O envio do Reel para o Facebook expirou", "temporario")
-            publicacao = fases[2]
-            if publicacao.get("status") == "complete" or publicacao.get("publish_status") == "published":
-                return None
-        return "o Facebook ainda estava processando o Reel"
-
-    def _link_reel(self, video_id: str) -> str:
-        try:
-            link = str(self._graph("GET", video_id, rede="Facebook", fields="permalink_url").get("permalink_url") or "")
-        except ErroPublicacao:
-            link = ""
-        if link.startswith("/"):  # a API devolve o caminho sem o domínio
-            link = "https://www.facebook.com" + link
-        return link if link.startswith("https://") else f"https://www.facebook.com/reel/{video_id}"

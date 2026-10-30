@@ -159,10 +159,8 @@ def pacote(cfg: Config, rede: str, conteudo: Conteudo) -> dict:
         from .instagram import MAX_HASHTAGS
 
         campo("Legenda", t["legenda"], 2200, nota=f"No máximo {MAX_HASHTAGS} hashtags.")
-        passos = ["No app do Instagram, toque em + > Reel e escolha o vídeo.", "Cole a legenda."]
-        if cfg["instagram"]["pagina_facebook"]:
-            passos.append("Para sair também na Página do Facebook, ligue \"Compartilhar no Facebook\" antes de publicar.")
-        passos.append("Publique agora ou agende pelo próprio app.")
+        passos = ["No app do Instagram, toque em + > Reel e escolha o vídeo.", "Cole a legenda.",
+                  "Publique agora ou agende pelo próprio app."]
     elif rede == "facebook":
         fb = cfg["facebook"]
         nome = (str(fb.get("pagina_nome") or "").strip() or str(fb.get("pagina") or "").strip()

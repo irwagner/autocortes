@@ -532,16 +532,7 @@ capa_ms = 1000
 # trial_graduacao = "SS_PERFORMANCE" libera para os seguidores se for bem; "MANUAL" você libera no app.
 trial_reels = false
 trial_graduacao = "SS_PERFORMANCE"
-# Posta o mesmo Reel na Página do Facebook ligada à conta. Pela API oficial:
-# conecte de novo com a permissão pages_manage_posts, adicione ao app da Meta
-# o caso de uso de gerenciar a Página e deixe o app no modo publicado (em
-# desenvolvimento, o post na Página só aparece para quem tem função no app).
-# Se a Central de Contas já compartilha seus Reels no Facebook, desligue lá
-# para não sair repetido. Com envio = "manual", ligue "Compartilhar no
-# Facebook" no app ao postar.
-pagina_facebook = false
-# Só no Upload-Post com mais de uma Página conectada: o ID da Página
-facebook_pagina_id = ""
+# A Página do Facebook agora é a rede [facebook], com horários próprios.
 horarios = ["12:15", "19:00"]
 dias = []
 # Horários dos posts de imagem (veja [tiktok]) e os dias (vazio = os dos vídeos)

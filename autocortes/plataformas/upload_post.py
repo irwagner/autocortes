@@ -306,26 +306,6 @@ class ViaUploadPost(Plataforma):
         return self._enviar(self._campos(conteudo, request_id), arquivo, request_id, self.nome, parar,
                             entrega if entrega is not None else Entrega())
 
-    def publicar_facebook(self, arquivo: Path, conteudo: Conteudo, parar: threading.Event | None = None,
-                          entrega: Entrega | None = None) -> Resultado:
-        """O mesmo Reel na Página do Facebook conectada no perfil do Upload-Post."""
-        request_id = f"autocortes-{uuid.uuid4().hex}"
-        campos: list[tuple[str, str]] = [
-            ("user", str(self.up["perfil"]).strip()),
-            ("platform[]", "facebook"),
-            ("title", limitar(conteudo.titulo, 100)),
-            ("facebook_title", limitar(conteudo.titulo, 255)),
-            ("facebook_description", limitar(conteudo.descricao or conteudo.titulo, 2200)),
-            ("facebook_media_type", "REELS"),
-            ("async_upload", "true"),
-            ("request_id", request_id),
-        ]
-        pagina = str(self.cfg["instagram"].get("facebook_pagina_id") or "").strip()
-        if pagina:
-            campos.append(("facebook_page_id", pagina))
-        return self._enviar(campos, arquivo, request_id, "facebook", parar,
-                            entrega if entrega is not None else Entrega())
-
     def _enviar(self, campos: list[tuple[str, str]], arquivo: Path, request_id: str, alvo: str, parar,
                 entrega: Entrega) -> Resultado:
         corpo = CorpoMultipart(campos, "video", arquivo)

@@ -399,27 +399,22 @@ class TestVideosSoComMidiaVideo(BaseBanco):
         self.assertEqual(pub.postar(self.conn, "tiktok", self.corte_row(corte)), "so_imagens")
         self.so_imagens("instagram")
         self.assertEqual(pub.postar(self.conn, "instagram", self.corte_row(corte)), "so_imagens")
-        self.assertEqual(pub.postar(self.conn, "facebook", self.corte_row(corte)), "so_imagens")
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM postagens").fetchone()[0], 0)
 
-    def test_instagram_so_de_imagens_desliga_a_pagina(self):  # CA-33
-        self.so_redes("youtube", "instagram")
-        self.cfg["instagram"].update(videos=False, imagens=True, envio="oficial", pagina_facebook=True)
-        self.assertFalse(api._facebook_ligado(self.cfg))
+    def test_instagram_so_de_imagens_nao_desliga_o_facebook(self):  # CA-33 (o Facebook é uma rede própria)
+        self.so_redes("youtube", "instagram", "facebook")
+        self.so_imagens("instagram")
         pub = publicador.Publicador(self.cfg, threading.Event())
-        self.assertFalse(pub.facebook_ligado())
         corte = self.novo_corte()
+        self.cfg["geral"]["simulacao"] = True
+        self.assertEqual(pub.postar(self.conn, "facebook", self.corte_row(corte)), "simulado")
+        self.cfg["geral"]["simulacao"] = False
         self.postagem(corte, "youtube", "publicado")
-        self.postagem(corte, "facebook", "falhou", criado_em=time.time() - 86400)
-        with patch.object(pub, "_facebook_pendente", side_effect=AssertionError("não devia olhar a Página")), \
-                patch.object(pub, "postar", side_effect=AssertionError("não devia postar na Página")):
-            pub.atualizar_concluidos(self.conn)
-            pub._repetir_facebook(self.conn)
+        pub.atualizar_concluidos(self.conn)
+        self.assertEqual(self.corte_row(corte)["status"], "pronto")  # falta o Facebook
+        self.postagem(corte, "facebook", "publicado")
+        pub.atualizar_concluidos(self.conn)
         self.assertEqual(self.corte_row(corte)["status"], "concluido")
-        # com os vídeos ligados, a Página volta
-        self.cfg["instagram"]["videos"] = True
-        self.assertTrue(pub.facebook_ligado())
-        self.assertTrue(api._facebook_ligado(self.cfg))
 
     def test_falhas_da_gravacao_e_da_geracao_nao_gastam_o_corte(self):
         corte = self.novo_corte()
@@ -473,14 +468,10 @@ class TestSoImagensNasTelas(BaseBanco):
 
     def test_postar_agora_recusa(self):
         corte = self.novo_corte()
-        for rede in ("tiktok", "facebook"):
-            if rede == "facebook":
-                self.so_imagens("instagram")
-                self.cfg["tiktok"]["videos"] = True
-            with self.assertRaises(ErroHttp) as erro:
-                api.postar_corte(self.ctx(corpo={"rede": rede}), str(corte))
-            self.assertEqual(erro.exception.status, 400)
-            self.assertIn("Esta rede está só com imagens: ligue Vídeos em Redes sociais", str(erro.exception))
+        with self.assertRaises(ErroHttp) as erro:
+            api.postar_corte(self.ctx(corpo={"rede": "tiktok"}), str(corte))
+        self.assertEqual(erro.exception.status, 400)
+        self.assertIn("Esta rede está só com imagens: ligue Vídeos em Redes sociais", str(erro.exception))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM postagens").fetchone()[0], 0)
 
     def test_cli_postar_sai_com_1_sem_chamar_o_publicador(self):

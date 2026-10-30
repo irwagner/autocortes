@@ -17,7 +17,6 @@ PERMISSAO_POSTAR = "pages_manage_posts"
 # Reels da Página pela API: de 3 a 90 s, até 30 por Página em 24 h
 MIN_SEG = 3
 MAX_SEG = 90
-FACEBOOK_MAX_SEG = MAX_SEG
 
 
 class Facebook(GraphMeta):

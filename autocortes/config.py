@@ -384,10 +384,6 @@ PADRAO: dict = {
         "trial_reels": False,
         # MANUAL (você libera no app) ou SS_PERFORMANCE (libera sozinho se for bem)
         "trial_graduacao": "SS_PERFORMANCE",
-        # posta o mesmo Reel na Página do Facebook ligada à conta (API oficial ou Upload-Post)
-        "pagina_facebook": False,
-        # Upload-Post com mais de uma Página conectada: o ID da Página que recebe o Reel
-        "facebook_pagina_id": "",
         "horarios": ["12:15", "19:00"],
         "dias": [],
         "horarios_imagens": ["10:00", "16:00"],
@@ -928,8 +924,6 @@ def validar(cfg: Config) -> None:
         erros.append("[navegador].pausa_min_seg não pode ser maior que pausa_max_seg")
     if cfg["navegador"]["porta"] == cfg["painel"]["porta"]:
         erros.append("[navegador].porta não pode ser a mesma do painel")
-    if not re.fullmatch(r"\d{0,30}", str(cfg["instagram"]["facebook_pagina_id"]).strip()):
-        erros.append("[instagram].facebook_pagina_id deve ter só os números do ID da Página")
     if re.search(r"[\x00-\x1f*?\"<>|]", str(cfg["manual"]["pasta"])):
         erros.append("[manual].pasta tem caracteres que não valem num caminho do Windows")
     numero("ia", "temperatura", 0, 2)

@@ -546,6 +546,12 @@ def cmd_postar(args) -> int:
                 print(f"O corte #{corte['id']} tem {corte['fim'] - corte['inicio']:.0f} s e o YouTube recebe só "
                       f"Shorts de até {limite} s ([youtube].max_segundos).", file=sys.stderr)
                 return 1
+        if rede == "facebook":
+            limite = int(cfg["facebook"]["max_segundos"])
+            if corte["fim"] - corte["inicio"] > limite + 0.5:
+                print(f"O corte #{corte['id']} tem {corte['fim'] - corte['inicio']:.0f} s e a Página do Facebook "
+                      f"recebe Reels de até {limite} s ([facebook].max_segundos).", file=sys.stderr)
+                return 1
         if corte["status"] == "revisao":  # postar à mão também aprova, como no painel
             conn.execute("UPDATE cortes SET status='pronto' WHERE id=?", (corte["id"],))
             corte = conn.execute("SELECT * FROM cortes WHERE id=?", (corte["id"],)).fetchone()

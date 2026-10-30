@@ -25,7 +25,7 @@ from ..plataformas import ErroPublicacao, criar
 from ..plataformas import manual as tarefas_manual
 from ..plataformas.navegador import Gravacao, proxima_sessao
 from ..produtor import EXTENSOES, TRAVA_ANALISE, TRAVA_EDICAO, Produtor, escrever_textos_ia, varrer_biblioteca
-from ..publicador import MAX_TENTATIVAS_FACEBOOK, TRAVAS_REDE, Publicador, ler_bloqueios
+from ..publicador import TRAVAS_REDE, Publicador, ler_bloqueios
 from ..textos import (fonte_dos_textos, ler_metadados, montar_conteudo, montar_conteudo_imagem, texto_topo, textos_ia,
                       titulo_do_arquivo)
 from ..util import ATIVIDADES, LOG_MEMORIA, escrever_atomico, ler_json, log, salvar_json
@@ -249,14 +249,6 @@ def esperar_tarefas(prazo: float) -> list[str]:
 
 # ---------------------------------------------------------------- visão geral
 
-def _facebook_ligado(cfg) -> bool:
-    """O Reel do Instagram vai também para a Página do Facebook (pela API oficial ou pelo Upload-Post)."""
-    ig = cfg["instagram"]
-    # Instagram só de imagens: não há Reel para repetir na Página
-    return bool(ig["ativo"] and ig.get("videos", True) and ig["pagina_facebook"]
-                and ig["envio"] in ("oficial", "upload_post"))
-
-
 def _bloqueios(ctx: Contexto) -> dict[str, dict]:
     """Redes pausadas: as do banco (valem com o motor desligado) e as sem configuração, do motor."""
     motor = ctx.painel.motor
@@ -300,11 +292,6 @@ def _resumo_redes(ctx: Contexto) -> dict:
             "tarefas": esperando.get(rede, 0),
             "conferir": a_conferir.get(rede, 0),
         }
-        if rede == "instagram":
-            saida[rede]["facebook"] = {
-                "ativo": _facebook_ligado(cfg),
-                "pagina": plataforma.pagina() if hasattr(plataforma, "pagina") else None,
-            }
         if cfg[rede]["envio"] == "navegador":
             texto, origem = gravador.carregar_com_origem(cfg, rede)
             saida[rede]["roteiro"] = {
@@ -522,19 +509,15 @@ def _alertas(ctx: Contexto, filmes: dict, cortes: dict, cobertura: dict, redes: 
                 "redes")
         elif float(cfg["cortes"]["duracao_max"]) > limite + 0.5:
             add("info", f"Cortes com mais de {limite} s ficam fora do YouTube, que recebe só Shorts.", "redes")
-    if _facebook_ligado(cfg):
-        ultima = ctx.conn.execute(
-            "SELECT corte_id, status, erro, criado_em FROM postagens WHERE plataforma='facebook' ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        if ultima is not None and ultima["status"] in ("pulado", "falhou") and time.time() - ultima["criado_em"] < 3 * 86400:
-            tentativas = ctx.conn.execute(
-                "SELECT COUNT(*) FROM postagens WHERE plataforma='facebook' AND corte_id=? "
-                "AND status IN ('falhou', 'interrompido')", (ultima["corte_id"],),
-            ).fetchone()[0]
-            repete = ultima["status"] == "falhou" and tentativas < MAX_TENTATIVAS_FACEBOOK
-            texto = "ainda não foi para a Página do Facebook (vai tentar de novo)" if repete else \
-                "não foi para a Página do Facebook"
-            add("aviso", f"O último Reel {texto}: {ultima['erro'] or 'erro sem detalhes'}", "redes")
+    if "facebook" in ativas:
+        limite = int(cfg["facebook"]["max_segundos"])
+        if planejador.sem_cortes_possiveis(cfg, "facebook"):
+            add("erro", f"Nenhum corte cabe no Facebook: a duração mínima dos cortes ({cfg['cortes']['duracao_min']} s) "
+                f"passa do limite dos Reels da Página ({limite} s). Ajuste em Configurações > Cortes ou em Redes "
+                "sociais.", "redes")
+        elif float(cfg["cortes"]["duracao_max"]) > limite + 0.5:
+            add("info", f"Cortes com mais de {limite} s ficam fora do Facebook, que recebe Reels de até {limite} s.",
+                "redes")
     dias = cobertura.get("dias")
     if dias is not None and dias < 3 and (total_filmes or tem_o_que_criar):
         if dias < 1:
@@ -1264,7 +1247,6 @@ def listar_cortes(ctx: Contexto):
         "total": len(itens),
         "filmes": filmes,
         "ativas": ativas,
-        "facebook": _facebook_ligado(cfg),
         # a tela só oferece a seleção em lote quando a API tem a rota dela: com o AutoCortes antigo ainda
         # aberto, a página nova (lida do disco) mandaria o "Editar de novo" para o refazer-fila de antes,
         # que não conhece "ids" e refaria a fila inteira
@@ -1304,8 +1286,8 @@ def _corte_detalhe(ctx: Contexto, corte_id) -> dict:
     # rede só de imagens não recebe o vídeo: o "Postar agora" dela recusaria
     dados["ativas"] = cfg.redes_de_video()
     dados["envios"] = {rede: cfg[rede]["envio"] for rede in PLATAFORMAS}
-    dados["facebook"] = _facebook_ligado(cfg)
     dados["youtube_max"] = int(cfg["youtube"]["max_segundos"])
+    dados["facebook_max"] = int(cfg["facebook"]["max_segundos"])
     dados.update(_imagens_do_corte(ctx, c))
     return dados
 
@@ -1701,14 +1683,9 @@ def textos_corte(ctx: Contexto, corte_id):
 def postar_corte(ctx: Contexto, corte_id):
     cfg, painel = ctx.cfg, ctx.painel
     rede = ctx.corpo.get("rede")
-    _exigir(rede in PLATAFORMAS or rede == "facebook", "Rede inválida")
-    base = "instagram" if rede == "facebook" else rede  # o Reel da Página usa a conta do Instagram
-    _exigir(bool(cfg[base]["ativo"]), f"O {ROTULOS[base]} está desativado. Ative em Redes sociais.")
-    _exigir(bool(cfg[base].get("videos", True)), "Esta rede está só com imagens: ligue Vídeos em Redes sociais")
-    if rede == "facebook":
-        _exigir(cfg["instagram"]["envio"] != "manual",
-                "Com o Instagram postado à mão, ligue \"Compartilhar no Facebook\" no app ao postar o Reel")
-        _exigir(_facebook_ligado(cfg), "Ligue \"Postar também na Página do Facebook\" nas opções do Instagram")
+    _exigir(rede in PLATAFORMAS, "Rede inválida")
+    _exigir(bool(cfg[rede]["ativo"]), f"O {ROTULOS[rede]} está desativado. Ative em Redes sociais.")
+    _exigir(bool(cfg[rede].get("videos", True)), "Esta rede está só com imagens: ligue Vídeos em Redes sociais")
     c = _corte(ctx.conn, corte_id)
     _exigir(
         c["status"] in ("revisao", "pronto", "concluido") and bool(c["arquivo"]) and Path(c["arquivo"]).exists(),
@@ -1719,17 +1696,22 @@ def postar_corte(ctx: Contexto, corte_id):
         _exigir(c["fim"] - c["inicio"] <= limite + 0.5,
                 f"Este corte tem {c['fim'] - c['inicio']:.0f} s e o YouTube recebe só Shorts de até {limite} s "
                 "(o limite fica em Redes sociais > YouTube)")
-    a_mao = rede != "facebook" and cfg[rede]["envio"] == "manual"
+    if rede == "facebook":
+        limite = int(cfg["facebook"]["max_segundos"])
+        _exigir(c["fim"] - c["inicio"] <= limite + 0.5,
+                f"Este corte tem {c['fim'] - c['inicio']:.0f} s e a Página do Facebook recebe Reels de até {limite} s "
+                "(o limite fica em Redes sociais > Facebook)")
+    a_mao = cfg[rede]["envio"] == "manual"
     if not cfg.simulacao and not a_mao:
-        pronta, motivo = criar(base, cfg).pronta()
-        _exigir(pronta, f"{ROTULOS[base]}: {motivo}")
+        pronta, motivo = criar(rede, cfg).pronta()
+        _exigir(pronta, f"{ROTULOS[rede]}: {motivo}")
         # a rede pausada pelo motor também vale aqui: "postar agora" não fura um bloqueio
-        bloqueio = ler_bloqueios(ctx.conn).get(base)
+        bloqueio = ler_bloqueios(ctx.conn).get(rede)
         if bloqueio and bloqueio.get("tipo") != "rede":
             ate = bloqueio.get("ate")
             quando = ("até você testar a conta em Redes sociais" if ate is None
                       else f"até {datetime.fromtimestamp(ate).strftime('%d/%m %H:%M')}")
-            raise ErroHttp(409, f"O {ROTULOS[base]} está pausado {quando}: {bloqueio.get('motivo')}")
+            raise ErroHttp(409, f"O {ROTULOS[rede]} está pausado {quando}: {bloqueio.get('motivo')}")
     _exigir(not TRAVAS_REDE[rede].locked(), f"Já existe um envio para o {ROTULOS[rede]} em andamento", 409)
     if c["status"] == "revisao":  # postar na mão também aprova
         ctx.conn.execute("UPDATE cortes SET status='pronto' WHERE id=?", (c["id"],))
