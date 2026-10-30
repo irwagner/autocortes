@@ -97,6 +97,125 @@ class TestConfigNovo(ti.Base):
         self.carregar('[facebook]\npagina = "Cortes de Filmes"\n')
 
 
+LEGADO = ('[instagram]\nenvio = "{envio}"\npagina_facebook = {ligada}\nfacebook_pagina_id = "{pid}"\n'
+          'horarios = ["09:00"]\ndias = ["seg"]\nversao_api = "v25.0"\n')
+
+
+class TestConfigMigracao(ti.Base):
+    """Critérios 1 a 5, 15d, R8 e a coerência link × pagina_id."""
+
+    def escrever(self, texto: str) -> bytes:
+        self.caminho.write_text(ti.CONFIG_MINIMO + texto, encoding="utf-8")
+        return self.caminho.read_bytes()
+
+    def carregar_registrando(self):
+        with self.assertLogs("autocortes", level="INFO") as registro:
+            cfg = config.carregar(self.caminho)
+        return cfg, "\n".join(registro.output)
+
+    def test_oficial_migra_sem_mexer_no_arquivo(self):
+        antes = self.escrever(LEGADO.format(envio="oficial", ligada="true", pid=""))
+        cfg, registro = self.carregar_registrando()
+        fb = cfg["facebook"]
+        self.assertEqual((fb["ativo"], fb["envio"], fb["horarios"], fb["dias"]), (True, "oficial", ["09:00"], ["seg"]))
+        self.assertEqual(fb["versao_api"], "v25.0")  # R8
+        self.assertTrue(cfg.migrado_facebook)
+        self.assertNotIn("Opção desconhecida", registro)
+        self.assertIn("agora é a rede Facebook", registro)
+        self.assertEqual(self.caminho.read_bytes(), antes)
+        self.assertTrue(cfg.copia().migrado_facebook)
+
+    def test_upload_post_leva_o_id(self):
+        self.escrever(LEGADO.format(envio="upload_post", ligada="true", pid="123"))
+        fb = config.carregar(self.caminho)["facebook"]
+        self.assertEqual((fb["envio"], fb["pagina_id"]), ("upload_post", "123"))
+        self.assertEqual(fb["versao_api"], config.PADRAO["facebook"]["versao_api"])
+
+    def test_instagram_sem_videos_migra_desligado(self):
+        self.escrever(LEGADO.format(envio="oficial", ligada="true", pid="") + "videos = false\nimagens = true\n")
+        self.assertIs(config.carregar(self.caminho)["facebook"]["ativo"], False)
+
+    def test_sem_o_que_migrar(self):
+        casos = {
+            "desligada": LEGADO.format(envio="oficial", ligada="false", pid="9"),
+            "ausente": '[instagram]\nenvio = "oficial"\n',
+            "navegador": LEGADO.format(envio="navegador", ligada="true", pid=""),
+            "manual": LEGADO.format(envio="manual", ligada="true", pid=""),
+            "já tem [facebook]": LEGADO.format(envio="oficial", ligada="true", pid="") + '[facebook]\nativo = false\n',
+        }
+        for nome, texto in casos.items():
+            with self.subTest(nome):
+                antes = self.escrever(texto)
+                with self.assertNoLogs("autocortes", level="WARNING"):
+                    cfg = config.carregar(self.caminho)
+                self.assertEqual(cfg["facebook"], config.PADRAO["facebook"])
+                self.assertFalse(cfg.migrado_facebook)
+                self.assertEqual(self.caminho.read_bytes(), antes)
+
+    def test_primeira_gravacao_grava_a_secao_inteira(self):
+        for alteracao in ({"agenda": {"maximo_por_dia": 5}}, {"facebook": {"ativo": False}}):
+            with self.subTest(alteracao=alteracao):
+                self.escrever(LEGADO.format(envio="upload_post", ligada="true", pid="123"))
+                cfg = config.carregar(self.caminho)
+                novo = config.salvar(cfg, alteracao)
+                self.assertFalse(novo.migrado_facebook)
+                texto = self.caminho.read_text(encoding="utf-8")
+                self.assertNotIn("pagina_facebook", texto)
+                self.assertNotIn("facebook_pagina_id", texto)
+                gravado = config.tomllib.loads(texto)["facebook"]
+                self.assertEqual(set(gravado), set(config.PADRAO["facebook"]))
+                with self.assertNoLogs("autocortes", level="WARNING"):
+                    de_novo = config.carregar(self.caminho)
+                fb = de_novo["facebook"]
+                self.assertFalse(de_novo.migrado_facebook)
+                self.assertEqual((fb["envio"], fb["horarios"], fb["dias"], fb["pagina_id"]),
+                                 ("upload_post", ["09:00"], ["seg"], "123"))
+                self.assertIs(fb["ativo"], "facebook" not in alteracao)
+
+    def test_nada_mudou_nao_grava(self):
+        antes = self.escrever(LEGADO.format(envio="oficial", ligada="true", pid=""))
+        cfg = config.carregar(self.caminho)
+        self.assertTrue(config.salvar(cfg, {}).migrado_facebook)
+        self.assertEqual(self.caminho.read_bytes(), antes)
+
+    def test_pagina_trocada(self):
+        """15d nos quatro envios."""
+        for envio in ("oficial", "upload_post"):
+            with self.subTest(envio=envio):
+                self.escrever(f'[facebook]\nenvio = "{envio}"\npagina = "Cortes"\npagina_id = "111"\n'
+                              'pagina_nome = "Cortes"\n')
+                cfg = config.carregar(self.caminho)
+                with self.assertRaises(config.ErroConfig) as erro:
+                    config.salvar(cfg, {"facebook": {"pagina": "Outra"}})
+                self.assertIn("escolha a Página na lista", str(erro.exception))
+                novo = config.salvar(cfg, {"facebook": {"pagina": "Outra", "pagina_id": "222", "pagina_nome": "Outra"}})
+                self.assertEqual(novo["facebook"]["pagina_id"], "222")
+                trocado = config.salvar(novo, {"facebook": {"envio": "manual" if envio == "oficial" else "navegador"}})
+                self.assertEqual(trocado["facebook"]["pagina_id"], "222")  # trocar só o envio não mexe na Página
+        for envio in ("navegador", "manual"):
+            with self.subTest(envio=envio):
+                self.escrever(f'[facebook]\nenvio = "{envio}"\npagina = "Cortes"\npagina_id = "111"\n'
+                              'pagina_nome = "Cortes"\n')
+                cfg = config.carregar(self.caminho)
+                novo = config.salvar(cfg, {"facebook": {"pagina": "Outra"}})
+                self.assertEqual((novo["facebook"]["pagina_id"], novo["facebook"]["pagina_nome"]), ("", ""))
+                gravado = config.carregar(self.caminho)["facebook"]
+                self.assertEqual((gravado["pagina"], gravado["pagina_id"], gravado["pagina_nome"]), ("Outra", "", ""))
+                novo = config.salvar(novo, {"facebook": {"pagina": "https://www.facebook.com/profile.php?id=555"}})
+                self.assertEqual(novo["facebook"]["pagina_id"], "555")
+                # a mesma Página de novo não apaga o que foi confirmado
+                novo = config.salvar(novo, {"facebook": {"pagina_nome": "Cortes 555"}})
+                novo = config.salvar(novo, {"facebook": {"pagina": "https://www.facebook.com/profile.php?id=555"}})
+                self.assertEqual(novo["facebook"]["pagina_nome"], "Cortes 555")
+
+    def test_link_e_id_que_discordam(self):
+        self.escrever('[facebook]\npagina = "https://www.facebook.com/profile.php?id=111"\n')
+        cfg = config.carregar(self.caminho)
+        with self.assertRaises(config.ErroConfig) as erro:
+            config.salvar(cfg, {"facebook": {"pagina_id": "222"}})
+        self.assertIn("tem o id 111, mas pagina_id é 222", str(erro.exception))
+
+
 class TestManual(ti.Base):
     """Critério 18: a tarefa à mão do Facebook cita a Página e lembra de conferir o perfil ativo."""
 

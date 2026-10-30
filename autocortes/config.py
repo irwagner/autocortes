@@ -445,6 +445,8 @@ class Config:
         self.dados = dados
         self.caminho = caminho
         self.raiz = caminho.parent
+        # o [facebook] veio da opção antiga do Instagram e ainda não está no arquivo (o salvar grava)
+        self.migrado_facebook = False
 
     def __getitem__(self, secao: str) -> dict:
         return self.dados[secao]
@@ -550,11 +552,14 @@ class Config:
 
         with _TRAVA_DADOS:
             copiar(self.dados, outro.dados)
+            self.migrado_facebook = outro.migrado_facebook
 
     def copia(self) -> "Config":
         """Retrato da configuração: nada muda nele se o painel salvar no meio de um trabalho."""
         with _TRAVA_DADOS:
-            return Config(copy.deepcopy(self.dados), self.caminho)
+            novo = Config(copy.deepcopy(self.dados), self.caminho)
+            novo.migrado_facebook = self.migrado_facebook
+            return novo
 
     def para_painel(self) -> dict:
         """Cópia dos dados sem os segredos (o painel só sabe se estão preenchidos)."""
@@ -626,14 +631,58 @@ def carregar(caminho: Path | None = None) -> Config:
             bruto = tomllib.loads(caminho.read_text(encoding="utf-8-sig"))
         except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
             raise ErroConfig(f"Erro de sintaxe em {caminho.name}: {e}") from e
+        migrado = _migrar_legado(bruto)
+        if migrado is not None:
+            log.info("A Página do Facebook agora é a rede Facebook, com o mesmo envio e os horários do Instagram")
         avisos: list[str] = []
         _mesclar(dados, bruto, "", avisos)
         for chave in avisos:
             log.warning("Opção desconhecida em %s: %s", caminho.name, chave)
+    else:
+        migrado = None
     _normalizar(PADRAO, dados)
     cfg = Config(dados, caminho)
+    cfg.migrado_facebook = migrado is not None
     validar(cfg)
     return cfg
+
+
+def _migrar_legado(bruto: dict) -> dict | None:
+    """O antigo "Reel do Instagram repetido na Página" ([instagram].pagina_facebook) vira a rede [facebook].
+
+    Só lê: o arquivo não muda ao carregar, e a seção entra nele na primeira gravação (salvar). Devolve a
+    seção montada, ou None quando não há o que migrar."""
+    ig = bruto.get("instagram")
+    if not isinstance(ig, dict):
+        return None
+    ligada = ig.pop("pagina_facebook", None)
+    pagina_id = ig.pop("facebook_pagina_id", None)
+    if "facebook" in bruto or ligada is not True:
+        return None
+    envio = ig.get("envio", PADRAO["instagram"]["envio"])
+    if envio not in ("oficial", "upload_post"):
+        return None  # pelo navegador ou à mão, a opção antiga não fazia nada
+    fb = {
+        "ativo": bool(ig.get("ativo", True) and ig.get("videos", True)),
+        "envio": envio,
+        "horarios": list(ig.get("horarios", PADRAO["instagram"]["horarios"])),
+        "dias": list(ig.get("dias", [])),
+    }
+    if envio == "oficial":
+        fb["versao_api"] = ig.get("versao_api", PADRAO["instagram"]["versao_api"])
+    if isinstance(pagina_id, str) and pagina_id.strip().isdigit():
+        fb["pagina_id"] = pagina_id.strip()
+    bruto["facebook"] = fb
+    return fb
+
+
+def _limpar_legado(doc) -> None:
+    """Tira do arquivo as chaves antigas da Página no [instagram] (a migração já as leu)."""
+    ig = doc.get("instagram")
+    if isinstance(ig, dict):
+        for chave in ("pagina_facebook", "facebook_pagina_id"):
+            if chave in ig:
+                del ig[chave]
 
 
 # ---------------------------------------------------------------- validação
@@ -1056,12 +1105,32 @@ def _gravar_doc(tabela, alteracoes: dict) -> None:
 
 def _aplicar(cfg: Config, alteracoes: dict) -> tuple[Config, dict]:
     limpo = _filtrar(PADRAO, alteracoes if isinstance(alteracoes, dict) else {})
+    _pagina_trocada(cfg, limpo)
     novos = copy.deepcopy(cfg.dados)
     _mesclar_valores(novos, limpo)
     _normalizar(PADRAO, novos)
     novo = Config(novos, cfg.caminho)
+    novo.migrado_facebook = cfg.migrado_facebook
     validar(novo)  # lança ErroConfig com a lista de problemas
     return novo, limpo
+
+
+def _pagina_trocada(cfg: Config, limpo: dict) -> None:
+    """A Página do Facebook trocada à mão: o id e o nome confirmados da Página antiga não podem sobrar.
+
+    No navegador e à mão, o id sai do link (ou fica vazio até a próxima conferência). Na API oficial e
+    no Upload-Post, a Página só muda pela escolha na lista, que manda pagina, pagina_id e pagina_nome juntos."""
+    fb = limpo.get("facebook")
+    if not isinstance(fb, dict) or "pagina" not in fb or "pagina_id" in fb:
+        return
+    if str(fb["pagina"]).strip() == str(cfg["facebook"]["pagina"]).strip():
+        return
+    envio = fb.get("envio", cfg["facebook"]["envio"])
+    if envio in ("oficial", "upload_post"):
+        raise ErroConfig("[facebook].pagina: escolha a Página na lista (Redes sociais > Facebook); nesta forma de "
+                         "envio ela vem do login")
+    fb["pagina_id"] = id_do_link_facebook(fb["pagina"])
+    fb["pagina_nome"] = ""
 
 
 def simular(cfg: Config, alteracoes: dict) -> Config:
@@ -1090,9 +1159,15 @@ def salvar(cfg: Config, alteracoes: dict) -> Config:
     except ParseError as e:
         raise ErroConfig(f"O {cfg.caminho.name} tem um erro de sintaxe (foi editado à mão?): {e}. Corrija o arquivo "
                          "ou desfaça a edição; nada foi salvo.") from e
+    # ordem fixa: o _gravar_doc cria a tabela que falta, então a seção migrada inteira entra antes da
+    # alteração pedida (senão uma primeira gravação de uma chave só deixaria um [facebook] parcial)
+    _limpar_legado(doc)
+    if cfg.migrado_facebook and "facebook" not in doc:
+        _gravar_doc(doc, {"facebook": copy.deepcopy(cfg.dados["facebook"])})
     _gravar_doc(doc, limpo)
     try:
         escrever_atomico(cfg.caminho, tomlkit.dumps(doc))
     except OSError as e:
         raise ErroConfig(f"Não consegui gravar o {cfg.caminho.name} ({e}). Nada foi salvo.") from e
+    novo.migrado_facebook = False
     return novo
