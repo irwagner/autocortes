@@ -611,7 +611,7 @@ Logo antes do clique de publicar ele confere o cookie de novo: se a Página mudo
 
 **Gravar o roteiro agindo como a Página.** Em "Aprender a postar", o AutoCortes confere antes com que perfil a janela está. "Começar a gravar" só libera quando confere; se não, use "Trocar para a Página". O Facebook não tem roteiro padrão: grave o seu, depois rode com o **ensaio** ligado (preenche tudo e para antes de publicar) e confira a imagem da tela em `dados/navegador`.
 
-**Repasse do Instagram.** Se a Central de Contas da Meta compartilha os Reels do Instagram no Facebook, desligue lá depois de ligar o Facebook aqui, senão o mesmo vídeo sai duas vezes na Página. O cartão avisa.
+**Repasse do Instagram.** Se a Central de Contas da Meta compartilha os Reels do Instagram no Facebook, desligue lá depois de ligar o Facebook aqui, senão o mesmo vídeo sai duas vezes na Página. O cartão avisa. Na primeira vez que o Facebook liga num perfil, os cortes da fila que já saíram no Instagram ficam fora do Facebook (o repasse pode ter levado), com o motivo no histórico.
 
 **Limites.** Reels de 3 a 90 s, de 24 a 60 quadros por segundo e até 30 por Página em 24 h ([guia de Reels](https://developers.facebook.com/docs/video-api/guides/reels-publishing/), lido em setembro de 2026). Cortes mais longos que `[facebook].max_segundos` (5 a 90, padrão 90) ficam fora da fila do Facebook, e o corte conclui normalmente nas outras redes. Os cortes saem com pelo menos 24 quadros por segundo: um filme em 23,976 vira 24. O limite do dia é o da agenda (6), abaixo dos 30 da Página e dos 25 posts do Facebook por dia do Upload-Post (lido em outubro de 2026).
 
