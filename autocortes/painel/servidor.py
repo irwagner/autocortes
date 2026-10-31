@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from .. import __version__, db, modelos_visuais, perfis
+from .. import __version__, db, modelos_visuais, perfis, proxy_navegador
 from ..config import Config
 from ..loop import Motor
 from ..util import Trava, log
@@ -464,6 +464,7 @@ def iniciar_painel(cfg: Config, abrir_navegador: bool = True, iniciar_motor: boo
             log.warning("Fechei com tarefas do painel ainda rodando (%s). O que estava sendo enviado volta para "
                         "a fila na próxima abertura, ou fica \"a conferir\" se a rede já tinha recebido.",
                         ", ".join(restantes))
+        proxy_navegador.encerrar_todos()
         perfis.marcar_porta(cfg.pasta_dados, None)
         trava.liberar()
         (cfg.pasta_dados / perfis.NOME_PEDIDO).unlink(missing_ok=True)

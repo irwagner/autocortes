@@ -16,12 +16,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .. import (__version__, agenda, analise, canais, canais_conta, config, criacao, edicao, ferramentas, gravador,
-                ia, imagens, metricas, modelos_visuais, perfis, planejador, roteiro, voz)
+                ia, imagens, metricas, modelos_visuais, perfis, planejador, proxy_navegador, roteiro, voz)
 from ..config import (ENVIOS, FORMATOS_IMAGEM, IMAGEM_INDISPONIVEL, PLATAFORMAS, REDES_IMAGEM, ROTULOS, TIPOS_IMAGEM,
                       ErroConfig)
 from ..midia import ErroMidia, Interrompido, base_ffmpeg, executar
 from ..navegador import TRAVA as TRAVA_NAVEGADOR
-from ..navegador import ErroNavegador
+from ..navegador import ErroNavegador, Navegador
 from ..plataformas import ErroPublicacao, criar, pagina_facebook
 from ..plataformas import manual as tarefas_manual
 from ..plataformas.navegador import Gravacao, conferir_facebook, gravando, lembrar_identidade, proxima_sessao
@@ -36,6 +36,7 @@ from .erros import ErroHttp
 ABAS = ("revisao", "fila", "candidatos", "publicados", "descartados")
 # mudanças que só valem depois de reiniciar o programa
 REINICIAR = (("geral", "pasta_dados"), ("painel", "porta"))
+CHAVES_PROXY = ("proxy_ativo", "proxy_socks5")
 LIMITE_UPLOAD = 60 * 1024**3
 LIMITE_MOLDURA = 30 * 1024**2
 TRAVA_PREVIA = threading.Lock()
@@ -733,6 +734,7 @@ def _salvar(ctx: Contexto, alteracoes: dict) -> list[str]:
     painel = ctx.painel
     with painel.trava_config:
         antes = {(s, k): painel.cfg[s][k] for s, k in REINICIAR}
+        proxy_antes = tuple(painel.cfg["navegador"][k] for k in CHAVES_PROXY)
         try:
             novo = config.salvar(painel.cfg, alteracoes)
         except ErroConfig as e:
@@ -749,6 +751,14 @@ def _salvar(ctx: Contexto, alteracoes: dict) -> list[str]:
                     painel.reinicio.pop(chave, None)
             novo[s][k] = antes[(s, k)]
         painel.motor.aplicar_config(novo)
+        proxy_mudou = proxy_antes != tuple(painel.cfg["navegador"][k] for k in CHAVES_PROXY)
+        if proxy_mudou:
+            # Uma janela já aberta continua com a rota da linha de comando antiga. A ponte para
+            # imediatamente, para nunca deixar a configuração nova aparentar estar valendo.
+            proxy_navegador.parar(painel.cfg)
+            for rede in PLATAFORMAS:
+                if painel.cfg[rede].get("envio") == "navegador":
+                    painel.motor.rede_atualizada(rede, persistente=True)
         for rede in PLATAFORMAS:
             if rede in alteracoes:
                 painel.motor.rede_atualizada(rede)
@@ -778,17 +788,26 @@ def ler_config(ctx: Contexto):
 def salvar_config(ctx: Contexto):
     alteracoes = ctx.corpo.get("alteracoes")
     _exigir(isinstance(alteracoes, dict) and bool(alteracoes), "Nada para salvar")
-    with ctx.painel.trava_config:
-        visual = alteracoes.get("edicao") if isinstance(alteracoes.get("edicao"), dict) else {}
-        ativo = modelos_visuais.nome_ativo(ctx.cfg)
-        if "modelo" in visual and str(visual["modelo"]).strip() != ativo:
-            # só o nome mudaria, e o visual guardado com esse nome seria trocado pelo atual
-            raise ErroHttp(400, "Para trocar de modelo visual, use o Estúdio")
-        esperado = ctx.corpo.get("modelo_esperado")
-        if esperado and str(esperado) != ativo and any(k in modelos_visuais.CHAVES for k in visual):
-            raise ErroHttp(409, f"O modelo em uso mudou para {ativo} em outra janela do painel. Recarregue a "
-                                "página para ver o visual dele antes de salvar.")
-        reiniciar = _salvar(ctx, alteracoes)
+    navegador_novo = alteracoes.get("navegador")
+    mexeu_proxy = isinstance(navegador_novo, dict) and bool(set(CHAVES_PROXY) & navegador_novo.keys())
+    if mexeu_proxy:
+        _exigir(TRAVA_NAVEGADOR.acquire(timeout=5),
+                "O navegador está postando ou gravando agora. Espere terminar para trocar o proxy.", 409)
+    try:
+        with ctx.painel.trava_config:
+            visual = alteracoes.get("edicao") if isinstance(alteracoes.get("edicao"), dict) else {}
+            ativo = modelos_visuais.nome_ativo(ctx.cfg)
+            if "modelo" in visual and str(visual["modelo"]).strip() != ativo:
+                # só o nome mudaria, e o visual guardado com esse nome seria trocado pelo atual
+                raise ErroHttp(400, "Para trocar de modelo visual, use o Estúdio")
+            esperado = ctx.corpo.get("modelo_esperado")
+            if esperado and str(esperado) != ativo and any(k in modelos_visuais.CHAVES for k in visual):
+                raise ErroHttp(409, f"O modelo em uso mudou para {ativo} em outra janela do painel. Recarregue a "
+                                    "página para ver o visual dele antes de salvar.")
+            reiniciar = _salvar(ctx, alteracoes)
+    finally:
+        if mexeu_proxy:
+            TRAVA_NAVEGADOR.release()
     log.info("Configurações salvas pelo painel")
     return {"config": _config_painel(ctx), "meta": _meta_config(ctx), "reiniciar": reiniciar}
 
@@ -2427,7 +2446,42 @@ def redes(ctx: Contexto):
             f"SELECT COUNT(*) FROM postagens WHERE plataforma=? AND status IN ({_marc(sucesso)}) AND criado_em>=?",
             (rede, *sucesso, time.time() - 86400),
         ).fetchone()[0]
-    return {"redes": resumo, "simulacao": cfg.simulacao, "meta": _meta_config(ctx), "config": _config_painel(ctx)}
+    return {"redes": resumo, "simulacao": cfg.simulacao, "proxy": proxy_navegador.resumo(cfg),
+            "meta": _meta_config(ctx), "config": _config_painel(ctx)}
+
+
+@rota("GET", r"/redes/proxy")
+def estado_proxy_navegador(ctx: Contexto):
+    return {"proxy": proxy_navegador.resumo(ctx.cfg)}
+
+
+@rota("POST", r"/redes/proxy/testar")
+def testar_proxy_navegador(ctx: Contexto):
+    try:
+        with ctx.painel.trava_config:
+            return {"proxy": proxy_navegador.testar(ctx.cfg)}
+    except (proxy_navegador.ErroProxy, ValueError) as e:
+        raise ErroHttp(400, f"Proxy SOCKS5: {e}") from e
+
+
+@rota("POST", r"/redes/navegador/reabrir")
+def reabrir_navegador(ctx: Contexto):
+    _exigir(TRAVA_NAVEGADOR.acquire(timeout=5),
+            "O navegador está postando ou gravando agora. Espere terminar para reabrir.", 409)
+    try:
+        try:
+            with ctx.painel.trava_config:
+                if ctx.cfg["navegador"].get("proxy_ativo"):
+                    proxy_navegador.testar(ctx.cfg)  # não fecha a janela atual se as credenciais falharem
+                Navegador(ctx.cfg).reabrir()
+        except (ErroNavegador, proxy_navegador.ErroProxy, ValueError) as e:
+            raise ErroHttp(400, str(e)) from e
+    finally:
+        TRAVA_NAVEGADOR.release()
+    for rede in PLATAFORMAS:
+        if ctx.cfg[rede].get("envio") == "navegador":
+            ctx.painel.motor.rede_atualizada(rede, persistente=True)
+    return {"ok": True, "proxy": proxy_navegador.resumo(ctx.cfg)}
 
 
 @rota("POST", r"/redes/(\w+)/login")

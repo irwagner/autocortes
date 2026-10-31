@@ -142,6 +142,7 @@ Atualizado em outubro de 2026.
 | Envio para YouTube, TikTok e Instagram pela API oficial | 🧪 Pronto; testado contra um servidor simulado, ainda não nas APIs reais |
 | Envio pelo Upload-Post (opcional, por rede) | 🧪 Pronto; testado contra um servidor simulado, ainda não no serviço real |
 | Envio pelo seu navegador (YouTube, TikTok, Instagram, Bilibili) | ✅ Em uso de verdade desde outubro de 2026 no YouTube, no TikTok e no Instagram; o Bilibili ainda não foi validado com a conta logada |
+| SOCKS5 autenticado opcional, separado por perfil, com consumo e latência | ✅ Ponte, autenticação, medição e Edge testados por um SOCKS5 real; ainda falta uma postagem de ensaio numa rede pelo proxy |
 | "Aprender a postar": grava o roteiro enquanto você posta à mão | ⚠️ Pronto e testado com o Chrome real; a gravação de cada rede depende da conta logada |
 | Roteiro como linguagem simples, editável no painel | ✅ Pronto e testado |
 | Roteiros padrão do YouTube, TikTok e Instagram, que vêm com a instalação | ✅ Tirados dos roteiros que postaram de verdade em outubro de 2026 |
@@ -150,7 +151,7 @@ Atualizado em outubro de 2026.
 | Kwai, Bilibili e postagem à mão em qualquer rede | ✅ Pronto e testado: tarefas no Início com vídeo, textos por rede, "Já postei" e pasta sincronizada |
 | YouTube só com Shorts (vertical ou quadrado, até o limite de duração) | ✅ Pronto e testado |
 | Agenda por rede, fila e planejador | ✅ Pronto e testado de ponta a ponta em simulação |
-| Painel no navegador (10 telas, API local com 85 rotas) | ✅ Pronto e testado no Edge |
+| Painel no navegador (10 telas, API local com 88 rotas) | ✅ Pronto e testado no Edge |
 | Canais do YouTube: baixa sozinho os vídeos novos para a pasta de filmes | ✅ Pronto e testado (o yt-dlp de verdade num canal público; as regras e a fila, com um yt-dlp falso) |
 | Atualização pelo GitHub a cada 2 dias, com tudo parado | ✅ Pronta e testada: o ciclo inteiro com um repositório local (fecha, troca, abre de novo com os perfis e volta sozinha se a versão nova não abrir), e o clone e o ZIP contra o GitHub de verdade |
 | Perfis de nicho: vários nichos na mesma instalação, cada um com suas contas | ✅ Pronto e testado (dois perfis abertos ao mesmo tempo, de verdade) |
@@ -641,10 +642,14 @@ Funciona em **YouTube, TikTok, Instagram, Facebook (Página) e Bilibili**. O Kwa
 
 O que o AutoCortes faz e não faz:
 - Pausa aleatória entre os passos, uma aba por vez e o limite diário da agenda, como em qualquer rede.
-- **Nada de disfarce:** sem forjar fingerprint, sem resolver captcha, sem API privada e sem proxy. Se a rede pedir verificação ou bloquear, o envio para, avisa e não insiste.
+- **Nada de disfarce:** sem forjar fingerprint, sem resolver captcha e sem API privada. O SOCKS5 opcional é uma rota fixa por perfil, sem rodízio nem troca automática. Se a rede pedir verificação ou bloquear, o envio para, avisa e não insiste.
 - DevTools só em `127.0.0.1`, e o perfil é separado do seu Chrome do dia a dia.
 - Sem API não há link do post na hora: o histórico guarda um número interno, e o link aparece quando a própria página mostra (o YouTube mostra).
 - No Facebook, antes de cada post ele confere se a janela está agindo como a Página configurada, e não como o seu perfil pessoal ou outra Página ([veja acima](#facebook-página)).
+
+**SOCKS5 por perfil (opcional).** No cartão "Postagem pelo navegador", ligue o proxy e cole `servidor:porta:usuario:senha` (o servidor pode ser um IPv4 ou domínio). Só o Chrome dedicado daquele perfil passa por ele; APIs oficiais, Upload-Post, downloads dos canais do YouTube, Pexels/Pixabay, IA, painel e atualização continuam na conexão normal. O AutoCortes abre uma ponte autenticada numa porta aleatória de `127.0.0.1`, porque o Chrome não autentica sozinho nesse tipo de proxy. A ponte não aceita conexão de fora do computador, não faz rodízio e nunca cai para a conexão direta. Depois de trocar ou desligar o proxy, use **Fechar e reabrir o navegador** para aplicar a nova rota.
+
+O mesmo cartão mostra a latência da conexão e autenticação, a velocidade atual e o tráfego enviado, recebido e total da sessão, do dia e do mês. A contagem inclui o vídeo e todos os recursos carregados pelo Chrome. Ela é gravada no banco do perfil; o fornecedor pode indicar um pouco mais por contar cabeçalhos, retransmissões e arredondamentos. **Testar proxy** autentica sem abrir outro site. O SOCKS5 comum não cifra usuário e senha por conta própria; use um fornecedor e uma rede em que você confia. As páginas HTTPS continuam cifradas entre o Chrome e o site.
 
 **O ponto fraco:** os seletores das páginas. Quando a rede muda o layout, o envio falha com o passo que quebrou e uma imagem da tela. Aí é gravar de novo (ou ajustar uma linha do roteiro), sem mexer no código. Testei a mecânica contra páginas que imitam cada rede (inclusive o shadow DOM do YouTube Studio) e a checagem de sessão contra os sites reais, mas cada roteiro só pode ser validado com a conta logada, no ensaio.
 
@@ -857,6 +862,7 @@ AutoCortes/
 | `midia.py` | execução do FFmpeg e do whisper com progresso e cancelamento |
 | `websocket.py` | cliente WebSocket próprio (`ws://` e `wss://`), usado pelo DevTools e pela narração |
 | `navegador.py` | controle do Chrome pelo DevTools: busca que entra no shadow DOM, clique que espera o botão liberar, envio de arquivo e captura de tela |
+| `proxy_navegador.py` | ponte local para o SOCKS5 autenticado do perfil, contagem de tráfego, velocidade e latência |
 | `roteiro.py` | a linguagem do roteiro de envio pelo navegador: leitura, validação e avisos |
 | `gravador.py` | "Aprender a postar": anota o que você faz na página e escreve o roteiro em `dados/roteiros` |
 | `perfis.py` | perfis de nicho: listar, criar, ajustar, abrir, fechar e excluir |
@@ -905,7 +911,7 @@ As rotas `/api` exigem o cabeçalho `X-AutoCortes` com o token da sessão; a mí
 | Perfis | `GET /api/perfis`, `POST /api/perfis/novo` e `/opcoes`, `POST /api/perfis/{slug}/abrir`, `/fechar`, `/salvar` e `/excluir`, `GET .../conteudo` |
 | Filmes | `GET /api/filmes`, `POST /api/filmes/enviar`, `/varrer`, `/{id}/acao` e `/{id}/meta` |
 | Canais do YouTube | `GET /api/canais`, `POST /api/canais/novo`, `/verificar` (um canal ou todos; durante a pausa, 409 com `motivo: "pausa"`, e passa com `forcar: true`) e `/{id}/acao` (`pausar`, `ativar`, `remover`), `POST /api/downloads/{id}/acao` (`tentar`); a conta separada: `GET /api/canais/conta`, `POST /api/canais/conta/conectar` (com uma janela aberta, devolve a mesma), `/cancelar` e `/esquecer` |
-| Redes | `GET /api/redes`, `GET` e `POST /api/redes/{rede}/login`, `POST .../cancelar`, `/testar` e `/desconectar`, `POST /api/redes/instagram/conta` e `/api/redes/facebook/conta` (token colado e a Página escolhida), `POST /api/redes/facebook/perfil` (navegador: com que perfil a janela está agindo; `trocar: true` tenta trocar para a Página, `usar` aceita a Página sugerida; 409 com uma gravação aberta), `POST /api/redes/facebook/pagina` (Upload-Post: sem `id`, a lista de Páginas; com `id`, grava a escolhida); o `gravar` do Facebook responde 409 quando a janela não está agindo como a Página |
+| Redes | `GET /api/redes`, `GET /api/redes/proxy`, `POST /api/redes/proxy/testar` e `/api/redes/navegador/reabrir`, `GET` e `POST /api/redes/{rede}/login`, `POST .../cancelar`, `/testar` e `/desconectar`, `POST /api/redes/instagram/conta` e `/api/redes/facebook/conta` (token colado e a Página escolhida), `POST /api/redes/facebook/perfil` (navegador: com que perfil a janela está agindo; `trocar: true` tenta trocar para a Página, `usar` aceita a Página sugerida; 409 com uma gravação aberta), `POST /api/redes/facebook/pagina` (Upload-Post: sem `id`, a lista de Páginas; com `id`, grava a escolhida); o `gravar` do Facebook responde 409 quando a janela não está agindo como a Página |
 | Sistema | `GET /api/logs?desde=`, `POST /api/sistema/abrir`, `/inicializacao` e `/encerrar` |
 | Atualização | `GET /api/atualizacao`, `POST /api/atualizacao/verificar`, `/aplicar` (409 se algo está trabalhando) e `/opcoes` |
 | Mídia | `GET /media/corte/{id}.mp4` e `.jpg` (com Range), `GET /media/previa.jpg`, `GET /media/imagem/{id}/{n}.jpg` (só de dentro da pasta de dados) e `GET /media/previa-imagem/{tipo}-{formato}-{n}.jpg` |
@@ -1064,7 +1070,7 @@ Próximos passos:
 Pendências conhecidas:
 - **Envio pelo navegador:** os seletores de cada página de envio foram escritos sem conta logada. No primeiro uso de cada rede, rode com o ensaio ligado e confira a imagem da tela; o que quebrar precisa de ajuste no roteiro (`plataformas/navegador.py`). A conta corre risco de bloqueio.
 - A legenda "sempre abaixo do vídeo" pode passar da faixa que os guias de anúncio consideram livre: conferir num post de teste no celular.
-- As chaves de API do `config.toml` (Client secret, Upload-Post, IA) ainda ficam em texto.
+- As chaves de API e a credencial SOCKS5 do `config.toml` (Client secret, Upload-Post, IA e proxy do navegador) ainda ficam em texto. O painel não devolve nem registra esses valores.
 - Os limites de texto do Bilibili (título 80, descrição 250, 10 tags de até 20 caracteres) e o caminho 影视 > 影视剪辑 não têm fonte oficial: conferir no primeiro envio. O Kwai não publica limite de legenda.
 - As métricas do Facebook e dos posts feitos à mão não são lidas.
 - **Facebook sem conta logada:** a conferência e a troca da Página foram testadas só contra páginas que imitam o Facebook. Falta ver na conta real: se o cookie `i_user` é o id da Página quando a janela age como ela, para onde `facebook.com/me` leva, os textos "Mudar agora" e "Ver todos os perfis" e o que aparece depois do clique, o campo "Descreva seu reel" e o botão de publicar. Até lá, a conferência pode não confirmar a Página e a rede fica pausada (falha fechada: na dúvida, não posta). No primeiro teste, olhe o motivo no cartão e a imagem em `dados/navegador`. Também falta ver a resposta real da lista de Páginas do Upload-Post e da Meta (`me/accounts`).

@@ -5,8 +5,8 @@ salva ali. Depois, cada post é feito clicando na página da própria rede.
 
 Isto contraria os termos de uso das redes, que só autorizam as APIs oficiais, e pode custar a
 conta. Foi ligado a pedido do dono do projeto, para as contas dele. Não há disfarce nenhum:
-nada de forjar fingerprint, resolver captcha, API privada ou proxy. Se a rede bloquear, o envio
-para e avisa.
+nada de forjar fingerprint, resolver captcha ou usar API privada. O SOCKS5 opcional é uma rota
+fixa por perfil, sem rodízio. Se a rede bloquear, o envio para e avisa.
 
 Os seletores das páginas são o ponto fraco: eles mudam quando a rede muda o layout, e não há
 como testá-los sem uma conta logada. Por isso cada passo tem várias opções, o modo ensaio
@@ -24,7 +24,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .. import gravador, roteiro
+from .. import gravador, proxy_navegador, roteiro
 from ..config import ROTULOS, Config
 from ..navegador import TRAVA, Aba, ErroNavegador, Navegador, css
 from ..textos import Conteudo, limitar
@@ -306,7 +306,11 @@ class ViaNavegador(Plataforma):
                 return texto
             except ErroNavegador as e:
                 self._guardar_imagem(aba, "verificar")
-                raise ErroPublicacao(f"{self.rotulo}: {e}", e.tipo) from e
+                raise ErroPublicacao(
+                    f"{self.rotulo}: {e}", e.tipo,
+                    rede_falhou=getattr(e, "rede_falhou", False)
+                    or (e.tipo == "temporario" and proxy_navegador.falha_recente(self.cfg)),
+                ) from e
             finally:
                 if aba is not None:
                     navegador.fechar_aba(aba)
@@ -466,8 +470,12 @@ class ViaNavegador(Plataforma):
                             e = ErroNavegador(f"{e} (a rede mostrou '{marca}': resolva na janela do navegador "
                                               "e teste a conta de novo)", "bloqueio")
                 # o parado (as imagens param) atravessa; trocado por um bloqueio acima, ele some de propósito
-                raise ErroPublicacao(f"{self.rotulo}: {e}", tipo, persistente=persistente,
-                                     parado=getattr(e, "parado", False)) from e
+                raise ErroPublicacao(
+                    f"{self.rotulo}: {e}", tipo, persistente=persistente,
+                    parado=getattr(e, "parado", False),
+                    rede_falhou=getattr(e, "rede_falhou", False)
+                    or (tipo == "temporario" and proxy_navegador.falha_recente(self.cfg)),
+                ) from e
             finally:
                 if aba is not None:
                     navegador.fechar_aba(aba)

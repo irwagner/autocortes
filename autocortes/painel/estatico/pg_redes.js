@@ -1,7 +1,7 @@
 /* AutoCortes - painel: Redes sociais (contas, forma de envio e opções de cada rede) */
 "use strict";
 
-const PgRedes = { dados: null };
+const PgRedes = { dados: null, proxyTimer: null };
 const Login = { rede: null, ativo: false, timer: null };
 const PERMISSOES_IG = "instagram_basic, instagram_content_publish, instagram_manage_insights, pages_show_list, pages_read_engagement, business_management";
 // as do login da Página do Facebook (plataformas/facebook.py)
@@ -595,11 +595,43 @@ function manualHtml(d) {
   </div>`;
 }
 
-function navegadorHtml() {
+function redProxyConsumo(nome, dados, velocidade = false) {
+  const d = dados || {};
+  const unidade = velocidade ? "/s" : "";
+  const bytes = (n) => n ? fmtBytes(n) : "0 B";
+  return h`<div class="proxy-metrica"><span>${nome}</span><b>${bytes(d.total || 0)}${unidade}</b><small>↑ ${bytes(d.enviado || 0)}${unidade} · ↓ ${bytes(d.recebido || 0)}${unidade}</small></div>`;
+}
+
+function redProxyEstadoHtml(p = {}) {
+  const nomes = {
+    desligado: ["Proxy desligado", "neutro", "A janela usa a conexão normal."],
+    pronto: ["SOCKS5 configurado", "info", "Reabra o navegador para aplicar, ou aguarde a próxima abertura."],
+    ativo: ["SOCKS5 ativo", "ok", p.conexoes ? plural(p.conexoes, "conexão aberta", "conexões abertas") : "Ponte local pronta."],
+    erro: ["SOCKS5 indisponível", "erro", p.erro || "Não consegui conectar ou autenticar."],
+  };
+  const atual = nomes[p.estado] || nomes.desligado;
+  const latencia = p.latencia_ms === null || p.latencia_ms === undefined ? "—" : `${fmtNum(p.latencia_ms)} ms`;
+  const medido = p.latencia_em ? ` · medido ${fmtQuando(p.latencia_em)}` : "";
+  return h`<div class="proxy-estado">
+    <div class="status-conta ${atual[1] === "info" ? "pendente" : atual[1]}">${ic(atual[1] === "ok" ? "ok" : atual[1] === "erro" ? "erro" : "rede")}<div><b>${atual[0]}</b><small title="${atual[2]}">${atual[2]}</small></div></div>
+    <div class="proxy-metricas">
+      <div class="proxy-metrica"><span>Latência (ping)</span><b>${latencia}</b><small>conexão e autenticação${medido}</small></div>
+      ${redProxyConsumo("Agora", p.velocidade, true)}
+      ${redProxyConsumo("Nesta sessão", p.sessao)}
+      ${redProxyConsumo("Hoje", p.hoje)}
+      ${redProxyConsumo("Neste mês", p.mes)}
+      ${redProxyConsumo("Total acumulado", p.total)}
+    </div>
+  </div>`;
+}
+
+function navegadorHtml(d) {
   const usando = ORDEM_REDES.filter((r) => valor(`${r}.envio`) === "navegador" && valor(`${r}.ativo`));
   const ensaio = valor("navegador.ensaio");
+  const proxyAtivo = valor("navegador.proxy_ativo");
+  const proxySalvo = Boolean(App.config && App.config._segredos && App.config._segredos["navegador.proxy_socks5"]);
   return h`<div class="card card-navegador"><div class="card-topo"><h3>${ic("externo")}Postagem pelo navegador</h3>${usando.length ? badge([`Usada por ${usando.map((r) => REDES[r].rotulo).join(", ")}`, "aviso"], true) : badge(["Não usada", "neutro"], true)}</div>
-    <div class="aviso-rede">${ic("alerta")}<span>Contraria os termos das redes, que só autorizam as APIs oficiais, e pode custar a conta. O AutoCortes não disfarça nada: sem forjar fingerprint, sem resolver captcha e sem proxy. Se a rede pedir verificação, o envio para e avisa você.</span></div>
+    <div class="aviso-rede">${ic("alerta")}<span>Contraria os termos das redes, que só autorizam as APIs oficiais, e pode custar a conta. O AutoCortes não forja fingerprint nem resolve captcha. Se a rede pedir verificação, o envio para e avisa você.</span></div>
     <p class="nota">O AutoCortes abre o Chrome com um perfil separado, em <code>dados/chrome</code>, onde você entra na conta uma vez. Depois ele preenche a página de envio da rede como se fosse você. Funciona no YouTube, TikTok, Instagram e Bilibili; o Kwai não tem envio pelo site.</p>
     ${ensaio ? h`<div class="aviso-rede">${ic("info")}<span>Ensaio ligado: os envios preenchem tudo e <b>não publicam</b>, guardando uma imagem da tela em <code>dados/navegador</code>. A postagem fica registrada como ensaio, e o corte continua na fila para quando você desligar o ensaio.</span></div>` : ""}
     ${formulario([
@@ -610,7 +642,17 @@ function navegadorHtml() {
       campo({ chave: "navegador.pausa_min_seg", tipo: "numero", min: 0, max: 30, passo: 0.1, sufixo: "s", rotulo: "Pausa mínima entre passos" }),
       campo({ chave: "navegador.pausa_max_seg", tipo: "numero", min: 0, max: 60, passo: 0.1, sufixo: "s", rotulo: "Pausa máxima entre passos" }),
       campo({ chave: "navegador.tempo_limite_seg", tipo: "numero", min: 30, max: 1800, sufixo: "s", rotulo: "Tempo limite de cada passo" }),
+      secao("Proxy deste perfil"),
+      campo({ chave: "navegador.proxy_ativo", tipo: "switch", rotulo: "Usar SOCKS5 neste navegador", ajuda: "Só este Chrome passa pelo proxy fixo, sem rodízio. APIs, downloads, IA, bancos de mídia e atualização continuam na conexão normal." }),
+      campo({ chave: "navegador.proxy_socks5", tipo: "senha", rotulo: "Proxy SOCKS5", ajuda: "Cole servidor:porta:usuário:senha. O servidor pode ser um IPv4 ou domínio; dois-pontos adicionais fazem parte da senha. O valor não volta para a tela nem aparece no registro.", larga: true }),
     ])}
+    ${proxyAtivo && !proxySalvo && !obter(App.pendente, "navegador.proxy_socks5") ? h`<p class="aviso-inline">${ic("alerta")}Preencha o SOCKS5 antes de salvar.</p>` : ""}
+    <div id="red-proxy-estado">${redProxyEstadoHtml(d.proxy || {})}</div>
+    <div class="linha-botoes rodape-card">
+      <button type="button" class="btn" data-acao="proxy-testar">${ic("raio")}Testar proxy</button>
+      <button type="button" class="btn ${proxyAtivo ? "primario" : ""}" data-acao="proxy-reabrir">${ic("refazer")}Fechar e reabrir o navegador</button>
+    </div>
+    <p class="nota">Salvar uma troca de proxy interrompe a ponte antiga. Feche e reabra esta janela para a nova rota valer. Se o SOCKS5 falhar, o navegador não tenta a conexão direta. O consumo inclui o vídeo e todos os recursos carregados pelo Chrome; o fornecedor pode contar um pouco mais por causa dos cabeçalhos e retransmissões da rede.</p>
   </div>`;
 }
 
@@ -630,8 +672,56 @@ function desenharRedes() {
   montar(el, h`${publicacaoHtml(d)}
     <div class="cards-redes">${ORDEM_REDES.map((r) => cardRedeHtml(r, d.redes[r]))}</div>
     <div class="grade-2">${uploadPostHtml()}${manualHtml(d)}</div>
-    ${navegadorHtml()}
+    ${navegadorHtml(d)}
     <p class="nota rodape-card">O caminho seguro é a API oficial de cada rede, ou o Upload-Post. O envio pelo navegador contraria os termos e pode custar a conta: você escolhe rede por rede. Cortes de filmes são conteúdo de terceiros: poste só o que você tem direito de usar, e saiba que as redes tratam trechos com pouca edição como conteúdo não original na monetização e nas recomendações.</p>`);
+}
+
+async function redProxySalvar() {
+  if (vazio(pendentesDe(["navegador"]))) return true;
+  return salvarConfig(["navegador"]);
+}
+
+function redProxyMostrar(p) {
+  if (PgRedes.dados) PgRedes.dados.proxy = p;
+  const alvo = $("#red-proxy-estado");
+  if (alvo && App.nomePagina === "redes") montarSeMudou(alvo, redProxyEstadoHtml(p));
+}
+
+App.acoes["proxy-testar"] = async (el) => {
+  if (!(await redProxySalvar())) return;
+  toast("Conectando e autenticando no SOCKS5...", "info");
+  const r = await ocupado(el, () => post("/redes/proxy/testar"));
+  redProxyMostrar(r.proxy);
+  const ms = r.proxy.latencia_ms === null ? "" : ` em ${fmtNum(r.proxy.latencia_ms)} ms`;
+  toast(`Proxy SOCKS5 autenticado${ms}`, "ok", 7000);
+};
+
+App.acoes["proxy-reabrir"] = async (el) => {
+  if (!(await redProxySalvar())) return;
+  toast("Fechando e reabrindo o navegador deste perfil...", "info");
+  const r = await ocupado(el, () => post("/redes/navegador/reabrir"));
+  redProxyMostrar(r.proxy);
+  toast(r.proxy.ativo ? "Navegador reaberto pelo SOCKS5" : "Navegador reaberto pela conexão normal", "ok", 7000);
+};
+
+function redProxyPararAtualizacao() {
+  clearTimeout(PgRedes.proxyTimer);
+  PgRedes.proxyTimer = null;
+}
+
+function redProxyAgendarAtualizacao() {
+  redProxyPararAtualizacao();
+  if (App.nomePagina !== "redes") return;
+  PgRedes.proxyTimer = setTimeout(async () => {
+    try {
+      const r = await api("/redes/proxy");
+      if (App.nomePagina === "redes") redProxyMostrar(r.proxy);
+    } catch (e) {
+      // A faixa geral do painel já cuida de uma conexão perdida; a medição tenta de novo depois.
+    } finally {
+      if (App.nomePagina === "redes") redProxyAgendarAtualizacao();
+    }
+  }, 2000);
 }
 
 /* ------------------------------------------------------------ login */
@@ -1265,21 +1355,27 @@ App.paginas.redes = {
     const d = await carregarRedes(token);
     if (!d) return;
     desenharRedes();
+    redProxyAgendarAtualizacao();
   },
   aoMudar(caminho) {
     // facebook.pagina fica de fora: é um campo de texto, e redesenhar a cada tecla apagaria o que você digita
     // (o salvar recarrega o cartão com a Página nova)
-    if (/\.(envio|ativo|privacidade|videos|imagens)$/.test(caminho) || caminho === "navegador.ensaio") desenharRedes();
+    if (/\.(envio|ativo|privacidade|videos|imagens)$/.test(caminho)
+        || caminho === "navegador.ensaio" || caminho === "navegador.proxy_ativo") desenharRedes();
   },
   async aoSalvar() {
     await this.recarregar();
   },
   async recarregar() {
     const d = await carregarRedes();
-    if (d) desenharRedes();
+    if (d) {
+      desenharRedes();
+      redProxyAgendarAtualizacao();
+    }
   },
   sair() {
     pararLogin();
     pararGravacao();
+    redProxyPararAtualizacao();
   },
 };

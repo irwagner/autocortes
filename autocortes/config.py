@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import ipaddress
 import re
 import shutil
 import threading
@@ -55,6 +56,7 @@ SO_PELO_NAVEGADOR = "as imagens saem só pelo navegador: troque o envio para Nav
 SEGREDOS = (
     ("youtube", "client_secret"), ("tiktok", "client_secret"), ("instagram", "app_secret"),
     ("facebook", "app_secret"), ("upload_post", "api_key"), ("ia", "api_key"),
+    ("navegador", "proxy_socks5"),
     # listas de chaves: também nunca voltam para o painel
     ("estoque", "pexels_chaves"), ("estoque", "pixabay_chaves"),
 )
@@ -245,6 +247,9 @@ PADRAO: dict = {
         "tempo_limite_seg": 180,
         # true preenche tudo e para antes de publicar (para você conferir)
         "ensaio": False,
+        # SOCKS5 autenticado usado só por este Chrome. Formato: servidor:porta:usuario:senha
+        "proxy_ativo": False,
+        "proxy_socks5": "",
     },
     "criacao": {
         # vídeos gerados do zero (motivacional, frases, curiosidades), sem partir de um filme
@@ -687,6 +692,43 @@ def _limpar_legado(doc) -> None:
 _HORA = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 
 
+def separar_proxy_socks5(valor: str) -> tuple[str, int, str, str]:
+    """Separa ``servidor:porta:usuario:senha``; dois-pontos adicionais pertencem à senha."""
+    texto = str(valor or "").strip()
+    partes = texto.split(":", 3)
+    if len(partes) != 4:
+        raise ValueError("deve seguir o formato servidor:porta:usuario:senha")
+    endereco, porta_texto, usuario, senha = partes
+    servidor = endereco.strip()
+    try:
+        ip = ipaddress.ip_address(servidor)
+    except ValueError:
+        try:
+            servidor = servidor.encode("idna").decode("ascii").lower()
+        except UnicodeError as e:
+            raise ValueError("deve começar com um IPv4 ou nome de servidor válido") from e
+        rotulo = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.I)
+        if len(servidor) > 253 or not servidor or any(not rotulo.fullmatch(p) for p in servidor.split(".")):
+            raise ValueError("deve começar com um IPv4 ou nome de servidor válido")
+    else:
+        if ip.version != 4:
+            raise ValueError("aceita IPv4 ou nome de servidor no formato servidor:porta:usuario:senha")
+        servidor = str(ip)
+    if not porta_texto.strip().isdigit() or not 1 <= int(porta_texto.strip()) <= 65535:
+        raise ValueError("tem uma porta inválida (use um número de 1 a 65535)")
+    if not usuario:
+        raise ValueError("precisa do usuário depois da porta")
+    if not senha:
+        raise ValueError("precisa da senha depois do usuário")
+    if any(ord(c) < 32 or ord(c) == 127 for c in usuario + senha):
+        raise ValueError("não pode ter caracteres de controle no usuário ou na senha")
+    if len(usuario.encode("utf-8")) > 255:
+        raise ValueError("tem um usuário maior que 255 bytes")
+    if len(senha.encode("utf-8")) > 255:
+        raise ValueError("tem uma senha maior que 255 bytes")
+    return servidor, int(porta_texto.strip()), usuario, senha
+
+
 def _checar_tipos(padrao: dict, dados: dict, prefixo: str, erros: list[str]) -> None:
     for chave, base in padrao.items():
         if chave not in dados:
@@ -951,6 +993,14 @@ def validar(cfg: Config) -> None:
     numero("navegador", "pausa_min_seg", 0, 30)
     numero("navegador", "pausa_max_seg", 0, 60)
     numero("navegador", "tempo_limite_seg", 30, 1800)
+    proxy_socks5 = str(cfg["navegador"]["proxy_socks5"] or "")
+    if cfg["navegador"]["proxy_ativo"] and not proxy_socks5.strip():
+        erros.append("[navegador].proxy_socks5 precisa ser preenchido quando o proxy está ligado")
+    elif proxy_socks5.strip():
+        try:
+            separar_proxy_socks5(proxy_socks5)
+        except ValueError as e:
+            erros.append(f"[navegador].proxy_socks5 {e}")
     if cfg["navegador"]["pausa_min_seg"] > cfg["navegador"]["pausa_max_seg"]:
         erros.append("[navegador].pausa_min_seg não pode ser maior que pausa_max_seg")
     if cfg["navegador"]["porta"] == cfg["painel"]["porta"]:

@@ -4,8 +4,9 @@ O AutoCortes abre o Chrome com um perfil separado, guardado em dados/chrome. Voc
 uma vez em cada rede nessa janela e a sessão fica ali entre reinícios. Depois, o envio é
 feito clicando na própria página de postagem da rede, como se fosse você.
 
-Só escuta em 127.0.0.1. Nada de forjar fingerprint, resolver captcha, API privada ou proxy:
-se a rede bloquear, o envio para e avisa.
+Só escuta em 127.0.0.1. Nada de forjar fingerprint, resolver captcha ou usar API
+privada: se a rede bloquear, o envio para e avisa. O SOCKS5 opcional de cada perfil
+passa apenas o tráfego desta janela por uma ponte local autenticada.
 
 O CDP fala WebSocket, que a biblioteca padrão do Python não tem: o cliente mínimo (RFC 6455)
 está em `websocket.py`, para não precisar de dependência nova.
@@ -26,6 +27,7 @@ from urllib.parse import urlparse
 
 import requests
 
+from . import proxy_navegador
 from .config import Config
 from .util import ler_json, log, salvar_json
 from .websocket import ErroWebsocket, Websocket
@@ -56,15 +58,18 @@ class ErroNavegador(Exception):
     volta quando você resolve na janela e testa a conta de novo.
     parado=True (só com o tipo "formato") quer dizer que as imagens da rede param até você gravar
     o roteiro de imagem de novo: o campo não aceita imagem ou o roteiro de imagem sumiu.
+    rede_falhou=True é uma queda antes de a rede responder, como o SOCKS5 indisponível; não gasta
+    uma tentativa do corte.
     """
 
     def __init__(self, mensagem: str, tipo: str = "temporario", conexao: bool = False, persistente: bool = False,
-                 parado: bool = False):
+                 parado: bool = False, rede_falhou: bool = False):
         super().__init__(mensagem)
         self.tipo = tipo
         self.conexao = conexao
         self.persistente = persistente
         self.parado = parado
+        self.rede_falhou = rede_falhou
 
 
 class _Websocket(Websocket):
@@ -719,6 +724,7 @@ class Navegador:
         self.porta = int(self.conf["porta"])
         self.perfil = cfg.pasta_dados / "chrome"
         self.base = f"http://127.0.0.1:{self.porta}"
+        self._proxy_permitido = True
 
     # ---- processo
     def responde(self) -> bool:
@@ -736,10 +742,16 @@ class Navegador:
             return ""
         return urlparse(url).path if url else ""
 
-    def _anotar_janela(self) -> None:
+    def _anotar_janela(self, proxy: dict | None = None) -> None:
         alvo = self._alvo_atual()
         if alvo:
-            salvar_json(self.perfil / ARQUIVO_JANELA, {"porta": self.porta, "alvo": alvo, "quando": time.time()})
+            dados = {"porta": self.porta, "alvo": alvo, "quando": time.time()}
+            if proxy is not None:
+                dados["proxy_ativo"] = bool(proxy.get("ativo"))
+                if proxy.get("ativo"):
+                    dados["proxy_porta"] = int(proxy["porta"])
+                    dados["proxy_assinatura"] = str(proxy["assinatura"])
+            salvar_json(self.perfil / ARQUIVO_JANELA, dados)
 
     def _porta_so_nossa(self) -> bool:
         """Nenhum outro perfil desta instalação usa esta porta do navegador."""
@@ -790,10 +802,47 @@ class Navegador:
             return True
         return False
 
+    def _proxy_ativo(self) -> bool:
+        return self._proxy_permitido and bool(self.conf.get("proxy_ativo"))
+
+    def _erro_proxy(self, mensagem: str, *, reabrir: bool = False) -> ErroNavegador:
+        texto = f"proxy SOCKS5: {mensagem.rstrip('.')}"
+        if reabrir:
+            texto += ". Feche e reabra o navegador no cartão Postagem pelo navegador"
+        return ErroNavegador(texto, "bloqueio" if reabrir else "temporario",
+                             persistente=reabrir, rede_falhou=not reabrir)
+
+    def _iniciar_proxy(self, porta: int = 0) -> dict:
+        try:
+            return proxy_navegador.iniciar(self.cfg, porta)
+        except (proxy_navegador.ErroProxy, ValueError) as e:
+            raise self._erro_proxy(str(e)) from e
+
+    def _preparar_proxy_existente(self) -> None:
+        """Confere que a janela aberta usa exatamente a rota salva; na dúvida, falha fechado."""
+        marca = ler_json(self.perfil / ARQUIVO_JANELA, {}) or {}
+        desejado = self._proxy_ativo()
+        usado = bool(marca.get("proxy_ativo"))
+        if desejado != usado:
+            como = "sem o proxy que agora está ligado" if desejado else "com um proxy que agora está desligado"
+            raise self._erro_proxy(f"esta janela foi aberta {como}", reabrir=True)
+        if not desejado:
+            proxy_navegador.parar(self.cfg)
+            return
+        try:
+            assinatura = proxy_navegador.assinatura(self.cfg)
+            porta = int(marca.get("proxy_porta") or 0)
+        except (ValueError, TypeError) as e:
+            raise self._erro_proxy("a configuração salva é inválida", reabrir=True) from e
+        if not porta or marca.get("proxy_assinatura") != assinatura:
+            raise self._erro_proxy("a configuração mudou depois que esta janela foi aberta", reabrir=True)
+        self._iniciar_proxy(porta)
+
     def abrir(self, esperar_seg: float = 40) -> None:
         """Sobe a janela se ela não estiver aberta (a sessão fica no perfil, em dados/chrome)."""
         if self.responde():
             if self.nosso():
+                self._preparar_proxy_existente()
                 return
             raise ErroNavegador(
                 f"a porta {self.porta} já está ocupada por outro navegador (outro perfil do AutoCortes, ou o "
@@ -802,6 +851,11 @@ class Navegador:
                 "bloqueio",
             )
         programa = caminho_programa(self.cfg)
+        if self._proxy_ativo():
+            proxy = self._iniciar_proxy()
+        else:
+            proxy_navegador.parar(self.cfg)
+            proxy = {"ativo": False}
         self.perfil.mkdir(parents=True, exist_ok=True)
         argumentos = [
             str(programa),
@@ -814,6 +868,12 @@ class Navegador:
             "--restore-last-session=false",
             "about:blank",
         ]
+        if proxy["ativo"]:
+            argumentos[1:1] = [
+                f"--proxy-server=socks5://127.0.0.1:{proxy['porta']}",
+                "--disable-quic",
+                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+            ]
         if not self.conf["visivel"]:
             argumentos.insert(1, "--headless=new")
         log.info("Abrindo o navegador do AutoCortes (%s) com o perfil %s", programa.name, self.perfil)
@@ -823,15 +883,21 @@ class Navegador:
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
             )
         except OSError as e:
+            if proxy["ativo"]:
+                proxy_navegador.parar(self.cfg)
             raise ErroNavegador(f"não consegui abrir o navegador ({e})", "bloqueio") from e
         limite = time.monotonic() + esperar_seg
         while time.monotonic() < limite:
             if self.parar is not None and self.parar.is_set():
+                if proxy["ativo"]:
+                    proxy_navegador.parar(self.cfg)
                 raise ErroNavegador("interrompido pelo usuário")
             if self.responde():
-                self._anotar_janela()  # esta janela é deste perfil, para não confundir com a de outro
+                self._anotar_janela(proxy)  # janela, perfil e rota que realmente foram abertos
                 return
             time.sleep(0.5)
+        if proxy["ativo"]:
+            proxy_navegador.parar(self.cfg)
         raise ErroNavegador(
             f"o navegador não respondeu na porta {self.porta}. Se você já usa essa porta, troque em "
             "Redes sociais > Postagem pelo navegador", "bloqueio",
@@ -885,19 +951,36 @@ class Navegador:
             except requests.RequestException:
                 pass
 
+    def reabrir(self, esperar_seg: float = 40) -> None:
+        """Fecha somente a janela deste perfil e abre outra com a configuração atual."""
+        if self.responde():
+            if not self.nosso():
+                raise ErroNavegador(
+                    f"a porta {self.porta} pertence a outro navegador; não vou fechá-lo", "bloqueio")
+            self.encerrar()
+            limite = time.monotonic() + 15
+            while self.responde() and time.monotonic() < limite:
+                time.sleep(0.25)
+            if self.responde():
+                raise ErroNavegador("o navegador antigo não fechou; feche a janela e tente de novo", "bloqueio")
+        elif self._proxy_permitido:
+            proxy_navegador.parar(self.cfg)
+        self.abrir(esperar_seg)
+
     def encerrar(self) -> None:
         """Fecha a janela do navegador (a sessão continua salva no perfil)."""
+        ws = None
         try:
             ws = _Websocket(self._ws_navegador(), timeout=5)
-        except ErroNavegador:
-            return
-        try:
             ws.enviar(json.dumps({"id": 1, "method": "Browser.close", "params": {}}))
             ws.receber()
         except ErroNavegador:
             pass
         finally:
-            ws.fechar()
+            if ws is not None:
+                ws.fechar()
+            if self._proxy_permitido:
+                proxy_navegador.parar(self.cfg)
 
 
 # ---------------------------------------------------------------- janela à parte
@@ -921,6 +1004,7 @@ class NavegadorTemporario(Navegador):
 
     def __init__(self, cfg: Config, perfil: Path, parar: threading.Event | None = None, extras=(), evitar=()):
         super().__init__(cfg, parar)
+        self._proxy_permitido = False  # conta separada dos canais e outras janelas temporárias ficam diretas
         self.perfil = Path(perfil)
         if self.perfil.resolve() == (cfg.pasta_dados / "chrome").resolve():
             raise ErroNavegador("a janela à parte nunca usa o perfil das postagens", "bloqueio")

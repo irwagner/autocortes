@@ -1648,7 +1648,7 @@ class TestPainelFacebook(ti.BaseBanco):
         self.assertEqual(api.encontrar("POST", "/redes/instagram/conta")[:2], (api.escolher_conta, ("instagram",)))
         self.assertIsNone(api.encontrar("POST", "/redes/youtube/conta"))
         texto = Path(api.__file__).read_text(encoding="utf-8")
-        self.assertEqual(texto.count("@rota("), 85)
+        self.assertEqual(texto.count("@rota("), 88)
 
     # ---- critério 14: gravação
     def test_14_gravacao(self):

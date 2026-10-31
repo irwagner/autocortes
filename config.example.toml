@@ -273,8 +273,8 @@ pasta = ""
 #
 # ATENÇÃO: isto contraria os termos de uso das redes, que só autorizam as
 # APIs oficiais, e pode custar a conta. Não há disfarce: sem forjar
-# fingerprint, sem resolver captcha, sem proxy. Se a rede pedir verificação,
-# o envio para e avisa. Use com a conta que você pode perder.
+# fingerprint nem resolver captcha. Se a rede pedir verificação, o envio
+# para e avisa. Use com a conta que você pode perder.
 #
 # Funciona em YouTube, TikTok, Instagram e Bilibili. O Kwai não entra: o
 # upload dele é só pelo app do celular.
@@ -293,6 +293,13 @@ tempo_limite_seg = 180
 # true preenche tudo e NÃO publica, guardando uma imagem da tela (para conferir).
 # A postagem fica como ensaio, e o corte continua na fila daquela rede
 ensaio = false
+# Proxy opcional só para este Chrome. APIs, downloads, IA, bancos de mídia,
+# painel e atualização continuam na conexão normal. O proxy é fixo, sem rodízio.
+proxy_ativo = false
+# SOCKS5 autenticado no formato servidor:porta:usuario:senha. O servidor pode
+# ser um IPv4 ou domínio. É segredo: o painel não mostra o valor salvo nem o
+# escreve no registro. Se falhar, não usa a conexão direta.
+proxy_socks5 = ""
 
 # ---------------------------------------------------------------------
 # Vídeos criados do zero (motivacional, frases, curiosidades): a narração
