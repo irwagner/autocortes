@@ -27,7 +27,7 @@ Roda no seu PC com Windows, com FFmpeg e whisper.cpp. Os vídeos só saem do com
 
 ## O que é
 
-O AutoCortes corta filmes, edita em formato vertical e publica sozinho no **YouTube Shorts**, **TikTok** e **Instagram Reels** (e, se você quiser, na **Página do Facebook** junto com o Instagram), em loop e seguindo uma agenda. No **Kwai** e no **Bilibili**, que não têm API de postagem aberta, ele prepara cada post e você publica pelo app ou pelo site. Você coloca os filmes numa pasta; o sistema analisa cada um, escolhe os melhores trechos, edita com legenda palavra por palavra e posta nos horários de cada rede, sempre com alguns vídeos prontos na fila.
+O AutoCortes corta filmes, edita em formato vertical e publica sozinho no **YouTube Shorts**, **TikTok** e **Instagram Reels** (e, se você quiser, nos Reels de uma **Página do Facebook**, com agenda própria), em loop e seguindo uma agenda. No **Kwai** e no **Bilibili**, que não têm API de postagem aberta, ele prepara cada post e você publica pelo app ou pelo site. Você coloca os filmes numa pasta; o sistema analisa cada um, escolhe os melhores trechos, edita com legenda palavra por palavra e posta nos horários de cada rede, sempre com alguns vídeos prontos na fila.
 
 Tudo roda no seu PC com Windows, usando FFmpeg e whisper.cpp. Os vídeos só saem do computador para as redes que você conectar. Para instalar do zero, inclusive a IA local com o Ollama, siga o [passo a passo](#passo-a-passo-instalar-e-usar).
 
@@ -108,12 +108,13 @@ flowchart LR
     E --> F{"🗓️ Agenda<br/>de cada rede"}
     F --> G["YouTube Shorts"]
     F --> H["TikTok"]
-    F --> I["Instagram Reels<br/>e Página do Facebook"]
+    F --> I["Instagram Reels"]
+    F --> K["Página do Facebook<br/>Reels"]
     F --> J["Kwai e Bilibili<br/>tarefa à mão"]
     classDef etapa fill:#18141d,stroke:#ff7a2f,stroke-width:2px,color:#ffffff
     classDef rede fill:#18141d,stroke:#ffc233,stroke-width:1px,color:#ffffff
     class A,B,C,D,E,F etapa
-    class G,H,I,J rede
+    class G,H,I,J,K rede
 ```
 
 1. **Pasta de filmes.** A cada 5 min o sistema procura vídeos novos em `filmes/` (mp4, mkv, avi, mov, webm, ts e outros). Título e ano saem do nome do arquivo: `O.Poderoso.Chefao.1972.1080p.BluRay.mkv` vira "O Poderoso Chefao", de 1972. Episódio de série (`S01E01` ou `1x01`) vira "Nome T1:E1".
@@ -145,11 +146,11 @@ Atualizado em outubro de 2026.
 | Roteiro como linguagem simples, editável no painel | ✅ Pronto e testado |
 | Roteiros padrão do YouTube, TikTok e Instagram, que vêm com a instalação | ✅ Tirados dos roteiros que postaram de verdade em outubro de 2026 |
 | [Posts de imagem](#posts-de-imagem-instagram-e-tiktok) no Instagram e no TikTok (momento, frase e carrossel), pelo roteiro do navegador | ⚠️ Pronto e testado com páginas que imitam as redes; o roteiro de imagem de cada rede só se confere com a conta logada |
-| Instagram também na Página do Facebook (opcional) | 🧪 Pronto, pela API oficial e pelo Upload-Post; testado contra um servidor simulado |
+| [Página do Facebook](#facebook-página) como rede própria (agenda, fila e forma de envio dela) | ⚠ Pronto; a API oficial e o Upload-Post testados contra um servidor simulado, e a conferência e a troca da Página pelo navegador contra páginas que imitam o Facebook. Os sinais da Página só se conferem com a conta logada |
 | Kwai, Bilibili e postagem à mão em qualquer rede | ✅ Pronto e testado: tarefas no Início com vídeo, textos por rede, "Já postei" e pasta sincronizada |
 | YouTube só com Shorts (vertical ou quadrado, até o limite de duração) | ✅ Pronto e testado |
 | Agenda por rede, fila e planejador | ✅ Pronto e testado de ponta a ponta em simulação |
-| Painel no navegador (10 telas, API local com 83 rotas) | ✅ Pronto e testado no Edge |
+| Painel no navegador (10 telas, API local com 85 rotas) | ✅ Pronto e testado no Edge |
 | Canais do YouTube: baixa sozinho os vídeos novos para a pasta de filmes | ✅ Pronto e testado (o yt-dlp de verdade num canal público; as regras e a fila, com um yt-dlp falso) |
 | Atualização pelo GitHub a cada 2 dias, com tudo parado | ✅ Pronta e testada: o ciclo inteiro com um repositório local (fecha, troca, abre de novo com os perfis e volta sozinha se a versão nova não abrir), e o clone e o ZIP contra o GitHub de verdade |
 | Perfis de nicho: vários nichos na mesma instalação, cada um com suas contas | ✅ Pronto e testado (dois perfis abertos ao mesmo tempo, de verdade) |
@@ -350,11 +351,11 @@ Abre no navegador pelo `AutoCortes.bat`. A lateral mostra se o motor está ligad
 </tr>
 </table>
 
-- **Início:** avisos do que falta configurar, os posts **a conferir** (a rede recebeu o vídeo ou a imagem e não confirmou: você diz se saiu, e nada é repetido até lá; o post de imagem aparece com a miniatura da imagem e a marca do tipo), as tarefas de postagem à mão (com o número no menu), cortes na fila, dias de conteúdo, posts de hoje, próximas postagens, o que está sendo feito agora (com progresso), últimas postagens, desempenho dos últimos 7 dias e a situação de cada rede.
+- **Início:** avisos do que falta configurar, os posts **a conferir** (a rede recebeu o vídeo ou a imagem e não confirmou: você diz se saiu, e nada é repetido até lá; o post de imagem aparece com a miniatura da imagem e a marca do tipo), as tarefas de postagem à mão (com o número no menu), cortes na fila, dias de conteúdo, posts de hoje, próximas postagens, o que está sendo feito agora (com progresso), últimas postagens, desempenho dos últimos 7 dias e a situação de cada rede. O Facebook aparece como as outras redes, com o aviso quando nenhum corte da fila cabe nos 90 s da Página.
 - **Agenda:** calendário de 7 ou 14 dias com cada horário e o corte previsto (vídeos e imagens misturados, a imagem com a marca do tipo ou "sem imagem" e o motivo), dias de conteúdo por rede, pausa geral, horários e dias de cada rede (no TikTok e no Instagram, também a linha "Imagens", com o aviso do horário que sai do dia por ficar perto de um vídeo), presets e regras (variação, tolerância, intervalo, limites e tentativas).
-- **Cortes:** abas por situação (aguardando aprovação, na fila, encontrados, publicados e descartados), filtro por filme e aprovar todos. Em **Selecionar**, cada cartão ganha uma caixa (clicar no cartão também marca) e uma barra no rodapé aplica a ação de uma vez aos escolhidos ou a todos os mostrados: aprovar, priorizar ou tirar a prioridade, editar de novo, restaurar, descartar e, nos publicados, apagar os vídeos para liberar espaço (o corte e o histórico dos posts ficam). Cada ação vale só para os cortes em que faz sentido, e o que não dá certo num corte (um envio em andamento, por exemplo) não impede os outros. O detalhe de cada corte tem o vídeo, por que o trecho foi escolhido, os textos do post (editar, gerar com IA, ver como o post sai), a situação em cada rede (e na Página do Facebook) com "Postar agora", "Postar à mão" ou "Ver a tarefa", as imagens geradas do corte (cada uma abre em tamanho real, com anterior, próxima e baixar), a situação de cada tipo de imagem por rede com "Postar imagem agora", e o histórico. Os cartões contam as imagens publicadas.
+- **Cortes:** abas por situação (aguardando aprovação, na fila, encontrados, publicados e descartados), filtro por filme e aprovar todos. Em **Selecionar**, cada cartão ganha uma caixa (clicar no cartão também marca) e uma barra no rodapé aplica a ação de uma vez aos escolhidos ou a todos os mostrados: aprovar, priorizar ou tirar a prioridade, editar de novo, restaurar, descartar e, nos publicados, apagar os vídeos para liberar espaço (o corte e o histórico dos posts ficam). Cada ação vale só para os cortes em que faz sentido, e o que não dá certo num corte (um envio em andamento, por exemplo) não impede os outros. O detalhe de cada corte tem o vídeo, por que o trecho foi escolhido, os textos do post (editar, gerar com IA, ver como o post sai), a situação em cada rede ligada (o Facebook avisa "Longo para o Facebook" acima de `[facebook].max_segundos`) com "Postar agora", "Postar à mão" ou "Ver a tarefa", as imagens geradas do corte (cada uma abre em tamanho real, com anterior, próxima e baixar), a situação de cada tipo de imagem por rede com "Postar imagem agora", e o histórico. Os cartões contam as imagens publicadas.
 - **Filmes:** enviar filmes e legendas arrastando para a página, situação e progresso da análise, reanalisar, ignorar e editar título, ano, hashtags e idioma. A aba **Canais do YouTube** guarda os canais que mandam vídeos novos sozinhos ([veja abaixo](#canais-do-youtube)), com os downloads de cada um.
-- **Redes sociais:** modo simulação ou publicação real, forma de envio de cada rede (API oficial, Upload-Post, pelo navegador ou à mão), conectar (YouTube e TikTok pelo navegador, Instagram colando o token), testar e desconectar, com passo a passo e as opções dos posts (duração máxima do YouTube, Página do Facebook, tags do Bilibili), mais a pasta sincronizada da postagem à mão. Nas redes pelo navegador, "Aprender a postar" grava o roteiro com log ao vivo, desfazer e recomeçar, e "Ver o roteiro" abre o editor da [linguagem de roteiro](#aprender-a-postar-e-o-roteiro). Cada rede tem as caixas **Vídeos** e **Imagens**; no TikTok e no Instagram pelo navegador, o cartão "Roteiro de imagem" grava, mostra e apaga o [roteiro dos posts de imagem](#posts-de-imagem-instagram-e-tiktok).
+- **Redes sociais:** modo simulação ou publicação real, forma de envio de cada rede (API oficial, Upload-Post, pelo navegador ou à mão), conectar (YouTube e TikTok pelo navegador, Instagram colando o token), testar e desconectar, com passo a passo e as opções dos posts (duração máxima do YouTube e do Facebook, tags do Bilibili). No Facebook, o cartão "Página que recebe os Reels" mostra a Página configurada e se ela já foi confirmada, com "Ver quem está ativo" e "Trocar para a Página" no navegador e "Escolher a Página" no Upload-Post, mais a pasta sincronizada da postagem à mão. Nas redes pelo navegador, "Aprender a postar" grava o roteiro com log ao vivo, desfazer e recomeçar, e "Ver o roteiro" abre o editor da [linguagem de roteiro](#aprender-a-postar-e-o-roteiro). Cada rede tem as caixas **Vídeos** e **Imagens**; no TikTok e no Instagram pelo navegador, o cartão "Roteiro de imagem" grava, mostra e apaga o [roteiro dos posts de imagem](#posts-de-imagem-instagram-e-tiktok).
 - **Estúdio:** o visual dos cortes numa tela de celular. Arraste o vídeo, o título e a legenda para cima e para baixo (ou use as setas do teclado), escolha ou envie a moldura, o tamanho do vídeo (Menor, Inteiro com o quadro todo, Padrão de 1,25x e Maior de 1,7x, ou o valor exato), o fundo, a fonte, o tamanho e as cores do título e da legenda, a barra e o fade. "O que os apps cobrem" mostra as faixas onde ficam os botões e a descrição das redes, e "Como vai sair" mostra o quadro gerado pelo mesmo editor dos cortes.
 - **Criação:** as pautas dos [vídeos feitos do zero](#vídeos-criados-do-zero) e a fila de temas. Escrever a pauta à mão ou pedir o roteiro à IA, editar o texto, criar o vídeo na hora e ver o que cada pauta já rendeu.
 - **Perfis:** vários nichos na mesma instalação ([veja abaixo](#perfis-vários-nichos-de-uma-vez)), cada um com sua pasta, suas contas e seu tema. Criar, abrir, fechar, ajustar portas e excluir, com o limite de quantos trabalham ao mesmo tempo.
@@ -524,9 +525,10 @@ Cada rede tem horários e dias da semana próprios. O padrão é:
 | TikTok | 12:00, 18:30, 21:00 | 21 |
 | Instagram Reels | 12:15, 19:00 | 14 |
 | Kwai (desligado por padrão) | 12:00, 19:30 | 14 |
+| Facebook, Página (desligado por padrão) | 13:30, 21:45 | 14 |
 | Bilibili (desligado por padrão) | 08:00, que é 19:00 em Pequim | 7 |
 
-A Página do Facebook não tem horário próprio: o Reel sai logo depois do Instagram.
+O Facebook tem horários próprios, longe dos do Instagram: um corte pode sair nas duas redes no mesmo dia sem chegar junto. Os presets também trazem horários do Facebook (o recomendado usa 13:30 e 21:45).
 
 **Horários de imagem.** O TikTok e o Instagram têm também `horarios_imagens` e `dias_imagens` (vazio = os mesmos dias dos vídeos), que só valem com os [posts de imagem](#posts-de-imagem-instagram-e-tiktok) ligados. O padrão é Instagram 10:00 e 16:00 e TikTok 10:30 e 15:30, a pelo menos 90 min de qualquer vídeo da rede. O calendário mostra vídeos e imagens misturados. Um horário de imagem a menos do intervalo mínimo (mais a variação) de um vídeo da mesma rede sai do dia, porque o vídeo tem preferência, e a Agenda avisa qual saiu e por quê. Vídeo e imagem da mesma rede contam juntos no intervalo mínimo e no limite de 6 por dia. Os presets também trazem horários de imagem.
 
@@ -585,14 +587,39 @@ O YouTube recebe só Shorts: vídeo vertical ou quadrado de até `[youtube].max_
 
 Desde 24/09/2026, um Short de 1 a 3 min com reivindicação do Content ID não é mais bloqueado na hora ([ajuda do YouTube](https://support.google.com/youtube/answer/15424877?hl=en-GB)).
 
-### Instagram também na Página do Facebook (opcional)
+### Facebook (Página)
 
-Com "Postar também na Página do Facebook" ligado (`[instagram].pagina_facebook = true`), cada Reel do Instagram vai também para a Página ligada à conta e aparece como Facebook no histórico. A Página não tem horário próprio: o Reel sai logo depois do Instagram.
-- **Pela API oficial:** usa a API de Reels da Página com o token da Página que o Instagram já guarda. Conecte o Instagram de novo com a permissão `pages_manage_posts`, adicione ao app da Meta o caso de uso de gerenciar a Página e deixe o app no modo publicado: em desenvolvimento, o que o app posta na Página só aparece para quem tem função nele ([modos do app](https://developers.facebook.com/docs/development/build-and-test/app-modes/)). O botão Testar avisa se falta a permissão.
-- **Pelo Upload-Post:** vai numa chamada separada, para a Página conectada no perfil. Com mais de uma Página, informe o ID em `facebook_pagina_id`.
-- **Limites da Página:** Reels de 3 a 90 s, de 24 a 60 quadros por segundo e até 30 por Página em 24 h ([guia de Reels](https://developers.facebook.com/docs/video-api/guides/reels-publishing/)). Por isso os cortes saem com pelo menos 24 quadros por segundo: um filme em 23,976 vira 24, sem diferença visível.
-- **Erros:** falha temporária tenta de novo depois de 10 e de 20 min, até 3 vezes; vídeo recusado ou falta de permissão não repete, e o Início avisa. Se o AutoCortes fechar depois de o Facebook aceitar o Reel, ele não é enviado de novo.
-- Se a Central de Contas da Meta já compartilha seus Reels no Facebook, desligue lá para não sair repetido. Com o Instagram à mão, ligue "Compartilhar no Facebook" no app ao postar.
+O Facebook é uma rede como as outras: tem horários, dias, fila e forma de envio próprios (`[facebook]`), e só posta Reels numa **Página**, nunca no seu perfil pessoal. Ele começa desligado. Serve para quem prefere não depender do repasse do Instagram, que às vezes não chega à Página.
+
+**Formas de envio.**
+
+- **Pelo seu navegador** (o padrão): o roteiro gravado na janela do Chrome do AutoCortes, como nas outras redes ([veja abaixo](#postagem-pelo-seu-navegador)). Antes de cada post, ele confere se a janela está agindo como a Página certa.
+- **API oficial:** a API de Reels da Página. Em "Conectar conta", cole um token do Graph API Explorer com `pages_show_list`, `pages_read_engagement`, `pages_manage_posts` e `business_management` e escolha a Página na lista. Sem login próprio, vale o do Instagram, se ele já tiver a Página. `app_id` e `app_secret` vazios usam o app do `[instagram]`. Deixe o app da Meta no modo publicado: em desenvolvimento, o que ele posta só aparece para quem tem função no app ([modos do app](https://developers.facebook.com/docs/development/build-and-test/app-modes/)).
+- **Upload-Post:** a Página conectada no perfil do serviço. Com mais de uma Página, use "Escolher a Página" no cartão.
+- **À mão:** a tarefa no Início, com o link da Página para postar.
+
+**Como informar a Página.** No cartão "Página que recebe os Reels", em `[facebook].pagina`: o link (`https://www.facebook.com/SuaPagina` ou `https://www.facebook.com/profile.php?id=...`) ou o nome exato dela. O link é o mais seguro. O nome só serve para sugerir: quando ele acha uma Página ativa com esse nome, pergunta "É esta?" e só passa a postar depois do seu "Usar esta Página". O id e o nome confirmados ficam em `pagina_id` e `pagina_nome`, e trocar a Página apaga a confirmação antiga. Na API oficial e no Upload-Post, a Página vem da escolha na lista e o campo fica só para leitura.
+
+**A conferência (navegador).** Sem os dois sinais concordando, nada é postado:
+
+- o cookie `i_user` da janela precisa ser o id da Página (sem ele, a janela está no perfil pessoal; com outro número, em outra Página);
+- o endereço de `facebook.com/me` precisa levar à Página (pelo id, pelo link informado ou pelo nome).
+
+Logo antes do clique de publicar ele confere o cookie de novo: se a Página mudou no meio, não publica. O motivo sai no cartão sem o número do seu perfil pessoal, que nunca vai para o registro.
+
+**A troca.** Quando a janela está no perfil pessoal ou em outra Página, ele tenta trocar uma vez por envio, como você faria: o botão "Mudar agora" na própria Página ou, se não houver, o menu da conta > "Ver todos os perfis" > a linha da Página (pelo id ou pelo nome exato; com duas Páginas de mesmo nome, ele para e pede o link). A troca só vale quando o cookie muda para a Página. Se não der, a rede pausa até você trocar na janela e clicar em **Testar a sessão** (ou "Trocar para a Página" no cartão). "Ver quem está ativo" mostra com que perfil a janela está agindo, sem trocar nada.
+
+**Gravar o roteiro agindo como a Página.** Em "Aprender a postar", o AutoCortes confere antes com que perfil a janela está. "Começar a gravar" só libera quando confere; se não, use "Trocar para a Página". O Facebook não tem roteiro padrão: grave o seu, depois rode com o **ensaio** ligado (preenche tudo e para antes de publicar) e confira a imagem da tela em `dados/navegador`.
+
+**Repasse do Instagram.** Se a Central de Contas da Meta compartilha os Reels do Instagram no Facebook, desligue lá depois de ligar o Facebook aqui, senão o mesmo vídeo sai duas vezes na Página. O cartão avisa.
+
+**Limites.** Reels de 3 a 90 s, de 24 a 60 quadros por segundo e até 30 por Página em 24 h ([guia de Reels](https://developers.facebook.com/docs/video-api/guides/reels-publishing/), lido em setembro de 2026). Cortes mais longos que `[facebook].max_segundos` (5 a 90, padrão 90) ficam fora da fila do Facebook, e o corte conclui normalmente nas outras redes. Os cortes saem com pelo menos 24 quadros por segundo: um filme em 23,976 vira 24. O limite do dia é o da agenda (6), abaixo dos 30 da Página e dos 25 posts do Facebook por dia do Upload-Post (lido em outubro de 2026).
+
+**Erros.** Página que não confere pausa a rede até você testar a conta. Quando o Facebook já recebeu o vídeo e algo falha depois (inclusive um erro depois de ele devolver o link), o post fica **a conferir** no Início em vez de repetir.
+
+**Originalidade.** Desde 13/03/2026 a Meta trata como não original juntar clipes com mudanças de baixo valor (bordas, legendas inseridas), o que inclui a moldura e as legendas do AutoCortes ([veja abaixo](#direitos-autorais-e-originalidade)).
+
+**Config antigo.** Quem usava `[instagram].pagina_facebook` ganha o `[facebook]` ligado na próxima abertura, com a mesma forma de envio, a mesma Página e os horários do Instagram (dá para mudar na Agenda); a opção antiga sai do arquivo na primeira vez que você salva. Os posts antigos da Página continuam no histórico.
 
 ### Postagem pelo seu navegador
 
@@ -601,7 +628,7 @@ Com "Postar também na Página do Facebook" ligado (`[instagram].pagina_facebook
 
 Com `envio = "navegador"`, o AutoCortes preenche a página de envio da própria rede, no Chrome, com um perfil separado em `dados/chrome`. Você entra na conta uma vez nessa janela e a sessão fica salva ali, entre reinícios. Serve para publicar em público sem auditoria de API e sem pagar um serviço.
 
-Funciona em **YouTube, TikTok, Instagram e Bilibili**. O Kwai não entra: o upload dele é só pelo app do celular, não existe página de envio para preencher.
+Funciona em **YouTube, TikTok, Instagram, Facebook (Página) e Bilibili**. O Kwai não entra: o upload dele é só pelo app do celular, não existe página de envio para preencher.
 
 | | Como fazer |
 |---|---|
@@ -617,7 +644,7 @@ O que o AutoCortes faz e não faz:
 - **Nada de disfarce:** sem forjar fingerprint, sem resolver captcha, sem API privada e sem proxy. Se a rede pedir verificação ou bloquear, o envio para, avisa e não insiste.
 - DevTools só em `127.0.0.1`, e o perfil é separado do seu Chrome do dia a dia.
 - Sem API não há link do post na hora: o histórico guarda um número interno, e o link aparece quando a própria página mostra (o YouTube mostra).
-- A Página do Facebook continua pela API. Com o Instagram no navegador, ligue "Compartilhar no Facebook" na hora de publicar.
+- No Facebook, antes de cada post ele confere se a janela está agindo como a Página configurada, e não como o seu perfil pessoal ou outra Página ([veja acima](#facebook-página)).
 
 **O ponto fraco:** os seletores das páginas. Quando a rede muda o layout, o envio falha com o passo que quebrou e uma imagem da tela. Aí é gravar de novo (ou ajustar uma linha do roteiro), sem mexer no código. Testei a mecânica contra páginas que imitam cada rede (inclusive o shadow DOM do YouTube Studio) e a checagem de sessão contra os sites reais, mas cada roteiro só pode ser validado com a conta logada, no ensaio.
 
@@ -693,7 +720,7 @@ Se você voltar para uma versão sem imagens depois de postar imagens, os cortes
 
 ### Postagem à mão (Kwai, Bilibili e qualquer rede)
 
-Kwai e Bilibili só têm essa forma de envio, e YouTube, TikTok e Instagram podem usar também (`envio = "manual"`). No horário da agenda nada é enviado: o AutoCortes cria uma **tarefa** no Início com o vídeo e os textos já no formato da rede.
+Kwai e Bilibili só têm essa forma de envio, e YouTube, TikTok, Instagram e Facebook podem usar também (`envio = "manual"`). No horário da agenda nada é enviado: o AutoCortes cria uma **tarefa** no Início com o vídeo e os textos já no formato da rede.
 - A tarefa tem o vídeo para assistir e baixar, os textos com botão de copiar (e os limites de cada rede), o passo a passo e o link do site de envio. Depois de postar, clique em **Já postei** (o link do post é opcional) ou em **Pular**.
 - **Textos por rede:** YouTube com título até 100 caracteres, descrição e tags; TikTok com legenda até 2.200; Instagram com no máximo 5 hashtags; Kwai com legenda que nunca fica só de hashtags; Bilibili com título até 80, descrição até 250 sem hashtags, tags uma a uma (as fixas de `[bilibili].tags` e as do post) e a fonte do trecho, para marcar o vídeo como 转载 (repost) em 影视 > 影视剪辑.
 - **Pasta sincronizada (opcional):** com `[manual].pasta` apontando para uma pasta do OneDrive ou do Google Drive, cada tarefa copia o vídeo e um `.txt` com os textos para uma subpasta da rede, para pegar no celular. As cópias somem quando a tarefa é feita ou pulada.
@@ -726,7 +753,7 @@ Fontes: [cota do YouTube](https://developers.google.com/youtube/v3/determine_quo
 
 O que a pesquisa de setembro de 2026 encontrou:
 
-Além dos caminhos abaixo, existe o [envio pelo seu navegador](#postagem-pelo-seu-navegador), que publica em público em quatro redes sem auditoria e sem pagar nada, com o risco de perder a conta.
+Além dos caminhos abaixo, existe o [envio pelo seu navegador](#postagem-pelo-seu-navegador), que publica em público em cinco redes sem auditoria e sem pagar nada, com o risco de perder a conta.
 
 | Rede | Caminho recomendado | Observação |
 |---|---|---|
@@ -774,7 +801,8 @@ Tudo fica no `config.toml`, criado a partir do `config.example.toml`. O painel g
 | `[navegador]` | envio pelo navegador: caminho do Chrome, porta do DevTools, janela visível, pausas, tempo limite e ensaio |
 | `[metricas]` | ler as métricas, de quanto em quanto tempo e de quantos dias para trás |
 | `[agenda]` | horários gerais, dias, variação, tolerância, intervalo mínimo, limites e pausa |
-| `[youtube]` `[tiktok]` `[instagram]` | ativar, o que posta (`videos`, e no TikTok e no Instagram `imagens`, com `horarios_imagens` e `dias_imagens`), forma de envio (`envio = "oficial"`, `"upload_post"`, `"navegador"` ou `"manual"`), credenciais, privacidade, horários e dias de cada rede; no YouTube, a duração máxima dos Shorts (`max_segundos`); no Instagram, a Página do Facebook (`pagina_facebook`, `facebook_pagina_id`) |
+| `[youtube]` `[tiktok]` `[instagram]` | ativar, o que posta (`videos`, e no TikTok e no Instagram `imagens`, com `horarios_imagens` e `dias_imagens`), forma de envio (`envio = "oficial"`, `"upload_post"`, `"navegador"` ou `"manual"`), credenciais, privacidade, horários e dias de cada rede; no YouTube, a duração máxima dos Shorts (`max_segundos`) |
+| `[facebook]` | os Reels da Página: ativar, forma de envio (`"navegador"`, o padrão, `"oficial"`, `"upload_post"` ou `"manual"`), a Página (`pagina`: o link ou o nome exato; `pagina_id` e `pagina_nome` o AutoCortes preenche quando confirma), o app da API oficial (`app_id`, `app_secret` e `versao_api`; vazios = os do Instagram), a duração máxima (`max_segundos`, de 5 a 90), horários e dias |
 | `[kwai]` `[bilibili]` | ativar (desligados por padrão), horários e dias; o Kwai só aceita `"manual"` e o Bilibili, `"navegador"` ou `"manual"`; no Bilibili, as tags fixas |
 
 Variáveis dos textos: `{filme}`, `{ano}`, `{ano_parenteses}`, `{parte}`, `{frase}` (melhor fala do corte) e `{hashtags}`; nos modelos com IA, também `{titulo_ia}` e `{descricao_ia}`. Nos vídeos baixados de um [canal do YouTube](#canais-do-youtube), `{canal}` e `{link_original}` dão o crédito do vídeo original (nos filmes da pasta, ficam vazios).
@@ -853,7 +881,7 @@ AutoCortes/
 | `produtor.py` | varredura, análise, edição e estoque de cortes |
 | `publicador.py` | decide quando e o que postar em cada rede |
 | `loop.py` | motor com as threads de produção e publicação |
-| `plataformas/` | YouTube, TikTok, Instagram (e o Reel da Página do Facebook), Upload-Post, envio pelo navegador (`navegador.py`: executa o roteiro gravado de cada rede, que fica em `dados/roteiros`), postagem à mão (`manual.py`: textos por rede e pasta sincronizada), login OAuth local e upload com progresso |
+| `plataformas/` | YouTube, TikTok, Instagram, Facebook (`facebook.py`: Reels da Página pela API; `meta.py`: a base da Graph API que o Instagram e o Facebook dividem, com as chamadas e a classificação dos erros; `pagina_facebook.py`: a conferência e a troca da Página no navegador), Upload-Post, envio pelo navegador (`navegador.py`: executa o roteiro gravado de cada rede, que fica em `dados/roteiros`), postagem à mão (`manual.py`: textos por rede e pasta sincronizada), login OAuth local e upload com progresso |
 | `painel/` | servidor HTTP local, rotas da API, integração com o Windows e a interface (`estatico/`: `nucleo.js` com o básico, um `pg_*.js` por tela e `app.js` com menu, navegação e estado ao vivo) |
 
 <details>
@@ -869,7 +897,7 @@ As rotas `/api` exigem o cabeçalho `X-AutoCortes` com o token da sessão; a mí
 | Agenda | `GET /api/plano?dias=7`, `POST /api/agenda/pausa` |
 | Configuração | `GET` e `POST /api/config`, `POST /api/previa`, `POST /api/imagens/previa` (`tipo`, `rede` e as alterações; 409 com outra geração no meio), `POST /api/ferramentas/baixar`, `POST /api/ia/testar` e `/api/ia/modelos` |
 | Estúdio | `GET /api/estudio`, `POST /api/estudio/geometria`, `POST /api/modelos/usar`, `/criar`, `/renomear` e `/excluir`, `POST /api/molduras/enviar` |
-| Cortes | `GET /api/cortes?aba=`, `GET /api/cortes/{id}`, `POST /api/cortes/{id}/acao`, `/textos` e `/postar` (`rede` pode ser `facebook`; numa rede à mão devolve a tarefa), `/postar-imagem` (`rede` e `tipo`; 400 sem roteiro de imagem ou num corte não editado, 409 com a rede pausada ou um envio em andamento), `POST /api/cortes/aprovar-todos`, `/refazer-fila` (`ids` opcional: só esses, se estiverem na fila ou aguardando aprovação; os outros voltam em `fora`) e `/lote` (`acao` e `ids`, de 1 a 500: `descartar`, `restaurar`, `aprovar`, `priorizar`, `normal` ou `apagar_video`; devolve `feitos` e `falhas`) |
+| Cortes | `GET /api/cortes?aba=`, `GET /api/cortes/{id}`, `POST /api/cortes/{id}/acao`, `/textos` e `/postar` (numa rede à mão devolve a tarefa; no Facebook, um corte acima de `max_segundos` é pulado com o motivo), `/postar-imagem` (`rede` e `tipo`; 400 sem roteiro de imagem ou num corte não editado, 409 com a rede pausada ou um envio em andamento), `POST /api/cortes/aprovar-todos`, `/refazer-fila` (`ids` opcional: só esses, se estiverem na fila ou aguardando aprovação; os outros voltam em `fora`) e `/lote` (`acao` e `ids`, de 1 a 500: `descartar`, `restaurar`, `aprovar`, `priorizar`, `normal` ou `apagar_video`; devolve `feitos` e `falhas`) |
 | Postagem à mão | `GET /api/tarefas/{id}` (vídeo, textos da rede e passos), `POST /api/tarefas/{id}/feito` (link opcional) e `/pular` |
 | A conferir | `POST /api/postagens/{id}/conferir` (`saiu` true ou false, link opcional) |
 | Criação | `GET /api/pautas` (com o arquivo da fila de temas e a versão dele), `POST /api/pautas/nova`, `POST /api/pautas/temas` (409 se a fila mudou), `GET` e `POST /api/pautas/{id}`, `POST /api/pautas/{id}/acao` |
@@ -877,7 +905,7 @@ As rotas `/api` exigem o cabeçalho `X-AutoCortes` com o token da sessão; a mí
 | Perfis | `GET /api/perfis`, `POST /api/perfis/novo` e `/opcoes`, `POST /api/perfis/{slug}/abrir`, `/fechar`, `/salvar` e `/excluir`, `GET .../conteudo` |
 | Filmes | `GET /api/filmes`, `POST /api/filmes/enviar`, `/varrer`, `/{id}/acao` e `/{id}/meta` |
 | Canais do YouTube | `GET /api/canais`, `POST /api/canais/novo`, `/verificar` (um canal ou todos; durante a pausa, 409 com `motivo: "pausa"`, e passa com `forcar: true`) e `/{id}/acao` (`pausar`, `ativar`, `remover`), `POST /api/downloads/{id}/acao` (`tentar`); a conta separada: `GET /api/canais/conta`, `POST /api/canais/conta/conectar` (com uma janela aberta, devolve a mesma), `/cancelar` e `/esquecer` |
-| Redes | `GET /api/redes`, `GET` e `POST /api/redes/{rede}/login`, `POST .../cancelar`, `/testar` e `/desconectar`, `POST /api/redes/instagram/conta` |
+| Redes | `GET /api/redes`, `GET` e `POST /api/redes/{rede}/login`, `POST .../cancelar`, `/testar` e `/desconectar`, `POST /api/redes/instagram/conta` e `/api/redes/facebook/conta` (token colado e a Página escolhida), `POST /api/redes/facebook/perfil` (navegador: com que perfil a janela está agindo; `trocar: true` tenta trocar para a Página, `usar` aceita a Página sugerida; 409 com uma gravação aberta), `POST /api/redes/facebook/pagina` (Upload-Post: sem `id`, a lista de Páginas; com `id`, grava a escolhida); o `gravar` do Facebook responde 409 quando a janela não está agindo como a Página |
 | Sistema | `GET /api/logs?desde=`, `POST /api/sistema/abrir`, `/inicializacao` e `/encerrar` |
 | Atualização | `GET /api/atualizacao`, `POST /api/atualizacao/verificar`, `/aplicar` (409 se algo está trabalhando) e `/opcoes` |
 | Mídia | `GET /media/corte/{id}.mp4` e `.jpg` (com Range), `GET /media/previa.jpg`, `GET /media/imagem/{id}/{n}.jpg` (só de dentro da pasta de dados) e `GET /media/previa-imagem/{tipo}-{formato}-{n}.jpg` |
@@ -889,7 +917,7 @@ Ações de corte: `aprovar`, `descartar`, `restaurar`, `reeditar`, `editar_agora
 Ciclo de vida no banco:
 - **Filme:** `novo` → `analisando` → `analisado` (ou `erro`, `ausente`, `ignorado`). A pauta de um vídeo criado é uma linha com `tipo = 'pauta'`: `novo` → `criando` → `analisado`.
 - **Corte:** `candidato` → `renderizando` → `revisao` (com aprovação ligada) → `pronto` → `concluido` (ou `erro`, `descartado`)
-- **Postagem:** `enviando` → `publicado` ou `simulado` (ou `falhou`, `pulado`, `interrompido`, `ensaio`); quando a rede recebeu e não confirmou, `conferir` → `publicado` ou `falhou`, pela sua resposta; à mão, `aguardando` → `publicado` ou `pulado`. O Reel da Página fica como a rede `facebook`. O post de imagem é uma postagem com `midia = 'imagem'` e o tipo em `imagem_tipo`, e as imagens geradas ficam na tabela `imagens`. As pausas de cada rede ficam na tabela `estado` (`bloqueio:<rede>`), junto com o que o envio e a gravação descobriram das imagens (`imagens:<rede>`).
+- **Postagem:** `enviando` → `publicado` ou `simulado` (ou `falhou`, `pulado`, `interrompido`, `ensaio`); quando a rede recebeu e não confirmou, `conferir` → `publicado` ou `falhou`, pela sua resposta; à mão, `aguardando` → `publicado` ou `pulado`. O Facebook é uma rede como as outras (`plataforma = 'facebook'`), inclusive os posts antigos da Página. O post de imagem é uma postagem com `midia = 'imagem'` e o tipo em `imagem_tipo`, e as imagens geradas ficam na tabela `imagens`. As pausas de cada rede ficam na tabela `estado` (`bloqueio:<rede>`), junto com o que o envio e a gravação descobriram das imagens (`imagens:<rede>`).
 
 ## Arquivos gerados
 
@@ -930,7 +958,7 @@ Ciclo de vida no banco:
 - **Transcrição:** whisper.cpp pela linha de comando, em vez do filtro `whisper` do FFmpeg. No teste foi cerca de 15 vezes mais rápido (16 s contra 234 s para 3,5 min de áudio) e acertou os horários. Cada palavra é encaixada nos trechos de voz do detector (Silero VAD), porque o Whisper costuma esticar a primeira palavra depois de uma pausa.
 - **Processos externos:** FFmpeg e whisper rodam em prioridade baixa, sem janela e presos a um Job Object do Windows; se o AutoCortes fechar, eles fecham junto.
 - **Robustez:** cada etapa da análise fica em cache; depois de uma queda, o que estava em andamento volta para a fila; só uma instância roda por pasta de dados.
-- **Uploads:** YouTube resumível, com retomada depois de erro; TikTok inteiro até 64 MB e em partes de 10 MB acima disso; Instagram e Página do Facebook direto do arquivo local.
+- **Uploads:** YouTube resumível, com retomada depois de erro; TikTok inteiro até 64 MB e em partes de 10 MB acima disso; Instagram e Facebook direto do arquivo local.
 - **Quadros por segundo:** o corte sai com a taxa do filme, limitada entre 24 e 60, porque os Reels da Página pedem essa faixa. Um filme em 23,976 sai em 24 (um quadro repetido a cada 42 s).
 - **Postagem à mão:** a tarefa é uma postagem com status `aguardando`, então a fila, o intervalo mínimo e o calendário funcionam como nas outras redes.
 - **Envio pelo navegador:** DevTools em vez de Selenium ou Playwright, para não trazer dependência nova; o cliente WebSocket vive em `websocket.py` (a biblioteca padrão do Python não tem um), e a narração usa o mesmo. A busca de elementos entra no shadow DOM, sem o que o YouTube Studio seria inalcançável. O arquivo vai pelo `DOM.setFileInputFiles` a partir do objeto, que funciona com o campo escondido e dentro do shadow DOM.
@@ -942,7 +970,7 @@ Ciclo de vida no banco:
 
 ## Testes feitos
 
-Os testes fixos ficam em `tests/` (unittest) e rodam com `.venv\Scripts\python -m unittest tests.test_gravador tests.test_canais tests.test_runtime_whisper tests.test_imagens`. O resto de cada rodada usa scripts temporários numa pasta própria, com filmes sintéticos, servidores que imitam as APIs das redes e o Edge sem janela para o painel.
+Os testes fixos ficam em `tests/` (unittest) e rodam com `.venv\Scripts\python -m unittest tests.test_gravador tests.test_canais tests.test_runtime_whisper tests.test_imagens tests.test_facebook`. O resto de cada rodada usa scripts temporários numa pasta própria, com filmes sintéticos, servidores que imitam as APIs das redes e o Edge sem janela para o painel.
 
 <details>
 <summary><b>Ver todos os testes</b></summary>
@@ -1017,6 +1045,11 @@ Os testes fixos ficam em `tests/` (unittest) e rodam com `.venv\Scripts\python -
   - Migração: um banco e um config feitos com a versão anterior abriram na nova sem perguntar nada. As 6 postagens antigas ficaram como vídeo, e a fila, o plano (56 horários) e a cobertura saíram iguais, com as mesmas 3 postagens no ciclo seguinte.
   - Painel no Edge sem janela, em 1440x1000 (13 capturas conferidas, 0 erros no console): as caixas Vídeos e Imagens (no TikTok, ligar Imagens e desligar Vídeos no mesmo salvar; os dois desligados é recusado com "ligue Vídeos ou Imagens, ou desative a rede"), o cartão do roteiro de imagem, a Agenda com vídeos e imagens misturados e o motivo de cada horário sem imagem, a prévia dos 3 tipos nos 2 formatos (de 0,5 a 1,5 s cada), o detalhe do corte depois de um "Postar imagem agora" simulado e o Início com a marca do tipo.
   - Os testes fixos todos juntos: 290 em cerca de 135 s.
+- **Facebook como rede própria** (outubro de 2026), sem abrir o Facebook, o Instagram nem o Business Suite reais:
+  - Testes fixos em `tests/test_facebook.py` (71 testes, em cerca de 40 s): horários padrão longe dos do Instagram, config novo e validação, a migração do `[instagram].pagina_facebook` nas quatro formas de envio (inclusive a ordem da gravação, que nunca deixa um `[facebook]` pela metade), a migração do banco (posts antigos da Página como rede `facebook`, fora da agenda), o corte de 100 s que conclui nas outras redes, a API oficial e o Upload-Post contra servidores simulados (o login herdado do Instagram não é copiado), a tarefa à mão com o link da Página e as rotas do painel.
+  - Conferência e troca da Página no Chrome sem janela, contra um servidor que imita o Facebook (perfil pessoal, a Página, outra Página e deslogado): os dois sinais, a troca pelo "Mudar agora" e pela lista de perfis em shadow DOM, a Página que muda no meio do envio (não publica), duas Páginas com o mesmo nome (não clica) e o número do perfil pessoal fora de todo texto.
+  - Painel no Edge sem janela, em 1440x1000 (8 capturas conferidas, 0 erros no console): o cartão da Página com o aviso do repasse, "Ver quem está ativo" no perfil pessoal, a conferência antes de gravar ("Começar a gravar" só libera depois de "Trocar para a Página"), a Página confirmada pelo link e o Facebook na Agenda e no Início.
+  - Os testes fixos todos juntos: 361 em cerca de 170 s.
 
 </details>
 
@@ -1024,7 +1057,7 @@ Os testes fixos ficam em `tests/` (unittest) e rodam com `.venv\Scripts\python -
 
 Próximos passos:
 1. Primeira postagem real em cada rede (conectar as contas, testar e ativar a publicação real).
-2. Página do Facebook: conectar o Instagram de novo com `pages_manage_posts`, passar o app da Meta para o modo publicado e conferir o primeiro Reel na Página.
+2. Facebook: ligar a rede, informar a Página, gravar o roteiro agindo como ela e rodar o ensaio (ou, pela API, conectar com `pages_manage_posts` e passar o app da Meta para o modo publicado), desligar o repasse do Instagram na Central de Contas e conferir o primeiro Reel na Página.
 3. Testar a IA com um modelo de verdade no Ollama e ajustar o pedido se os textos saírem ruins.
 4. Se usar o Upload-Post: testar a conexão real e conferir o formato das métricas dele.
 
@@ -1033,7 +1066,10 @@ Pendências conhecidas:
 - A legenda "sempre abaixo do vídeo" pode passar da faixa que os guias de anúncio consideram livre: conferir num post de teste no celular.
 - As chaves de API do `config.toml` (Client secret, Upload-Post, IA) ainda ficam em texto.
 - Os limites de texto do Bilibili (título 80, descrição 250, 10 tags de até 20 caracteres) e o caminho 影视 > 影视剪辑 não têm fonte oficial: conferir no primeiro envio. O Kwai não publica limite de legenda.
-- As métricas da Página do Facebook e dos posts feitos à mão não são lidas.
+- As métricas do Facebook e dos posts feitos à mão não são lidas.
+- **Facebook sem conta logada:** a conferência e a troca da Página foram testadas só contra páginas que imitam o Facebook. Falta ver na conta real: se o cookie `i_user` é o id da Página quando a janela age como ela, para onde `facebook.com/me` leva, os textos "Mudar agora" e "Ver todos os perfis" e o que aparece depois do clique, o campo "Descreva seu reel" e o botão de publicar. Até lá, a conferência pode não confirmar a Página e a rede fica pausada (falha fechada: na dúvida, não posta). No primeiro teste, olhe o motivo no cartão e a imagem em `dados/navegador`. Também falta ver a resposta real da lista de Páginas do Upload-Post e da Meta (`me/accounts`).
+- Reler os limites da API de Reels da Página (a documentação da Meta não abriu sem navegador em 30/10/2026; ficam os de setembro) e o limite de 25 posts do Facebook por dia do Upload-Post.
+- Imagens no Facebook ainda não existem: a caixa Imagens do cartão fica apagada com o motivo.
 - Editar de novo um corte com tarefa à mão apaga a cópia da pasta sincronizada; o vídeo novo fica no painel.
 - **Conta separada dos canais:** o login de verdade no Google e o que o YouTube faz com a conta não foram testados (o teste usou cookies plantados): se ele aceita os cookies, se pede verificação de novo e quanto tempo a conta dura.
 - **Posts de imagem:** nada foi visto com a conta logada. Na primeira gravação de cada rede, confira se o TikTok Studio oferece fotos e carrossel pelo computador, se o Instagram mostra o recorte 4:5 ou Original, se as páginas preenchem o título ou a legenda com o nome do arquivo e quanto tempo leva medir os quadros de um corte. O que ainda não existe:
@@ -1068,4 +1104,4 @@ Melhorias levantadas na pesquisa, por prioridade:
 
 Ideias para depois:
 - Integrar o Zernio como segunda opção de serviço auditado: cobra por conta e sai mais barato que o Upload-Post com poucas contas (falta confirmar se posta público no TikTok).
-- Métricas da Página do Facebook pelos insights de vídeo.
+- Métricas do Facebook pelos insights de vídeo da Página.
