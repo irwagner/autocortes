@@ -1451,6 +1451,70 @@ SINAIS = {
 }
 
 
+class _FacebookDaCli:
+    """O ViaNavegador do Facebook no verificar: a conferência vem dos SINAIS, como o real a guarda."""
+
+    def __init__(self, cfg, sinais):
+        self.cfg, self.sinais = cfg, sinais
+        self.identidade = None
+
+    def pronta(self):
+        return True, ""
+
+    def verificar(self):
+        ck, me = self.sinais
+        self.identidade = pagina_facebook.decidir(ck, me, self.cfg["facebook"])
+        if not self.identidade.confere:
+            raise ErroPublicacao(f"Facebook: {pagina_facebook.mensagem(self.cfg['facebook'], self.identidade)}",
+                                 "bloqueio", persistente=True)
+        return f"Página id {self.identidade.id} pelo navegador"
+
+
+class TestCliVerificar(ti.Base):
+    """Item 11 do desenho: a CLI não grava o config, então o verificar --online escreve o pagina_id no registro."""
+
+    def rodar(self, pagina: str, sinais) -> list[str]:
+        import contextlib
+        import io
+        from types import SimpleNamespace
+
+        from autocortes import cli, midia
+        for rede in config.PLATAFORMAS:
+            self.cfg[rede]["ativo"] = rede == "facebook"
+        self.cfg["facebook"].update(envio="navegador", pagina=pagina, pagina_id="", pagina_nome="")
+        self.cfg["transcricao"]["fonte"] = "nenhuma"
+        registro = _Registro()
+        logger = logging.getLogger("autocortes")
+        nivel = logger.level
+        logger.addHandler(registro)
+        logger.setLevel(logging.DEBUG)
+        self.addCleanup(logger.setLevel, nivel)
+        self.addCleanup(logger.removeHandler, registro)
+        with patch.object(cli, "_carregar", lambda args: self.cfg), \
+                patch.object(midia, "versao_ffmpeg", lambda caminho: "ffmpeg de teste"), \
+                patch.object(midia, "filtros_disponiveis",
+                             lambda caminho: {"ass", "scdet", "cropdetect", "astats", "loudnorm", "boxblur"}), \
+                patch("autocortes.plataformas.criar", lambda nome, cfg: _FacebookDaCli(cfg, sinais)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            cli.cmd_verificar(SimpleNamespace(online=True, config=None, detalhado=False))
+        return registro.linhas
+
+    def test_aprendido_pelo_link(self):
+        linhas = self.rodar(LINK_PAGINA, SINAIS["pagina"])
+        self.assertTrue(any(f'informe pagina_id = "{PAGINA}" em [facebook]' in l for l in linhas), linhas)
+        self.assertNotIn(C_USER, "\n".join(linhas))
+
+    def test_sugestao_pelo_nome(self):
+        linhas = self.rodar("Página Certa", SINAIS["pagina"])
+        self.assertTrue(any(f'Página Certa; se for esta, informe pagina_id = "{PAGINA}" em [facebook]' in l
+                            for l in linhas), linhas)
+        self.assertNotIn(C_USER, "\n".join(linhas))
+
+    def test_perfil_pessoal_nao_escreve(self):
+        linhas = self.rodar(LINK_PAGINA, SINAIS["pessoal"])
+        self.assertFalse(any("informe pagina_id" in l for l in linhas), linhas)
+
+
 class _AbaDoPainel:
     """Aba que aceita qualquer comando e não faz nada: a conferência é trocada nos testes."""
 

@@ -168,12 +168,28 @@ def cmd_verificar(args) -> int:
                 linha(True, f"{nome}: {plataforma.verificar()}")
             except ErroPublicacao as e:
                 linha(False, f"{nome}: {e}")
+            _pagina_achada(plataforma)
         else:
             linha(True, f"{nome}: login salvo (use --online para testar)")
     print()
     if cfg.simulacao:
         print("Modo simulação: os vídeos são gerados, mas nada é enviado. Troque [geral].simulacao para false quando quiser publicar.")
     return 1 if problemas else 0
+
+
+def _pagina_achada(plataforma) -> None:
+    """Facebook pelo navegador: a Página aprendida ou sugerida no verificar vai para o registro (a CLI não grava o config)."""
+    from .util import log
+
+    ident = getattr(plataforma, "identidade", None)
+    if ident is None:
+        return
+    if ident.aprendido:
+        log.info('Facebook: Página confirmada pelo link; informe pagina_id = "%s" em [facebook] do config.toml',
+                 ident.aprendido["pagina_id"])
+    elif ident.sugestao:
+        log.info('Facebook: a janela está agindo como a Página %s; se for esta, informe pagina_id = "%s" em '
+                 '[facebook] do config.toml', ident.sugestao["pagina_nome"], ident.sugestao["pagina_id"])
 
 
 def cmd_baixar(args) -> int:
