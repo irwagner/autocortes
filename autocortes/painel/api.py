@@ -609,7 +609,7 @@ def estado(ctx: Contexto):
     cobertura = plano["cobertura"]
     na_fila = max((v["na_fila"] for v in cobertura["por_rede"].values()), default=cortes.get("pronto", 0))
     tarefas = _tarefas(conn)
-    # inclui o Reel da Página do Facebook, que não é uma das redes da agenda
+    # todas as redes (o Facebook é uma delas), vídeo e imagem
     n_conferir = conn.execute("SELECT COUNT(*) FROM postagens WHERE status='conferir'").fetchone()[0]
     return {
         "versao": __version__,
