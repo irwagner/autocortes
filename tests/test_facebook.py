@@ -104,6 +104,11 @@ class TestConfigNovo(ti.Base):
             with self.subTest(linha=linha):
                 erros = self.recusado(f"[facebook]\n{linha}\n")
                 self.assertTrue(any(trecho in e for e in erros), erros)
+        for link in ("facebook.com/me", "https://www.facebook.com/me/", "https://www.facebook.com/home.php"):
+            with self.subTest(link=link):
+                erros = self.recusado(f'[facebook]\npagina = "{link}"\n')
+                self.assertTrue(any("use o link da Página (facebook.com/SuaPagina ou profile.php?id=...), não "
+                                    "facebook.com/" in e for e in erros), erros)
         cfg = self.carregar('[facebook]\npagina = "https://www.facebook.com/people/Cortes/111/"\npagina_id = "111"\n')
         self.assertEqual(config.id_do_link_facebook(cfg["facebook"]["pagina"]), "111")
         self.carregar('[facebook]\npagina = "Cortes de Filmes"\n')
@@ -773,6 +778,11 @@ class TestEntradaEDecisao(unittest.TestCase):
             "  Página   da  Ação ": dict(vazio, nome="página da ação"),
             "": vazio,
             "https://www.facebook.com/": vazio,
+            # o /me e as páginas do site não apontam uma Página (o /me bateria com qualquer uma em uso)
+            "facebook.com/me": vazio,
+            "https://www.facebook.com/me/": vazio,
+            "https://www.facebook.com/home.php": vazio,
+            "https://www.facebook.com/profile.php": vazio,
         }
         for texto, esperado in casos.items():
             with self.subTest(texto=texto):
@@ -851,6 +861,50 @@ class TestEntradaEDecisao(unittest.TestCase):
         vazio = pagina_facebook.decidir({"c_user": C_USER, "i_user": PAGINA}, {"id": PAGINA},
                                         self.fb(pagina="", pagina_id="", pagina_nome=""))
         self.assertIn("falta informar a Página", vazio.motivo)
+
+    def test_link_do_me_nao_ensina_a_pagina(self):
+        # o /me sem redirecionar: a URL lida continua /me, e o i_user era de outra Página qualquer
+        for link in ("facebook.com/me", "https://www.facebook.com/me/", "https://www.facebook.com/home.php"):
+            with self.subTest(link=link):
+                ident = pagina_facebook.decidir({"c_user": C_USER, "i_user": OUTRA},
+                                                {"id": None, "caminho": "/me", "titulo": "Outra"},
+                                                self.fb(pagina=link, pagina_id="", pagina_nome=""))
+                self.assertFalse(ident.confere)
+                self.assertIsNone(ident.aprendido)
+                self.assertIsNone(ident.sugestao)
+                self.assertIn("não é de uma Página", ident.motivo)
+                self.assertIn("use o link da Página (facebook.com/SuaPagina ou profile.php?id=...)", ident.motivo)
+
+    def test_id_do_me_decide_antes_do_titulo(self):
+        # o título do /me igual ao pagina_nome não vale contra um id na URL que é outro
+        for numero in (OUTRA, C_USER):
+            with self.subTest(numero=numero):
+                ident = pagina_facebook.decidir({"c_user": C_USER, "i_user": PAGINA},
+                                                _me(numero, "Cortes de Filmes"), self.fb())
+                self.assertFalse(ident.confere)
+                self.assertTrue(ident.motivo.startswith("os sinais não concordam"), ident.motivo)
+                self.assertSemCUser(ident.motivo, ident.publico())
+        # sem id na URL, o título ainda vale
+        sem_id = pagina_facebook.decidir({"c_user": C_USER, "i_user": PAGINA},
+                                         {"id": None, "caminho": "/cortes", "titulo": "Cortes de Filmes"}, self.fb())
+        self.assertTrue(sem_id.confere)
+
+    def test_sugestao_pelo_nome_com_id_que_contradiz(self):
+        fb = self.fb(pagina="Cortes de Filmes", pagina_id="", pagina_nome="")
+        for numero in (OUTRA, C_USER):
+            with self.subTest(numero=numero):
+                ident = pagina_facebook.decidir({"c_user": C_USER, "i_user": PAGINA},
+                                                _me(numero, "Cortes de Filmes"), fb)
+                self.assertIsNone(ident.sugestao)
+                self.assertFalse(ident.confere)
+                self.assertSemCUser(ident.motivo, ident.publico())
+        # o id da URL é o do cookie: sugere
+        certo = pagina_facebook.decidir({"c_user": C_USER, "i_user": PAGINA}, _me(PAGINA, "Cortes de Filmes"), fb)
+        self.assertEqual(certo.sugestao, {"pagina_id": PAGINA, "pagina_nome": "Cortes de Filmes"})
+        # sem id na URL (o /me foi para o link curto), vale o título
+        curto = pagina_facebook.decidir({"c_user": C_USER, "i_user": PAGINA},
+                                        {"id": None, "caminho": "/cortes", "titulo": "Cortes de Filmes | Facebook"}, fb)
+        self.assertEqual(curto.sugestao, {"pagina_id": PAGINA, "pagina_nome": "Cortes de Filmes"})
 
     def test_descrever_sem_o_c_user(self):
         url_pessoal = f"https://www.facebook.com/profile.php?id={C_USER}"

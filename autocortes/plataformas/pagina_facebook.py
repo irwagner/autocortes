@@ -22,6 +22,7 @@ import unicodedata
 from dataclasses import asdict, dataclass
 from urllib.parse import parse_qs, urlsplit
 
+from ..config import LINK_FACEBOOK_SOLTO, link_facebook_sem_pagina
 from ..navegador import Aba, ErroNavegador, css
 
 log = logging.getLogger("autocortes")
@@ -43,7 +44,7 @@ ESPERA_BOTAO = 8
 ESPERA_LISTA = 10
 
 _NUMERO = re.compile(r"\d{1,30}")
-_LINK = re.compile(r"^(?:https?://)?(?:[a-z0-9-]+\.)*(?:facebook|fb)\.com(?:[/?#]|$)", re.I)
+_LINK = LINK_FACEBOOK_SOLTO
 _ID_NA_URL = (re.compile(r"[?&]id=(\d{1,30})(?:&|#|$)"), re.compile(r"/people/[^/?#]+/(\d{1,30})(?:[/?#]|$)"))
 
 
@@ -88,7 +89,9 @@ def ler_entrada(texto) -> dict:
     """O que você informou em [facebook].pagina: {"id", "caminho", "nome"} (só um deles vem preenchido).
 
     Dígitos, profile.php?id=N e /people/<nome>/N dão o id; outro link do facebook.com dá o caminho
-    (minúsculo, sem barra final nem consulta); texto comum é o nome, já normalizado.
+    (minúsculo, sem barra final nem consulta); texto comum é o nome, já normalizado. Link que não é de
+    Página (o /me, o /home.php: config.link_facebook_sem_pagina) não dá nada: o /me bateria com qualquer
+    Página em uso.
     """
     t = str(texto or "").strip()
     vazio = {"id": None, "caminho": None, "nome": None}
@@ -101,7 +104,7 @@ def ler_entrada(texto) -> dict:
         if numero:
             return dict(vazio, id=numero)
         caminho = _caminho(t)
-        return dict(vazio, caminho=caminho) if caminho and caminho != "/profile.php" else vazio
+        return dict(vazio, caminho=caminho) if caminho and not link_facebook_sem_pagina(t) else vazio
     return dict(vazio, nome=normalizar(t) or None)
 
 
@@ -209,11 +212,15 @@ def decidir(ck: dict, me: dict | None, cfg_fb: dict) -> Identidade:
         agindo = "outra"
     ident = Identidade(agindo, i, nome)
     de_quem = f"a janela está agindo como {visto}"
+    # com um id na URL do /me, só ele decide; o caminho e o título valem só quando a URL não tem id
+    me_id = me.get("id")
+    caminho_bate = bool(entrada["caminho"] and not me_id and me.get("caminho") == entrada["caminho"])
     if pagina_id:
         sinal_a = i == pagina_id
-        sinal_b = (me.get("id") == pagina_id
-                   or bool(entrada["caminho"] and me.get("caminho") == entrada["caminho"])
-                   or bool(pagina_nome and normalizar(me.get("titulo")) == normalizar(pagina_nome)))
+        if me_id:
+            sinal_b = me_id == pagina_id
+        else:
+            sinal_b = caminho_bate or bool(pagina_nome and normalizar(me.get("titulo")) == normalizar(pagina_nome))
         if sinal_a and sinal_b:
             ident.confere = True
             ident.motivo = f"agindo como {_pagina(i, nome or pagina_nome or None)}"
@@ -225,8 +232,7 @@ def decidir(ck: dict, me: dict | None, cfg_fb: dict) -> Identidade:
     if entrada["id"] or entrada["caminho"]:
         # o link aponta uma Página só: o cookie e o /me batendo com ele confirmam e ensinam o id
         bate = bool(i) and (
-            (entrada["id"] and i == entrada["id"] and me.get("id") == entrada["id"])
-            or (entrada["caminho"] and me.get("caminho") == entrada["caminho"]))
+            (entrada["id"] and i == entrada["id"] and me_id == entrada["id"]) or caminho_bate)
         if bate:
             ident.agindo_como = "pagina"
             ident.confere = True
@@ -238,8 +244,9 @@ def decidir(ck: dict, me: dict | None, cfg_fb: dict) -> Identidade:
             ident.motivo = de_quem
         return ident
     if entrada["nome"]:
-        # só o nome: duas Páginas podem ter o mesmo título, então nunca aprende sozinho
-        titulo = _titulo_limpo(me.get("titulo"))
+        # só o nome: duas Páginas podem ter o mesmo título, então nunca aprende sozinho. Com id na URL do
+        # /me, o título só vale se o id for o do cookie (nome); sem id, vale o título
+        titulo = nome if me_id else _titulo_limpo(me.get("titulo"))
         if i and titulo and normalizar(titulo) == entrada["nome"]:
             ident.agindo_como = "pagina"
             ident.sugestao = {"pagina_id": i, "pagina_nome": titulo}
@@ -248,7 +255,9 @@ def decidir(ck: dict, me: dict | None, cfg_fb: dict) -> Identidade:
         else:
             ident.motivo = de_quem
         return ident
-    ident.motivo = "falta informar a Página em Redes sociais > Facebook (o link dela ou o nome exato)"
+    recusado = link_facebook_sem_pagina(cfg_fb.get("pagina"))
+    ident.motivo = (f"o link em Redes sociais > Facebook não é de uma Página: {recusado}" if recusado else
+                    "falta informar a Página em Redes sociais > Facebook (o link dela ou o nome exato)")
     return ident
 
 

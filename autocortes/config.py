@@ -8,6 +8,7 @@ import shutil
 import threading
 import tomllib
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .util import escrever_atomico, log
 
@@ -779,6 +780,34 @@ def _validar_imagens(cfg: Config, erros: list[str]) -> None:
 
 
 _LINK_FACEBOOK = re.compile(r"^https?://(www\.|m\.|web\.)?facebook\.com/\S+$", re.I)
+# um link do facebook.com, com ou sem https:// (o mesmo que a conferência da Página reconhece)
+LINK_FACEBOOK_SOLTO = re.compile(r"^(?:https?://)?(?:[a-z0-9-]+\.)*(?:facebook|fb)\.com(?:[/?#]|$)", re.I)
+_ID_NO_LINK_FACEBOOK = re.compile(r"[?&]id=\d{1,30}(?:&|#|$)|/people/[^/?#]+/\d{1,30}(?:[/?#]|$)")
+# Caminhos do facebook.com que não são de uma Página: o /me leva a qualquer perfil que estiver em uso
+# (e ensinaria o id da Página errada), o resto é do próprio site. O profile.php só vale com o id.
+CAMINHOS_FACEBOOK_SEM_PAGINA = frozenset({
+    "me", "home.php", "index.php", "profile.php", "login", "login.php", "checkpoint", "settings", "pages",
+    "bookmarks", "notifications", "messages", "friends", "groups", "watch", "reel", "reels", "marketplace",
+    "search", "events", "gaming", "stories", "photo.php", "permalink.php", "story.php",
+})
+
+
+def link_facebook_sem_pagina(pagina) -> str:
+    """O motivo de recusar [facebook].pagina quando é um link do facebook.com que não aponta uma Página
+    (o /me, o /home.php...), ou "". Link com o id (profile.php?id=N, /people/<nome>/N) sempre vale."""
+    texto = str(pagina or "").strip()
+    if not LINK_FACEBOOK_SOLTO.match(texto) or _ID_NO_LINK_FACEBOOK.search(texto):
+        return ""
+    if not re.match(r"^https?://", texto, re.I):
+        texto = "https://" + texto
+    try:
+        primeiro = urlsplit(texto).path.strip("/").split("/")[0].lower()
+    except ValueError:
+        return ""
+    if primeiro not in CAMINHOS_FACEBOOK_SEM_PAGINA:
+        return ""
+    errado = "facebook.com/profile.php sem o id" if primeiro == "profile.php" else f"facebook.com/{primeiro}"
+    return f"use o link da Página (facebook.com/SuaPagina ou profile.php?id=...), não {errado}"
 
 
 def id_do_link_facebook(pagina: str) -> str:
@@ -799,6 +828,8 @@ def _validar_facebook(cfg: Config, erros: list[str]) -> None:
     pagina = str(fb["pagina"]).strip()
     if len(pagina) > 300 or re.search(r"[\x00-\x1f\x7f]", pagina):
         erros.append("[facebook].pagina deve ter até 300 caracteres, sem quebra de linha")
+    elif link_facebook_sem_pagina(pagina):
+        erros.append(f"[facebook].pagina: {link_facebook_sem_pagina(pagina)}")
     elif pagina.lower().startswith("http") and not _LINK_FACEBOOK.match(pagina):
         erros.append("[facebook].pagina deve ser o link da Página no facebook.com ou o nome exato dela")
     pagina_id = str(fb["pagina_id"]).strip()
