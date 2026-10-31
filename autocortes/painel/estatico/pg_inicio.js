@@ -28,7 +28,7 @@ function kpisHtml(e) {
     ? `${plural(n.revisao, "corte aguardando", "cortes aguardando")} aprovação`
     : plural(n.candidatos, "trecho encontrado para editar", "trechos encontrados para editar");
   const baixo = c.dias !== null && c.dias < 3;
-  const hojeSub = [...ORDEM_REDES, "facebook"].filter((r) => n.hoje_por_rede[r]).map((r) => `${REDES[r].rotulo} ${n.hoje_por_rede[r]}`).join(" · ")
+  const hojeSub = ORDEM_REDES.filter((r) => n.hoje_por_rede[r]).map((r) => `${REDES[r].rotulo} ${n.hoje_por_rede[r]}`).join(" · ")
     || (e.simulacao ? "no modo simulação" : "nenhum ainda");
   let filmesSub = "todos analisados";
   if (!n.filmes) filmesSub = n.pautas_na_fila ? `${plural(n.pautas_na_fila, "pauta esperando", "pautas esperando")} na Criação` : "adicione filmes para começar";
@@ -337,8 +337,7 @@ function redeResumoHtml(rede, r, e) {
   else if (r.pronta) estado = ["Conectada", "ok"];
   else estado = [e.simulacao ? "Falta conectar" : "Não conectada", e.simulacao ? "aviso" : "erro"];
   const via = ROTULO_ENVIO[r.via] || r.via;
-  const extra = r.facebook && r.facebook.ativo ? " · + Página do Facebook" : "";
-  return h`<a class="card rede-mini" href="#/redes" style="--cor:${info.cor}"><div class="rede-titulo">${logoRede(rede)}<div><b>${info.nome}</b><small title="${via}${r.conta ? ` · ${r.conta}` : ""}${extra}">${via}${r.conta ? ` · ${r.conta}` : ""}${extra}</small></div></div><div class="rede-mini-linha">${badge(estado, true)}<small>${iniImgProximoDaRede(r)}</small></div><small class="texto-suave">${r.ativo ? iniImgPorSemana(r) : "Ative em Redes sociais"}</small></a>`;
+  return h`<a class="card rede-mini" href="#/redes" style="--cor:${info.cor}"><div class="rede-titulo">${logoRede(rede)}<div><b>${info.nome}</b><small title="${via}${r.conta ? ` · ${r.conta}` : ""}">${via}${r.conta ? ` · ${r.conta}` : ""}</small></div></div><div class="rede-mini-linha">${badge(estado, true)}<small>${iniImgProximoDaRede(r)}</small></div><small class="texto-suave">${r.ativo ? iniImgPorSemana(r) : "Ative em Redes sociais"}</small></a>`;
 }
 
 // rede só de imagens: o próximo é a próxima imagem

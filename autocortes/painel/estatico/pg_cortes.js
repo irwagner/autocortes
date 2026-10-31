@@ -23,9 +23,9 @@ const corSel = { ativo: false, ids: new Set(), emCurso: null };
 
 /* ------------------------------------------------------------ lista */
 
-function redesStatusHtml(c, ativas, facebook = false) {
-  // o Reel da Página do Facebook aparece junto quando a opção está ligada (ou quando já foi postado)
-  const redes = facebook || c.postagens.facebook ? [...ativas, "facebook"] : ativas;
+function redesStatusHtml(c, ativas) {
+  // as redes ligadas e as que já têm post deste corte (o histórico de uma rede desligada continua à vista)
+  const redes = ORDEM_REDES.filter((rede) => ativas.includes(rede) || c.postagens[rede]);
   return redes.map((rede) => {
     const p = c.postagens[rede];
     const titulo = `${REDES[rede].rotulo}: ${p ? estadoPost(p.estado)[0] : "ainda não postado"}`;
@@ -37,7 +37,7 @@ function acaoRapida(c, tipo, icone, titulo, classe = "") {
   return h`<button class="btn pequeno icone ${classe}" data-acao="corte-rapido" data-corte="${c.id}" data-tipo="${tipo}" title="${titulo}" aria-label="${titulo}">${ic(icone)}</button>`;
 }
 
-function cardCorteHtml(c, ativas, facebook) {
+function cardCorteHtml(c, ativas) {
   const editando = c.status === "renderizando";
   // publicado e sem o arquivo: o vídeo foi apagado para liberar espaço (o corte e o histórico ficam)
   const apagado = c.status === "concluido";
@@ -82,7 +82,7 @@ function cardCorteHtml(c, ativas, facebook) {
       <div class="meta">${meta.join(" · ")}</div>
       <div class="frase">${c.frase ? `“${c.frase}”` : h`<span class="texto-suave">Sem fala</span>`}</div>
       ${c.status === "erro" && c.erro ? h`<div class="meta erro-texto" title="${c.erro}">${c.erro}</div>` : ""}
-      <div class="rodape-corte"><div class="redes-status">${redesStatusHtml(c, ativas, facebook)}</div><div class="acoes">${acoes}</div></div>
+      <div class="rodape-corte"><div class="redes-status">${redesStatusHtml(c, ativas)}</div><div class="acoes">${acoes}</div></div>
     </div>
   </article>`;
 }
@@ -106,7 +106,7 @@ function cortesHtml(r) {
     : "";
   let lista;
   if (r.itens.length) {
-    lista = h`<div class="grade-cortes">${r.itens.map((c) => cardCorteHtml(c, r.ativas, r.facebook))}</div>`;
+    lista = h`<div class="grade-cortes">${r.itens.map((c) => cardCorteHtml(c, r.ativas))}</div>`;
     if (r.total > r.itens.length) lista = h`${lista}<p class="nota centro">Mostrando ${r.itens.length} de ${r.total}.</p>`;
   } else {
     const vazios = {
@@ -633,12 +633,15 @@ function botaoRedeHtml(d, rede, p) {
     return h`<button class="btn pequeno" data-acao="corte-conferir" data-rede="${rede}">${ic("olho")}Conferir</button>`;
   }
   const podePostar = ["revisao", "pronto", "concluido"].includes(d.status) && Boolean(d.video);
-  if (!podePostar || (rede === "facebook" && !d.facebook)) return "";
+  if (!podePostar) return "";
   if (rede === "youtube" && d.duracao > d.youtube_max + 0.5) {
     return h`<small class="texto-suave" title="O YouTube recebe só Shorts de até ${d.youtube_max} s">Longo para Short</small>`;
   }
+  if (rede === "facebook" && d.duracao > d.facebook_max + 0.5) {
+    return h`<small class="texto-suave" title="A Página do Facebook recebe Reels de até ${d.facebook_max} s">Longo para o Facebook</small>`;
+  }
   if (Detalhe.aguardando === `postar-${rede}`) return h`<button class="btn pequeno" disabled><span class="giro"></span>Enviando</button>`;
-  if (rede !== "facebook" && d.envios[rede] === "manual") {
+  if (d.envios[rede] === "manual") {
     return h`<button class="btn pequeno" data-acao="corte-postar" data-rede="${rede}" title="Criar a tarefa agora, fora da agenda">${ic("lista")}Postar à mão</button>`;
   }
   return h`<button class="btn pequeno" data-acao="corte-postar" data-rede="${rede}" title="Postar agora, fora da agenda">${ic("aviao")}Postar agora</button>`;
@@ -651,19 +654,13 @@ function redesDetalheHtml(d) {
       ? h`<p class="nota">Nenhuma rede recebe o vídeo: as redes ligadas estão só com imagens.</p>`
       : h`<p class="nota">Nenhuma rede ativa. Ative em Redes sociais.</p>`;
   }
-  const redes = [];
-  for (const rede of d.ativas) {
-    redes.push(rede);
-    if (rede === "instagram" && (d.facebook || d.postagens.facebook)) redes.push("facebook");
-  }
-  if (!redes.includes("facebook") && d.postagens.facebook) redes.push("facebook");
+  const redes = ORDEM_REDES.filter((rede) => d.ativas.includes(rede) || d.postagens[rede]);
   return h`<div class="redes-corte">${redes.map((rede) => {
     const p = d.postagens[rede];
     const url = p && urlSegura(p.url);
     const estado = p ? estadoPost(p.estado) : ["Ainda não postado", "neutro"];
     const partes = [];
     if (p) partes.push(fmtQuando(p.quando));
-    else if (rede === "facebook") partes.push("vai junto com o Instagram");
     else if (d.envios[rede] === "manual") partes.push("à mão: vira tarefa no horário");
     if (p && p.visualizacoes !== null && p.visualizacoes !== undefined) partes.push(`${fmtNum(p.visualizacoes)} views · ${fmtNum(p.curtidas)} curtidas`);
     if (p && p.erro) partes.push(p.erro);
@@ -920,9 +917,9 @@ App.acoes["corte-postar"] = async (el) => {
   const d = Detalhe.dados;
   if (!d) return;
   const rede = el.dataset.rede;
-  const nome = rede === "facebook" ? "na Página do Facebook" : `no ${REDES[rede].rotulo}`;
+  const nome = `no ${REDES[rede].rotulo}`;
   const simulacao = App.estado && App.estado.simulacao;
-  const aMao = rede !== "facebook" && d.envios[rede] === "manual";
+  const aMao = d.envios[rede] === "manual";
   let pergunta;
   if (aMao) {
     pergunta = { titulo: `Postar à mão ${nome}?`, texto: "O AutoCortes cria a tarefa agora, fora da agenda, com o vídeo e os textos no formato da rede. Nada é enviado: você posta pelo app ou pelo site.", botao: "Criar a tarefa" };

@@ -29,10 +29,9 @@ const REDES = {
   instagram: { rotulo: "Instagram", nome: "Instagram Reels", cor: "#e1306c" },
   kwai: { rotulo: "Kwai", nome: "Kwai", cor: "#ff7a00" },
   bilibili: { rotulo: "Bilibili", nome: "Bilibili", cor: "#00a1d6" },
-  // sem agenda própria: o Reel do Instagram repetido na Página
-  facebook: { rotulo: "Facebook", nome: "Página do Facebook", cor: "#1877f2" },
+  facebook: { rotulo: "Facebook", nome: "Facebook (Página)", cor: "#1877f2" },
 };
-const ORDEM_REDES = ["youtube", "tiktok", "instagram", "kwai", "bilibili"];
+const ORDEM_REDES = ["youtube", "tiktok", "instagram", "facebook", "kwai", "bilibili"];
 const ROTULO_ENVIO = { oficial: "API oficial", upload_post: "via Upload-Post", navegador: "pelo navegador", manual: "à mão" };
 const DIAS = [["seg", "Seg"], ["ter", "Ter"], ["qua", "Qua"], ["qui", "Qui"], ["sex", "Sex"], ["sab", "Sáb"], ["dom", "Dom"]];
 const IDIOMAS = [

@@ -4,9 +4,8 @@
 const PgRedes = { dados: null };
 const Login = { rede: null, ativo: false, timer: null };
 const PERMISSOES_IG = "instagram_basic, instagram_content_publish, instagram_manage_insights, pages_show_list, pages_read_engagement, business_management";
-// para o Reel sair também na Página do Facebook
-const PERMISSAO_PAGINA = "pages_manage_posts";
-const permissoesIg = () => (valor("instagram.pagina_facebook") ? `${PERMISSOES_IG}, ${PERMISSAO_PAGINA}` : PERMISSOES_IG);
+// as do login da Página do Facebook (plataformas/facebook.py)
+const RED_FB_PERMISSOES = "pages_show_list, pages_read_engagement, pages_manage_posts, business_management";
 // curtos para caber no seletor; o que cada um implica vem no aviso e no guia logo abaixo
 const NOME_ENVIO = {
   oficial: () => "API oficial",
@@ -44,12 +43,19 @@ function guiaOficial(rede) {
       <li>Cole o Client key e o Client secret aqui, salve e clique em Conectar conta.</li>
     </ol></details>`;
   }
+  if (rede === "facebook") {
+    return h`<details class="guia"><summary>${ic("info")}Como conectar a Página do Facebook</summary><ol>
+      <li>Use o app da Meta do Instagram ou crie um do tipo Empresa em ${link("https://developers.facebook.com/apps/", "developers.facebook.com")}, e adicione o caso de uso de gerenciar a Página.</li>
+      <li>Cole o App ID e a chave secreta aqui e salve. Em branco, eu uso os do Instagram.</li>
+      <li>Clique em Conectar conta, gere o token no ${link("https://developers.facebook.com/tools/explorer/", "Graph API Explorer")} com as permissões <code class="permissoes">${RED_FB_PERMISSOES}</code> e escolha a Página.</li>
+      <li>Deixe o app no modo publicado: em desenvolvimento, o Reel só aparece para quem tem função no app.</li>
+    </ol></details>`;
+  }
   return h`<details class="guia"><summary>${ic("info")}Como preparar o Instagram</summary><ol>
     <li>A conta precisa ser profissional (Criador ou Empresa) e estar ligada a uma Página do Facebook.</li>
     <li>Em ${link("https://developers.facebook.com/apps/", "developers.facebook.com")}, crie um app do tipo Empresa e adicione o produto Instagram (API com login do Facebook).</li>
     <li>Cole o App ID e a chave secreta aqui e salve.</li>
     <li>Clique em Conectar conta e siga os passos para gerar o token.</li>
-    <li>Para postar também na Página: adicione ao app o caso de uso de gerenciar a Página, conecte com a permissão ${PERMISSAO_PAGINA} e deixe o app no modo publicado (em desenvolvimento, o post na Página só aparece para quem tem função no app).</li>
   </ol></details>`;
 }
 
@@ -62,6 +68,15 @@ function guiaManual(rede) {
 }
 
 function guiaNavegador(rede) {
+  if (rede === "facebook") {
+    return h`<details class="guia"><summary>${ic("info")}Como funciona o envio pelo navegador</summary><ol>
+      <li>Clique em <b>Conectar</b> e entre na sua conta do Facebook na janela do Chrome do AutoCortes (perfil em <code>dados/chrome</code>, separado do seu navegador).</li>
+      <li>Informe a Página logo abaixo: o link dela é o mais seguro; com o nome, eu pergunto antes de usar.</li>
+      <li>Clique em <b>Testar a sessão</b>: eu confiro se a janela está agindo como a Página (e troco para ela, se puder).</li>
+      <li>Em <b>Aprender a postar</b>, grave o roteiro já agindo como a Página: poste um Reel à mão na janela.</li>
+      <li>Antes de valer, ligue o <b>ensaio</b> no cartão "Postagem pelo navegador": ele preenche tudo e não publica.</li>
+    </ol></details>`;
+  }
   const onde = { youtube: "YouTube Studio", tiktok: "TikTok Studio", instagram: "Instagram", bilibili: "Bilibili" }[rede];
   return h`<details class="guia"><summary>${ic("info")}Como funciona o envio pelo navegador</summary><ol>
     <li>Clique em <b>Conectar</b>: abre uma janela do Chrome com um perfil só do AutoCortes (em <code>dados/chrome</code>), separado do seu navegador do dia a dia.</li>
@@ -84,9 +99,7 @@ function avisoRede(rede, envio) {
     return "A API de envio do Bilibili é só para empresas chinesas cadastradas. O corte é de um filme de terceiros: marque 转载 (repost) com a fonte, e esse tipo de vídeo não entra no programa de incentivo do Bilibili.";
   }
   if (envio === "manual") {
-    const fb = rede === "instagram" && valor("instagram.pagina_facebook")
-      ? " Para sair também na Página, ligue \"Compartilhar no Facebook\" no app ao postar." : "";
-    return `Nada é enviado sozinho: no horário, o ${REDES[rede].rotulo} ganha uma tarefa no Início com o vídeo e os textos.${fb}`;
+    return `Nada é enviado sozinho: no horário, o ${REDES[rede].rotulo} ganha uma tarefa no Início com o vídeo e os textos.`;
   }
   if (rede === "youtube" && envio === "oficial") {
     return "Projetos sem a auditoria da API do YouTube sobem os vídeos como privados. Para sair público, peça a auditoria (grátis, sem prazo) ou use o Upload-Post.";
@@ -96,11 +109,6 @@ function avisoRede(rede, envio) {
   }
   if (rede === "tiktok" && privacidadeTiktok === "SELF_ONLY") {
     return "A privacidade está em \"Só eu\". Troque para \"Todos\" para publicar em público.";
-  }
-  if (rede === "instagram" && valor("instagram.pagina_facebook")) {
-    return envio === "oficial"
-      ? `O Reel vai também para a Página do Facebook. Conecte de novo com a permissão ${PERMISSAO_PAGINA} e deixe o app da Meta no modo publicado. Se a Central de Contas já compartilha seus Reels no Facebook, desligue lá para não sair repetido.`
-      : "O Reel vai também para a Página do Facebook conectada no Upload-Post. Se a Central de Contas já compartilha seus Reels no Facebook, desligue lá para não sair repetido.";
   }
   if (rede === "instagram" && envio === "oficial") {
     return "Precisa de conta profissional ligada a uma Página do Facebook. A legenda do post leva no máximo 5 hashtags.";
@@ -155,7 +163,6 @@ function statusContaHtml(r, envio) {
     } else if (r.pronta) sub += " · sem roteiro gravado: uso os passos que eu escrevi";
   } else if (r.pronta) {
     classe = "ok"; icone = "ok"; titulo = r.conta || "Pronta para postar"; sub = ROTULO_ENVIO[r.via] || r.via;
-    if (r.facebook && r.facebook.ativo) sub += ` · também na Página${r.facebook.pagina ? ` ${r.facebook.pagina}` : " do Facebook"}`;
   } else {
     classe = "pendente"; icone = "alerta"; titulo = "Não conectada"; sub = r.motivo;
   }
@@ -175,6 +182,12 @@ function camposOficiais(rede) {
     return [
       campo({ chave: "tiktok.client_key", tipo: "texto", rotulo: "Client key" }),
       campo({ chave: "tiktok.client_secret", tipo: "senha", rotulo: "Client secret" }),
+    ];
+  }
+  if (rede === "facebook") {
+    return [
+      campo({ chave: "facebook.app_id", tipo: "texto", rotulo: "App ID", ajuda: "Em branco, uso o app do Instagram." }),
+      campo({ chave: "facebook.app_secret", tipo: "senha", rotulo: "Chave secreta do app" }),
     ];
   }
   return [
@@ -209,12 +222,12 @@ function opcoesRede(rede) {
       campo({ chave: "tiktok.permitir_stitch", tipo: "switch", rotulo: "Permitir costura (stitch)" }),
     ];
   }
-  const opcoes = [
-    campo({ chave: "instagram.pagina_facebook", tipo: "switch", rotulo: "Postar também na Página do Facebook", ajuda: "O mesmo Reel vai para a Página ligada à conta e aparece como Facebook no histórico. A Página aceita Reels de até 90 s." }),
-  ];
-  if (valor("instagram.envio") === "upload_post") {
-    opcoes.push(campo({ chave: "instagram.facebook_pagina_id", tipo: "texto", rotulo: "ID da Página no Upload-Post", ajuda: "Só se o perfil tiver mais de uma Página conectada.", placeholder: "só números" }));
+  if (rede === "facebook") {
+    return [
+      campo({ chave: "facebook.max_segundos", tipo: "numero", min: 5, max: 90, sufixo: "s", rotulo: "Duração máxima", ajuda: "A Página recebe Reels de 3 a 90 s. Cortes mais longos que isto ficam só para as outras redes." }),
+    ];
   }
+  const opcoes = [];
   if (valor("instagram.envio") !== "manual") {
     opcoes.push(
       campo({ chave: "instagram.compartilhar_no_feed", tipo: "switch", rotulo: "Mostrar também no feed" }),
@@ -357,6 +370,8 @@ function cardRedeHtml(rede, r) {
     <div class="card-topo"><div class="rede-titulo">${logoRede(rede)}<div><b>${info.nome}</b><small>${redImgPorSemana(r)}</small></div></div>${CONTROLES.switch({ chave: `${rede}.ativo`, rotulo: `Postar no ${info.rotulo}` })}</div>
     ${statusContaHtml(r, envio)}
     ${aviso ? h`<div class="aviso-rede">${ic("alerta")}<span>${aviso}</span></div>` : ""}
+    ${rede === "facebook" ? h`${redFbAvisosHtml()}${redFbPaginaHtml(r, envio)}` : ""}
+    ${rede === "instagram" ? h`<p class="nota">A Página do Facebook agora tem cartão próprio, o "${REDES.facebook.nome}": ligue lá para os Reels saírem também na Página.</p>` : ""}
     ${redImgCaixasHtml(rede, r, envio)}
     ${formulario([envioHtml(rede, info, envio), ...(envio === "oficial" ? camposOficiais(rede) : [])])}
     ${notaEnvio(rede, info, envio)}
@@ -365,6 +380,185 @@ function cardRedeHtml(rede, r) {
     <div class="rodape-card"><div class="grupo-botoes">${botoesRede(rede, r, envio)}</div><small class="texto-suave">${rodape.join(" · ")}</small></div>
   </div>`;
 }
+
+/* ------------------------------------------------------------ Página do Facebook */
+
+// sugestao: a Página com o nome informado que a última conferência viu ativa (falta você confirmar)
+// janela: número da janela "antes de gravar" aberta agora (a resposta de uma antiga não redesenha a nova)
+const redFbEstado = { sugestao: null, janela: 0 };
+
+function redFbAvisosHtml() {
+  const max = valor("facebook.max_segundos") || 90;
+  return h`<div class="aviso-rede">${ic("alerta")}<span>Depois de ligar o Facebook aqui, desligue no Instagram o compartilhamento automático dos Reels no Facebook, em Central de Contas, senão o mesmo vídeo sai duas vezes na Página.</span></div>
+    <p class="nota">Os cortes são de filmes de terceiros: poste só o que você tem direito de usar. Desde 13/03/2026 a Meta trata como não original juntar trechos com mudanças pequenas (bordas, legendas), o que pesa na distribuição e na monetização. A Página recebe Reels de até ${max} s: cortes mais longos ficam fora do Facebook.</p>`;
+}
+
+function redFbSituacao(p) {
+  if (p.origem) return [`Página ${p.nome || p.id}, ${p.origem}`, "ok"];
+  if (p.confirmada) return [`Confirmada: ${p.nome ? `${p.nome} (id ${p.id})` : `id ${p.id}`}`, "ok"];
+  return ["Ainda não confirmada", "aviso"];
+}
+
+function redFbPaginaHtml(r, envio) {
+  const p = r.pagina || {};
+  let entrada;
+  if (p.so_leitura) {
+    const de = envio === "upload_post" ? "Vem da escolha na lista do Upload-Post (Escolher a Página)." : "Vem da Página escolhida ao conectar (Conectar conta).";
+    entrada = linhaCampo("Página", de, h`<span class="valor-fixo">${p.nome || p.entrada || "nenhuma escolhida"}</span>`);
+  } else {
+    entrada = campo({ chave: "facebook.pagina", tipo: "texto", rotulo: "Página", ajuda: "O link da Página (facebook.com/SuaPagina ou profile.php?id=...) ou o nome exato dela. Antes de cada post eu confiro se a janela está agindo como ela, e não como o seu perfil pessoal ou outra Página.", placeholder: "https://www.facebook.com/SuaPagina", larga: true });
+  }
+  const linhas = [];
+  const u = p.ultima;
+  if (envio === "navegador" && u) {
+    linhas.push(h`<p class="nota">${badge([u.confere ? "Confere" : "Não confere", u.confere ? "ok" : "erro"], true)} Última conferência ${fmtQuando(u.em)}: ${u.motivo}</p>`);
+  }
+  const s = !p.confirmada && redFbEstado.sugestao;
+  if (envio === "navegador" && s) {
+    linhas.push(h`<div class="aviso-rede">${ic("info")}<span>Agindo como a Página ${s.pagina_nome} (id ${s.pagina_id}). É esta?</span><button class="btn pequeno primario" data-acao="fb-usar" data-id="${s.pagina_id}">${ic("check")}Usar esta Página</button></div>`);
+  }
+  const botoes = [];
+  if (envio === "navegador") {
+    botoes.push(h`<button class="btn" data-acao="fb-perfil">${ic("olho")}Ver quem está ativo</button>`);
+    botoes.push(h`<button class="btn" data-acao="fb-perfil" data-trocar="1">${ic("refazer")}Trocar para a Página</button>`);
+  } else if (envio === "upload_post") {
+    botoes.push(h`<button class="btn" data-acao="fb-pagina-up">${ic("lista")}Escolher a Página</button>`);
+  }
+  return h`<div class="card-interno"><div class="card-topo"><h3>${ic("pessoas")}Página que recebe os Reels</h3>${badge(redFbSituacao(p), true)}</div>
+    <p class="nota">No Facebook você pode ter várias Páginas e o perfil pessoal: eu só posto agindo como a Página daqui.</p>
+    ${formulario([entrada])}
+    ${linhas}
+    ${botoes.length ? h`<div class="grupo-botoes">${botoes}</div>` : ""}</div>`;
+}
+
+App.acoes["fb-perfil"] = async (el) => {
+  if (!(await salvarDaRede(el, "facebook"))) return;
+  const trocar = el.dataset.trocar === "1";
+  toast(trocar ? "Trocando para a Página na janela do navegador..." : "Conferindo com que perfil a janela está agindo...", "info");
+  const r = await ocupado(el, () => post("/redes/facebook/perfil", { trocar }));
+  redFbEstado.sugestao = r.sugestao || null;
+  toast(`Facebook: ${r.motivo}`, r.confere ? "ok" : "info", 8000);
+  await App.paginas.redes.recarregar();
+};
+
+App.acoes["fb-usar"] = async (el) => {
+  const r = await ocupado(el, () => post("/redes/facebook/perfil", { usar: el.dataset.id }));
+  redFbEstado.sugestao = null;
+  toast(`Facebook: ${r.motivo}`, "ok", 7000);
+  if (el.dataset.depois === "gravar" && modal.aberto) { montar(corpoModal(), redFbAntesHtml(r)); return; }
+  await App.paginas.redes.recarregar();
+};
+
+/* Upload-Post: a Página do perfil que recebe os Reels */
+App.acoes["fb-pagina-up"] = async (el) => {
+  if (!(await salvarDaRede(el, "facebook"))) return;
+  const r = await ocupado(el, () => post("/redes/facebook/pagina"));
+  const paginas = r.paginas || [];
+  abrirModal({
+    titulo: "Qual Página recebe os Reels?",
+    largura: 520,
+    corpo: paginas.length
+      ? h`<div class="contas-ig">${paginas.map((p, i) => h`<label><input type="radio" name="fb-pagina" value="${p.id}" ${(r.atual ? p.id === r.atual : i === 0) ? raw("checked") : ""}><span><b>${p.nome}</b> <span class="texto-suave">id ${p.id}</span></span></label>`)}</div><div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Cancelar</button><button class="btn primario" data-acao="fb-pagina-up-usar">${ic("check")}Usar esta Página</button></div>`
+      : h`<p class="nota">Nenhuma Página do Facebook está conectada no perfil do Upload-Post. Conecte no site do Upload-Post e tente de novo.</p><div class="acoes-modal"><button class="btn primario" data-acao="fechar-modal">Fechar</button></div>`,
+  });
+};
+
+App.acoes["fb-pagina-up-usar"] = async (el) => {
+  const marcado = document.querySelector("input[name=fb-pagina]:checked");
+  if (!marcado) return;
+  await ocupado(el, () => post("/redes/facebook/pagina", { id: marcado.value }));
+  fecharModal();
+  toast("Página do Facebook escolhida", "ok");
+  await App.paginas.redes.recarregar();
+};
+
+/* API oficial: o token colado e a escolha da Página, como no Instagram */
+function redFbConectar() {
+  abrirModal({
+    titulo: "Conectar a Página do Facebook",
+    largura: 640,
+    corpo: h`<ol class="passos">
+        <li>Abra o ${link("https://developers.facebook.com/tools/explorer/", "Graph API Explorer")}.</li>
+        <li>Em "App da Meta", escolha o seu app (App ID ${valor("facebook.app_id") || valor("instagram.app_id") || "?"}).</li>
+        <li>Em "Usuário ou Página", escolha "Obter token de acesso do usuário".</li>
+        <li>Adicione as permissões: <code class="permissoes">${RED_FB_PERMISSOES}</code></li>
+        <li>Clique em "Generate Access Token", autorize a Página e copie o token.</li>
+      </ol>
+      <label class="campo"><span>Token de acesso</span><textarea id="fb-token" rows="3" placeholder="Cole o token aqui" spellcheck="false" autocomplete="off"></textarea></label>
+      <p class="nota">O token é trocado por um de longa duração e fica salvo só neste computador.</p>
+      <div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Cancelar</button><button class="btn primario" data-acao="fb-enviar-token">${ic("link")}Conectar</button></div>`,
+  });
+}
+
+App.acoes["fb-enviar-token"] = async (el) => {
+  const token = $("#fb-token").value.trim();
+  if (!token) { toast("Cole o token gerado no Graph API Explorer", "erro"); return; }
+  const s = await ocupado(el, () => post("/redes/facebook/login", { token }));
+  if (s.estado === "ok") {
+    fecharModal();
+    toast(`Facebook conectado: ${s.mensagem}`, "ok", 7000);
+    await App.paginas.redes.recarregar();
+    atualizarEstado();
+    return;
+  }
+  if (s.estado === "escolher") {
+    tituloModal("Qual Página vai receber os Reels?");
+    montar(corpoModal(), h`<div class="contas-ig">${s.contas.map((c, i) => h`<label><input type="radio" name="fb-conta" value="${c.indice}" ${i === 0 ? raw("checked") : ""}><span><b>${c.pagina || "?"}</b></span></label>`)}</div><div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Cancelar</button><button class="btn primario" data-acao="fb-escolher">${ic("check")}Usar esta Página</button></div>`);
+  }
+};
+
+App.acoes["fb-escolher"] = async (el) => {
+  const marcado = document.querySelector("input[name=fb-conta]:checked");
+  if (!marcado) return;
+  const s = await ocupado(el, () => post("/redes/facebook/conta", { indice: Number(marcado.value) }));
+  fecharModal();
+  toast(`Facebook conectado: ${s.mensagem}`, "ok", 7000);
+  await App.paginas.redes.recarregar();
+  atualizarEstado();
+};
+
+/* Antes de gravar o roteiro do Facebook: a janela precisa estar agindo como a Página (na gravação, quem troca é você) */
+function redFbAntesHtml(r, erro = "") {
+  if (!r && !erro) {
+    return h`<div class="login-espera"><span class="giro"></span><p>Conferindo com que perfil a janela do navegador está agindo...</p><div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Cancelar</button></div></div>`;
+  }
+  const confere = Boolean(r && r.confere);
+  const s = r && r.sugestao;
+  return h`<div class="login-espera">
+    ${erro ? h`<p class="erro-texto">${erro}</p>` : h`<p>${badge([confere ? "Confere" : "Não confere", confere ? "ok" : "erro"], true)} ${r.motivo}</p>`}
+    ${s ? h`<div class="aviso-rede">${ic("info")}<span>Agindo como a Página ${s.pagina_nome} (id ${s.pagina_id}). É esta?</span><button class="btn pequeno primario" data-acao="fb-usar" data-id="${s.pagina_id}" data-depois="gravar">${ic("check")}Usar esta Página</button></div>` : ""}
+    <p class="nota">O roteiro sai da Página que estiver ativa na janela: grave agindo como a Página que recebe os Reels, e não como o seu perfil pessoal.</p>
+    <div class="acoes-modal"><button class="btn fantasma" data-acao="fechar-modal">Cancelar</button><button class="btn" data-acao="fb-antes-trocar">${ic("refazer")}Trocar para a Página</button><button class="btn primario" data-acao="rede-gravar" data-rede="facebook" data-conferido="1" ${confere ? "" : raw("disabled")}>${ic("microfone")}Começar a gravar</button></div></div>`;
+}
+
+async function redFbConferirAntes(trocar) {
+  const janela = redFbEstado.janela;
+  let r = null;
+  let erro = "";
+  try {
+    r = await post("/redes/facebook/perfil", { trocar });
+  } catch (e) {
+    erro = (e && e.message) || String(e);
+  }
+  if (janela !== redFbEstado.janela || !modal.aberto) return; // a janela fechou ou outra tomou o lugar
+  montar(corpoModal(), redFbAntesHtml(r, erro));
+}
+
+async function redFbAntesDeGravar() {
+  const janela = ++redFbEstado.janela;
+  abrirModal({
+    titulo: "Antes de gravar o roteiro do Facebook",
+    largura: 560,
+    corpo: redFbAntesHtml(null),
+    aoFechar: () => { if (redFbEstado.janela === janela) redFbEstado.janela++; },
+  });
+  await redFbConferirAntes(false);
+}
+
+App.acoes["fb-antes-trocar"] = async (el) => {
+  montar(corpoModal(), redFbAntesHtml(null));
+  await redFbConferirAntes(true);
+};
 
 function publicacaoHtml(d) {
   if (d.simulacao) {
@@ -499,7 +693,7 @@ function conectarInstagram() {
         <li>Abra o ${link("https://developers.facebook.com/tools/explorer/", "Graph API Explorer")}.</li>
         <li>Em "App da Meta", escolha o seu app (App ID ${valor("instagram.app_id") || "?"}).</li>
         <li>Em "Usuário ou Página", escolha "Obter token de acesso do usuário".</li>
-        <li>Adicione as permissões: <code class="permissoes">${permissoesIg()}</code>${valor("instagram.pagina_facebook") ? h`<br><small class="texto-suave">${PERMISSAO_PAGINA} é para postar na Página do Facebook; se ela não aparecer, adicione ao app o caso de uso de gerenciar a Página.</small>` : ""}</li>
+        <li>Adicione as permissões: <code class="permissoes">${PERMISSOES_IG}</code></li>
         <li>Clique em "Generate Access Token", autorize a Página e a conta do Instagram e copie o token.</li>
       </ol>
       <label class="campo"><span>Token de acesso</span><textarea id="ig-token" rows="3" placeholder="Cole o token aqui" spellcheck="false" autocomplete="off"></textarea></label>
@@ -563,6 +757,7 @@ App.acoes["rede-conectar"] = async (el) => {
     return;
   }
   if (rede === "instagram") { conectarInstagram(); return; }
+  if (rede === "facebook") { redFbConectar(); return; }
   await ocupado(el, () => conectarOAuth(rede));
 };
 
@@ -570,7 +765,19 @@ App.acoes["rede-testar"] = async (el) => {
   const rede = el.dataset.rede;
   if (!(await salvarDaRede(el, rede))) return;
   if (valor(`${rede}.envio`) === "navegador") toast("Abrindo a página da rede no navegador...", "info");
-  const r = await ocupado(el, () => post(`/redes/${rede}/testar`));
+  let r;
+  try {
+    r = await ocupado(el, () => post(`/redes/${rede}/testar`));
+  } catch (e) {
+    // Facebook pelo nome: a Página ativa tem esse título, e o cartão pergunta se é ela
+    if (rede === "facebook" && e && e.dados && e.dados.sugestao) {
+      redFbEstado.sugestao = e.dados.sugestao;
+      if (modal.aberto) fecharModal();
+      await App.paginas.redes.recarregar();
+    }
+    throw e;
+  }
+  if (rede === "facebook") redFbEstado.sugestao = null;
   if (modal.aberto) fecharModal();
   toast(`${REDES[rede].rotulo}: ${r.conta}`, "ok", 7000);
   await App.paginas.redes.recarregar();
@@ -736,6 +943,9 @@ App.acoes["rede-gravar"] = async (el) => {
   const rede = el.dataset.rede;
   const midia = el.dataset.midia === "imagem" ? "imagem" : "video";
   if (!(await salvarDaRede(el, rede))) return;
+  // no Facebook, antes: com que perfil a janela está agindo (o "Começar a gravar" de lá volta aqui)
+  if (rede === "facebook" && midia === "video" && el.dataset.conferido !== "1") { await redFbAntesDeGravar(); return; }
+  redFbEstado.janela++; // a conferência que ainda estiver respondendo não redesenha a janela da gravação
   // a janela anterior (o resultado de outra gravação) fecha antes de a nova começar
   fecharModal(true);
   let s;
@@ -1057,7 +1267,9 @@ App.paginas.redes = {
     desenharRedes();
   },
   aoMudar(caminho) {
-    if (/\.(envio|ativo|privacidade|pagina_facebook|videos|imagens)$/.test(caminho) || caminho === "navegador.ensaio") desenharRedes();
+    // facebook.pagina fica de fora: é um campo de texto, e redesenhar a cada tecla apagaria o que você digita
+    // (o salvar recarrega o cartão com a Página nova)
+    if (/\.(envio|ativo|privacidade|videos|imagens)$/.test(caminho) || caminho === "navegador.ensaio") desenharRedes();
   },
   async aoSalvar() {
     await this.recarregar();

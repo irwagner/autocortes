@@ -105,7 +105,7 @@ function cfgAbaCortes() {
     secao("Duração"),
     campo({ chave: "cortes.duracao_min", tipo: "numero", min: 5, max: 600, sufixo: "s", rotulo: "Mínima" }),
     campo({ chave: "cortes.duracao_alvo", tipo: "numero", min: 5, max: 600, sufixo: "s", rotulo: "Ideal", ajuda: "Os cortes ficam perto disso, terminando numa pausa da fala ou numa troca de cena." }),
-    campo({ chave: "cortes.duracao_max", tipo: "numero", min: 5, max: 600, sufixo: "s", rotulo: "Máxima", ajuda: "Até 60 s funciona em todas as redes. O YouTube só recebe até o limite dos Shorts (Redes sociais > YouTube) e a Página do Facebook, até 90 s." }),
+    campo({ chave: "cortes.duracao_max", tipo: "numero", min: 5, max: 600, sufixo: "s", rotulo: "Máxima", ajuda: "Até 60 s funciona em todas as redes. O YouTube só recebe até o limite dos Shorts (Redes sociais > YouTube) e a Página do Facebook, até o limite em Redes sociais > Facebook." }),
     secao("Escolha dos trechos"),
     campo({ chave: "cortes.max_por_filme", tipo: "numero", min: 1, max: 1000, sufixo: "trechos", rotulo: "Máximo por filme" }),
     campo({ chave: "cortes.espaco_minimo_seg", tipo: "numero", min: 0, max: 600, sufixo: "s", rotulo: "Espaço entre trechos", ajuda: "Distância mínima entre dois cortes do mesmo filme." }),
